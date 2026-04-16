@@ -70,6 +70,7 @@ pub use ctx::{
     MutationDb,
     QueryCtx,
     QueryDb,
+    Scheduler,
     TypedQueryBuilder,
 };
 pub use document::{

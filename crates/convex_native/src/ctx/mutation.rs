@@ -50,6 +50,11 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
     pub fn tx(&mut self) -> &mut Transaction<RT> {
         self.tx
     }
+
+    /// Scheduler handle — see [`super::scheduler::Scheduler`].
+    pub fn scheduler(&mut self) -> super::scheduler::Scheduler<'_> {
+        super::scheduler::Scheduler::new(super::scheduler::SchedulerScope::Mutation)
+    }
 }
 
 /// Read+write typed database handle. Created via `MutationCtx::db()`.

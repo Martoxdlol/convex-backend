@@ -52,6 +52,11 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
         self.namespace
     }
 
+    /// Scheduler handle — see [`super::scheduler::Scheduler`].
+    pub fn scheduler(&mut self) -> super::scheduler::Scheduler<'_> {
+        super::scheduler::Scheduler::new(super::scheduler::SchedulerScope::Action)
+    }
+
     /// Invoke a native query by name with already-serialized args.
     /// Returns the `ConvexValue` the query produced. Typed sub-calls
     /// land in Step 2.4 once generated args structs exist.

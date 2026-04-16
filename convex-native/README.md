@@ -7,10 +7,11 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 ## Current state
 
 **Phase 1 COMPLETE** (steps 1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1,
-1.6.1–1.6.3) **plus Phase 2 2.1 / 2.2 / 2.3 / 2.4 COMPLETE**. Remaining:
-query/mutation sub-call execution (2.4 raw backend integration), the
-scheduler (2.5), storage (2.6), HTTP actions (2.7), and the composite
-runner end of Phase 1.5.
+1.6.1–1.6.3) **plus Phase 2 2.1–2.5 COMPLETE (scheduler surface
+defined — backend wiring pending)**. Remaining: query/mutation sub-call
+execution (2.4 raw backend integration), scheduler backend (2.5
+VirtualSchedulerModel), storage (2.6), HTTP actions (2.7), and the
+composite runner end of Phase 1.5.
 
 ### What works
 
@@ -52,6 +53,21 @@ pub struct User {
 
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
+
+### New in Phase 2.5 — Scheduler (surface)
+
+`MutationCtx::scheduler()` and `ActionCtx::scheduler()` now return a
+`Scheduler<'_>` with:
+
+- `run_after<F: ConvexMutationFunction>(delay, marker, args)` — schedule
+  a typed mutation.
+- `run_action_after<F: ConvexActionFunction>(delay, marker, args)` —
+  schedule a typed action.
+
+Both serialize the typed args correctly, then `bail!` at the actual
+scheduling step pending `VirtualSchedulerModel` backend integration.
+Developers can already write scheduling code against the final API
+shape.
 
 ### New in Phase 2.3 / 2.4 — Function markers + typed sub-calls
 
