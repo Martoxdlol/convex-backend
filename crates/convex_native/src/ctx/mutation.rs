@@ -51,6 +51,11 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
         self.tx
     }
 
+    /// Identity of the caller that initiated the request.
+    pub fn auth(&self) -> crate::auth::AuthInfo<'_> {
+        crate::auth::AuthInfo::new(self.tx.identity())
+    }
+
     /// Scheduler handle — see [`super::scheduler::Scheduler`].
     ///
     /// Today mutations don't have a real scheduler wired up (the

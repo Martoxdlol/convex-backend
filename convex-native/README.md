@@ -68,6 +68,13 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
+### New — `ctx.auth()` identity helper
+
+`QueryCtx` and `MutationCtx` now expose `ctx.auth()` returning an
+`AuthInfo<'_>` with `is_authenticated()`, `is_admin()`, `is_system()`,
+and `.raw()` for the escape-hatch. Wraps the underlying
+`keybroker::Identity` from the transaction.
+
 ### New — `convex_native::testing` unit-test utilities
 
 Writing a full `NativeActionCallbacks` mock per test is tedious. The

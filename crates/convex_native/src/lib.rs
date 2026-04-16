@@ -55,6 +55,7 @@ pub mod __private {
     };
 }
 
+pub mod auth;
 pub mod backend;
 pub mod callbacks;
 pub mod circuit_breaker;
@@ -74,6 +75,7 @@ pub mod schema_diff;
 pub mod testing;
 pub mod warmup;
 
+pub use auth::AuthInfo;
 pub use backend::{
     BuiltBackend,
     ConvexBackend,

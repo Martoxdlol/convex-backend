@@ -41,6 +41,11 @@ impl<'tx, RT: Runtime> QueryCtx<'tx, RT> {
     pub fn tx(&mut self) -> &mut Transaction<RT> {
         self.tx
     }
+
+    /// Identity of the caller that initiated the request.
+    pub fn auth(&self) -> crate::auth::AuthInfo<'_> {
+        crate::auth::AuthInfo::new(self.tx.identity())
+    }
 }
 
 /// Read-only typed database handle. Created via `QueryCtx::db()`.
