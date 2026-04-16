@@ -1,5 +1,19 @@
 //! Utilities for unit-testing native functions.
 //!
+//! ## `args!` helper
+//!
+//! Constructing a `ConvexObject` by hand in tests is verbose; the
+//! `args!` macro keeps the call sites readable:
+//!
+//! ```ignore
+//! use convex_native::testing::args;
+//!
+//! let obj = args! {
+//!     "email" => "alice@example.com".to_string(),
+//!     "count" => 42_i64,
+//! };
+//! ```
+//!
 //! Writing a custom `NativeActionCallbacks` impl for every test is
 //! tedious; this module provides a builder that wires up the common
 //! patterns:
@@ -248,9 +262,49 @@ impl NativeActionCallbacks for TestCallbacksImpl {
     }
 }
 
+/// Ergonomic `ConvexObject` construction for tests.
+///
+/// ```ignore
+/// let obj = args! {
+///     "email" => "a@b".to_string(),
+///     "count" => 7_i64,
+/// };
+/// ```
+#[macro_export]
+macro_rules! __convex_native_args {
+    ( $( $key:expr => $value:expr ),* $(,)? ) => {{
+        use ::std::collections::BTreeMap;
+        let mut map: BTreeMap<
+            $crate::__private::FieldName,
+            $crate::__private::ConvexValue,
+        > = BTreeMap::new();
+        $(
+            let __name: $crate::__private::FieldName =
+                $key.parse().expect("invalid field name");
+            map.insert(__name, $crate::ToConvex::to_convex($value).expect("to_convex"));
+        )*
+        <$crate::__private::ConvexObject as ::std::convert::TryFrom<_>>::try_from(map)
+            .expect("building ConvexObject")
+    }};
+}
+
+pub use __convex_native_args as args;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn args_macro_builds_expected_object() {
+        let obj = crate::testing::args! {
+            "email" => "a@b".to_string(),
+            "count" => 7_i64,
+        };
+        let map: std::collections::BTreeMap<_, _> = obj.into();
+        assert_eq!(map.len(), 2);
+        let count_key: value::FieldName = "count".parse().unwrap();
+        assert_eq!(map.get(&count_key), Some(&ConvexValue::Int64(7)));
+    }
 
     #[tokio::test]
     async fn query_handler_returns_registered_value() {

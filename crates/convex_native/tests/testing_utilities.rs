@@ -8,6 +8,7 @@ use std::sync::Arc;
 use convex_native::{
     convex,
     testing::{
+        args,
         CallRecord,
         TestCallbacks,
     },
@@ -15,7 +16,6 @@ use convex_native::{
     ConvexDocument,
     NativeFunctionRunner,
     Rt,
-    ToConvex,
 };
 use value::{
     ConvexValue,
@@ -68,12 +68,9 @@ async fn test_callbacks_drive_an_action_through_its_paces() {
         .build();
 
     let runner = Arc::new(NativeFunctionRunner::from_inventory().expect("from_inventory"));
-    let args = AuditArgs {
-        label: "cleanup".into(),
-    };
-    let obj = match args.to_convex().unwrap() {
-        ConvexValue::Object(o) => o,
-        _ => unreachable!(),
+    // Use the args! macro instead of building the object by hand.
+    let obj = args! {
+        "label" => "cleanup".to_string(),
     };
     let ret = runner
         .run_action_with_callbacks("audit", TableNamespace::Global, obj, cb)

@@ -119,6 +119,17 @@ assert_eq!(
 without writing boilerplate. `CallRecord` covers queries, mutations,
 schedules, and the three storage operations.
 
+For object construction, the module also exposes an `args!` macro:
+
+```rust
+use convex_native::testing::args;
+
+let obj = args! {
+    "email" => "alice@example.com".to_string(),
+    "count" => 42_i64,
+};
+```
+
 ### New in Phase 4.1 / 4.6 — fastrace spans + index-cache warmup
 
 - Every `run_query` / `run_mutation` / `run_action_with_callbacks`
