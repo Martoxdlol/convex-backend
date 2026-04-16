@@ -106,12 +106,16 @@ Shape (version 1):
 }
 ```
 
-### New — `ctx.auth()` identity helper
+### New — `ctx.auth()` + `ctx.unix_timestamp()`
 
-`QueryCtx` and `MutationCtx` now expose `ctx.auth()` returning an
-`AuthInfo<'_>` with `is_authenticated()`, `is_admin()`, `is_system()`,
-and `.raw()` for the escape-hatch. Wraps the underlying
-`keybroker::Identity` from the transaction.
+`QueryCtx` and `MutationCtx` now expose:
+
+- `ctx.auth()` — an `AuthInfo<'_>` with `is_authenticated()`,
+  `is_admin()`, `is_system()`, and `.raw()` for the escape-hatch.
+  Wraps the underlying `keybroker::Identity`.
+- `ctx.unix_timestamp()` — wall-clock time sourced from the
+  transaction's runtime, so tests driving a mock clock see the
+  mocked value.
 
 ### New — `convex_native::testing` unit-test utilities
 

@@ -34,6 +34,8 @@ async fn _widget_query<RT: common::runtime::Runtime>(ctx: &mut QueryCtx<'_, RT>)
     // Compile check: auth() returns AuthInfo usable directly.
     let _is_auth: bool = ctx.auth().is_authenticated();
     let _is_admin: bool = ctx.auth().is_admin();
+    // Compile check: unix_timestamp() is available.
+    let _ts: common::runtime::UnixTimestamp = ctx.unix_timestamp();
 
     let _ = ctx
         .db()

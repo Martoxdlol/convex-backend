@@ -46,6 +46,13 @@ impl<'tx, RT: Runtime> QueryCtx<'tx, RT> {
     pub fn auth(&self) -> crate::auth::AuthInfo<'_> {
         crate::auth::AuthInfo::new(self.tx.identity())
     }
+
+    /// Current wall-clock time as a `UnixTimestamp`. Sourced from the
+    /// transaction's runtime so tests that drive a mock clock see the
+    /// mocked value.
+    pub fn unix_timestamp(&self) -> common::runtime::UnixTimestamp {
+        self.tx.runtime().unix_timestamp()
+    }
 }
 
 /// Read-only typed database handle. Created via `QueryCtx::db()`.

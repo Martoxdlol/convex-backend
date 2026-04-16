@@ -56,6 +56,11 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
         crate::auth::AuthInfo::new(self.tx.identity())
     }
 
+    /// Current wall-clock time — mirrors `QueryCtx::unix_timestamp`.
+    pub fn unix_timestamp(&self) -> common::runtime::UnixTimestamp {
+        self.tx.runtime().unix_timestamp()
+    }
+
     /// Scheduler handle — see [`super::scheduler::Scheduler`].
     ///
     /// Today mutations don't have a real scheduler wired up (the
