@@ -1,0 +1,30 @@
+[package]
+name = "convex_native"
+description = "Native Rust functions for Convex (convex.dev)"
+version = "0.1.0"
+authors = ["Convex, Inc. <no-reply@convex.dev>"]
+edition = "2024"
+license = "LicenseRef-FSL-1.1-Apache-2.0"
+
+[lib]
+doctest = false
+
+[features]
+testing = []
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+common = { workspace = true }
+convex_macro = { workspace = true }
+inventory = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sync_types = { workspace = true }
+value = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

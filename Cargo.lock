@@ -2301,6 +2301,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "convex_native"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "common",
+ "convex_macro",
+ "convex_sync_types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tokio",
+ "value",
+]
+
+[[package]]
 name = "convex_sync_types"
 version = "0.10.4"
 dependencies = [

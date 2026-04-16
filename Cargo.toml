@@ -54,6 +54,7 @@ const-oid = "0.9.6"
 const_format = { version = "0.2.34", features = [ "fmt" ] }
 convex = { path = "crates/convex" }
 convex_macro = { path = "crates/convex_macro" }
+convex_native = { path = "crates/convex_native" }
 convex_sync_types = { path = "crates/convex/sync_types" }
 criterion = "0.8"
 crossbeam-channel = "0.5.15"
@@ -111,6 +112,7 @@ imbl_slab = { path = "crates/imbl_slab" }
 indexing = { path = "crates/indexing" }
 indexmap = "2"
 interval_map = { path = "crates/interval_map" }
+inventory = "0.3"
 isolate = { path = "crates/isolate" }
 itertools = "0.14"
 jemalloc_pprof = "0.8"
