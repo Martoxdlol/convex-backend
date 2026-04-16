@@ -75,8 +75,16 @@ fn args_to_serialized(obj: ConvexObject) -> anyhow::Result<SerializedArgs> {
     Ok(SerializedArgs::from_args(vec![json])?)
 }
 
-/// Build a canonical component function path for a bare dotted name.
-/// Every native call is routed through the root component today.
+/// Build a canonical component function path for a `module:function`
+/// name (the JS calling convention). Every native-from-action call
+/// is routed through the root component today.
+///
+/// Bare identifiers like `"get_user"` parse as a JS module with the
+/// default export — they'll resolve against the JS module loader at
+/// the backend side. For native-to-native dispatch, prefer the typed
+/// `ctx.run_query(Marker, Args { .. })` form which bypasses path
+/// parsing entirely (tracked in task "Fix native→native cross-call
+/// name resolution in BackendCallbacks").
 fn path_for(name: &str) -> anyhow::Result<common::components::CanonicalizedComponentFunctionPath> {
     let udf: UdfPath = name.parse()?;
     Ok(common::components::CanonicalizedComponentFunctionPath {
@@ -258,5 +266,15 @@ mod tests {
         assert!(path_for("").is_err());
         // A path with an unknown extension is rejected by ModulePath.
         assert!(path_for("users.get").is_err());
+    }
+
+    #[test]
+    fn path_for_bare_name_parses_as_default_export() {
+        // "get_user" (no colon) is interpreted as module "get_user"
+        // (`.js` implied) with the default export. This is the JS
+        // convention; for native-to-native cross-calls the typed
+        // form ctx.run_query(Marker, Args) should be used instead.
+        let p = path_for("get_user").expect("parse");
+        assert_eq!(p.component, ComponentPath::root());
     }
 }
