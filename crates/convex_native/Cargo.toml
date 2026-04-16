@@ -21,6 +21,7 @@ convex_macro = { workspace = true }
 database = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
+fastrace = { workspace = true }
 inventory = { workspace = true }
 keybroker = { workspace = true }
 parking_lot = { workspace = true }

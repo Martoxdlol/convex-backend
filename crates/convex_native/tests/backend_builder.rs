@@ -122,4 +122,11 @@ async fn builder_runs_action_end_to_end() {
         panic!("expected String")
     };
     assert_eq!(s.as_ref(), "pong:hi");
+
+    // Warmup plan surface: our Cat table has one index, so the plan
+    // should contain at least that entry.
+    let plan = built.warmup_plan();
+    assert!(plan
+        .iter()
+        .any(|e| matches!(e, convex_native::WarmupEntry::DbIndex { .. })));
 }

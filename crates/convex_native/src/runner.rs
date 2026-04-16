@@ -239,7 +239,8 @@ impl NativeFunctionRunner {
 
     /// Execute a named native query. Errors if the name isn't registered
     /// or isn't a query. Records latency + outcome to the attached
-    /// metrics sink.
+    /// metrics sink. Emits a fastrace span covering the whole dispatch.
+    #[fastrace::trace]
     pub async fn run_query(
         &self,
         name: &str,
@@ -279,6 +280,7 @@ impl NativeFunctionRunner {
 
     /// Execute a named native mutation. Errors if the name isn't
     /// registered or isn't a mutation.
+    #[fastrace::trace]
     pub async fn run_mutation(
         &self,
         name: &str,
@@ -338,6 +340,7 @@ impl NativeFunctionRunner {
     /// action's `ActionCtx` gets those callbacks, so `run_query`,
     /// `run_mutation`, `scheduler()`, and `storage()` all route through
     /// them.
+    #[fastrace::trace]
     pub async fn run_action_with_callbacks(
         self: &Arc<Self>,
         name: &str,

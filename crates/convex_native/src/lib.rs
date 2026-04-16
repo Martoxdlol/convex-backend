@@ -71,6 +71,7 @@ pub mod registry;
 pub mod runner;
 pub mod schema;
 pub mod schema_diff;
+pub mod warmup;
 
 pub use backend::{
     BuiltBackend,
@@ -148,4 +149,8 @@ pub use schema::{
 pub use schema_diff::{
     diff as diff_schemas,
     SchemaChange,
+};
+pub use warmup::{
+    plan_warmup,
+    WarmupEntry,
 };

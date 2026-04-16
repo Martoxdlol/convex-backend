@@ -132,6 +132,15 @@ impl BuiltBackend {
         self.router.is_some()
     }
 
+    /// Produce the warm-up plan for the collected schema. Returns an
+    /// empty vec if the builder didn't opt into schema collection.
+    pub fn warmup_plan(&self) -> Vec<crate::warmup::WarmupEntry> {
+        match &self.schema {
+            None => Vec::new(),
+            Some(schema) => crate::warmup::plan_warmup(schema),
+        }
+    }
+
     /// Run a registered native action directly. Useful for integration
     /// tests that want to exercise an action without standing up the
     /// full backend.

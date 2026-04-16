@@ -8,8 +8,9 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 
 **Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1, 1.5.2,
 1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.5
-mode alias + executor trait stub), **Phase 4 partial** (4.2 metrics
-sink + 4.3 graceful drain + 4.4 timeouts + 4.5 circuit breaker),
+mode alias + executor trait stub), **Phase 4 partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3
+graceful drain + 4.4 timeouts + 4.5 circuit breaker + 4.6 index-cache
+warmup plan),
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
 validation + 5.3 text/vector search + 5.4 bulk `get_many`).
 
@@ -17,8 +18,7 @@ Remaining: concrete backend adapter implementing
 `NativeActionCallbacks` and wiring the composite runner into
 `make_app()` (future `crates/convex_native_backend` crate — 1.5.1 /
 1.5.3), real distributed gRPC service (3.1–3.6), the rest of
-production hardening (4.1 fastrace spans, 4.6 index cache warming,
-4.7 rolling updates).
+production hardening (4.7 rolling updates).
 
 ### What works
 
@@ -60,6 +60,18 @@ pub struct User {
 
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
+
+### New in Phase 4.1 / 4.6 — fastrace spans + index-cache warmup
+
+- Every `run_query` / `run_mutation` / `run_action_with_callbacks`
+  entry point is annotated `#[fastrace::trace]`, so the existing
+  `fastrace` tracing infrastructure sees native function invocations
+  alongside JS ones with zero extra wiring from the adapter.
+- `convex_native::plan_warmup(schema)` / `BuiltBackend::warmup_plan()`
+  walk the collected schema and emit a `Vec<WarmupEntry>` covering
+  every declared db / text / vector index. The backend adapter uses
+  this at startup to prime its in-memory index cache before accepting
+  traffic.
 
 ### New in Phase 4.5 — circuit breaker
 
