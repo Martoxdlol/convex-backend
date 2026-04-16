@@ -657,6 +657,20 @@ through that module. This keeps developers' `Cargo.toml` minimal (just
 `convex_native`) and frees us to relocate internal types without breaking
 downstream callers.
 
+## Runnable example
+
+`crates/convex_native/examples/tiny_app.rs` is a compile-and-run
+demonstration of the full surface — schema, nested types, enum,
+query, mutation, action, internal mutation, cron, HTTP action,
+builder, validation, introspection. It's the fastest way to
+sanity-check the crate end-to-end:
+
+```sh
+cargo run -p convex_native --example tiny_app
+```
+
+Prints the JSON envelope from `BuiltBackend::describe_pretty()`.
+
 ## Development
 
 ```sh
