@@ -14,9 +14,12 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 common = { workspace = true }
 convex_native = { workspace = true }
+database = { workspace = true }
 function_runner = { workspace = true }
 keybroker = { workspace = true }
 model = { workspace = true }
+rand = { workspace = true }
+semver = { workspace = true }
 sync_types = { workspace = true }
 tokio = { workspace = true }
 udf = { workspace = true }
