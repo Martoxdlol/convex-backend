@@ -10,8 +10,8 @@ actions) in native Rust.
 - **`native-rust-functions.md`** — the original design doc (rationale
   and high-level architecture).
 - **`IMPLEMENTATION_PLAN.md`** — phase-by-phase roadmap.
-- **`COMPOSITE_RUNNER.md`** — reference implementation for the
-  future backend-adapter crate.
+- **`COMPOSITE_RUNNER.md`** — reference for the `convex_native_backend`
+  adapter crate and its `run_function` TODO list.
 
 ## Current state
 
@@ -23,11 +23,12 @@ warmup plan),
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
 validation + 5.3 text/vector search + 5.4 bulk `get_many`).
 
-Remaining: concrete backend adapter implementing
-`NativeActionCallbacks` and wiring the composite runner into
-`make_app()` (future `crates/convex_native_backend` crate — 1.5.1 /
-1.5.3), real distributed gRPC service (3.1–3.6), the rest of
-production hardening (4.7 rolling updates).
+Remaining: the rest of `run_function` native dispatch (building
+`FunctionOutcome` + `FunctionFinalTransaction` for a native call —
+see `COMPOSITE_RUNNER.md`), a concrete `NativeActionCallbacks` impl
+wrapping `udf::ActionCallbacks`, wiring `CompositeFunctionRunner`
+into `make_app()`, real distributed gRPC service (3.1–3.6), and
+the rest of production hardening (4.7 rolling updates).
 
 ### What works
 

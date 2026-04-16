@@ -2328,6 +2328,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "convex_native_backend"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "common",
+ "convex_native",
+ "convex_sync_types",
+ "function_runner",
+ "keybroker",
+ "model",
+ "tokio",
+ "udf",
+ "usage_tracking",
+ "value",
+]
+
+[[package]]
 name = "convex_sync_types"
 version = "0.10.4"
 dependencies = [

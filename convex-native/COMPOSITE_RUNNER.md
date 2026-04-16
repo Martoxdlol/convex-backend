@@ -1,15 +1,28 @@
 # CompositeFunctionRunner — integration reference
 
-This is the adapter that wires `convex_native::NativeFunctionRunner` into
-the backend's `function_runner::FunctionRunner` trait. It is **not yet
-built in-workspace** because `function_runner` transitively depends on
-`isolate` (V8), which requires the `npm-packages/` rush install + build
-step to be set up.
+**Now shipped in-workspace** at
+`crates/convex_native_backend/src/composite_runner.rs`. This doc kept
+around for historical context and for the full TODO list of wiring
+still needed inside `run_function`.
 
-When that environment is available (CI, production), the reference
-implementation below should live at
-`crates/convex_native_backend/src/composite_runner.rs` (or similar) and
-be wired into `make_app()` at `crates/local_backend/src/lib.rs:214`.
+The adapter wires `convex_native::NativeFunctionRunner` into the
+backend's `function_runner::FunctionRunner` trait. It depends on
+`function_runner` (and transitively on `isolate`), which means the
+npm-packages rush install + build step must have run at least once.
+`convex_native` itself stays isolate-free.
+
+Wire into `make_app()` (`crates/local_backend/src/lib.rs:214`) like
+this:
+
+```rust
+use convex_native::NativeFunctionRunner;
+use convex_native_backend::CompositeFunctionRunner;
+
+let native = Arc::new(NativeFunctionRunner::from_inventory()?);
+let js = Arc::new(InProcessFunctionRunner::new(...)?);
+let composite = Arc::new(CompositeFunctionRunner::new(native, js));
+// ...use `composite` wherever `FunctionRunner<RT>` is expected.
+```
 
 ## Reference implementation
 

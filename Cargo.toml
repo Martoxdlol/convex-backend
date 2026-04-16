@@ -55,6 +55,7 @@ const_format = { version = "0.2.34", features = [ "fmt" ] }
 convex = { path = "crates/convex" }
 convex_macro = { path = "crates/convex_macro" }
 convex_native = { path = "crates/convex_native" }
+convex_native_backend = { path = "crates/convex_native_backend" }
 convex_sync_types = { path = "crates/convex/sync_types" }
 criterion = "0.8"
 crossbeam-channel = "0.5.15"

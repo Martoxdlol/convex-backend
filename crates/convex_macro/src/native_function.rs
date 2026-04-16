@@ -248,7 +248,21 @@ fn expand(kind: FnKind, flags: AttrFlags, input: ItemFn) -> syn::Result<TokenStr
                 let __v = __args_map
                     .remove(&__field)
                     .unwrap_or(::convex_native::__private::ConvexValue::Null);
-                <#ty as ::convex_native::FromConvex>::from_convex(__v)?
+                // Wrap the FromConvex failure with the function + field
+                // context so callers see `args::<name>` in the error
+                // chain instead of an anonymous type mismatch.
+                match <#ty as ::convex_native::FromConvex>::from_convex(__v) {
+                    ::std::result::Result::Ok(v) => v,
+                    ::std::result::Result::Err(e) => {
+                        return ::std::result::Result::Err(e.context(
+                            ::std::format!(
+                                "decoding arg {:?} of function {:?}",
+                                #name,
+                                #fn_name_str,
+                            ),
+                        ));
+                    },
+                }
             };
         }
     });
