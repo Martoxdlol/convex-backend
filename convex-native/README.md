@@ -617,10 +617,14 @@ registrations, no schema entries.
   pre-uploaded `FileStorageEntry` values. Wiring a direct path from
   `ActionCtx::storage()` into the `file_storage` backend is
   outstanding.
-- **Multi-UDF-per-request write threading.** `begin_tx_with_writes`
-  ignores `existing_writes`; one-UDF-per-request flows work, but
-  the private `NestedWrites` path used by JS batching isn't wired
-  through yet.
+- **Native action dispatch through the composite.** `UdfType::Action`
+  requests fall through to the JS runner even when the name matches
+  a `#[convex::action]` registration. Native actions registered via
+  inventory are dispatchable through `NativeFunctionRunner::run_action_with_callbacks`
+  directly, but the composite runner's `run_function` path doesn't
+  intercept the action `UdfType` yet — wiring that requires cached
+  `Arc<dyn ActionCallbacks>` plumbing and the right `ActionOutcome`
+  construction.
 
 ## Architecture (today)
 
@@ -745,9 +749,10 @@ Per `IMPLEMENTATION_PLAN.md`, the remaining shippable items are:
 4. **Storage forwarding from `ActionCtx::storage()`** directly to the
    `file_storage` backend, bypassing the JS `ActionCallbacks` shape
    that doesn't fit raw bytes.
-5. **Multi-UDF-per-request write threading** — feed `existing_writes`
-   into `begin_tx_with_writes` to support JS-style batching inside a
-   single `ApplicationFunctionRunner` call.
+5. **Native action dispatch in composite.** Intercept
+   `UdfType::Action` in `CompositeFunctionRunner::run_function`,
+   route to `NativeFunctionRunner::run_action_with_callbacks`, and
+   synthesize a matching `ActionOutcome`.
 
 Agents iterating on this project: please keep this document honest about
 what is merged vs what is planned, after each commit.

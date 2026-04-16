@@ -143,20 +143,21 @@ impl<RT: Runtime> CompositeFunctionRunner<RT> {
 /// Build an initial-writes-aware transaction at `ts`. Applying
 /// `existing_writes` on top mirrors what the JS path does when a
 /// request runs multiple UDFs in sequence inside one
-/// ApplicationFunctionRunner call.
+/// ApplicationFunctionRunner call (see
+/// `function_runner::in_memory_indexes::begin_tx` which calls
+/// `tx.merge_writes(existing_writes.updates)` after construction).
 async fn begin_tx_with_writes<RT: Runtime>(
     database: &Database<RT>,
     identity: Identity,
     ts: RepeatableTimestamp,
-    _existing_writes: FunctionWrites,
+    existing_writes: FunctionWrites,
     usage: FunctionUsageTracker,
 ) -> anyhow::Result<Transaction<RT>> {
-    // Begin against the chosen timestamp. We currently ignore
-    // `existing_writes` because threading them in requires the
-    // private `NestedWrites`-manipulation path that only the JS
-    // FunctionRunnerCore uses. For one-UDF-per-request flows this
-    // is fine; multi-UDF batching is a later refinement.
-    database.begin_with_ts(identity, *ts, usage).await
+    let mut tx = database.begin_with_ts(identity, *ts, usage).await?;
+    if !existing_writes.updates.is_empty() {
+        tx.merge_writes(existing_writes.updates)?;
+    }
+    Ok(tx)
 }
 
 /// Shared helper: given a query/mutation `UdfType`, a handler, and

@@ -110,10 +110,12 @@ on top of `udf::ActionCallbacks`:
   parsing entirely and is the supported path today. A
   registry-aware resolver (that short-circuits native names to the
   native runner) is tracked as task 54.
-- **Write threading.** `begin_tx_with_writes` ignores
-  `existing_writes` and opens a fresh transaction at `ts`. One-UDF-per-request
-  flows work; JS-style batching inside a single
-  `ApplicationFunctionRunner` call does not.
+- **Write threading.** `begin_tx_with_writes` now forwards
+  `existing_writes.updates` through `tx.merge_writes` after opening
+  the transaction, mirroring the JS `FunctionRunnerCore::begin_tx`
+  behaviour. Multi-UDF-per-request batching therefore sees earlier
+  writes inside one `ApplicationFunctionRunner` call. Empty update
+  sets skip the merge to avoid a round-trip through `tx.writes`.
 - **Log lines.** The composite builds a `UdfOutcome` with
   `log_lines: vec![].into()`. The native `LogBuffer` that
   `ctx.log()` fills is not yet drained into the outcome. Not a
