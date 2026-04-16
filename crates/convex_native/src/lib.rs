@@ -48,6 +48,7 @@ pub mod document;
 pub mod id;
 pub mod prelude;
 pub mod registry;
+pub mod runner;
 pub mod schema;
 
 pub use convert::{
@@ -77,6 +78,7 @@ pub use registry::{
     QueryHandlerFn,
     Rt,
 };
+pub use runner::NativeFunctionRunner;
 pub use schema::{
     NativeSchema,
     TableRegistration,

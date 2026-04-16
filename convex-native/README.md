@@ -6,9 +6,9 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 
 ## Current state
 
-**Phase 1 — Layers 0, 1, 2, 3 and function attribute macros (steps
-1.0.1 → 1.3.3 + 1.2.4 + 1.2.5): COMPLETE (with Phase-1.4-gated terminal
-methods on TypedQueryBuilder and no runner yet)**
+**Phase 1 — Layers 0, 1, 2, 3 and function attribute macros + native
+runner (steps 1.0.1 → 1.3.3, 1.2.4 / 1.2.5, and 1.4.1): COMPLETE**
+(composite runner + full backend wiring in Phases 1.4.2–1.5 remain)
 
 ### What works
 
@@ -51,6 +51,23 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
+### New in Phase 1.4.1 — `NativeFunctionRunner`
+
+- `convex_native::NativeFunctionRunner` wraps an `Arc<NativeFunctionRegistry>`
+  and exposes:
+  - `from_inventory()` — build from static inventory entries
+  - `has_function(name)` / `has_function_of_type(name, UdfType)` — name-based
+    dispatch decisions
+  - `run_query(name, tx, namespace, args)` / `run_mutation(...)` — execute
+    a handler directly against a borrowed `Transaction<Rt>`
+- `NativeFunctionRunner` is deliberately standalone and does **not** yet
+  implement `function_runner::FunctionRunner`. The adapter that does
+  (wrapping a JS runner and delegating unmapped calls) is documented in
+  `COMPOSITE_RUNNER.md` — it's not built in-workspace because
+  `function_runner` transitively depends on `isolate` (V8), which needs
+  `rush install` + build steps to compile. When the full backend build
+  lands in a new integration crate, the composite code moves there.
+
 ### New in Phase 1.2.4 / 1.2.5 — function attribute macros
 
 - `#[convex::query]` and `#[convex::mutation]` (imported via
@@ -85,8 +102,15 @@ only; `convex_macro` is re-exported.
 
 ### What doesn't work yet
 
-- **No runner.** There is no `NativeFunctionRunner` — functions can't be
-  called end-to-end yet. That lands in Phase 1.4.
+- **No end-to-end execution yet.** `NativeFunctionRunner` can dispatch
+  handlers given a `Transaction<Rt>`, but building that transaction
+  and rendering the result as `FunctionOutcome` /
+  `FunctionFinalTransaction` is Phase 1.4.2+ TODO work; see
+  `COMPOSITE_RUNNER.md` for the full todo list.
+- **No backend wiring.** `make_app()` hasn't been updated. The
+  `CompositeFunctionRunner` integration shape is documented but not
+  in-tree; it belongs in a future `crates/convex_native_backend` crate
+  that can depend on `function_runner`.
 - **Non-indexed filters.** `.eq()` currently requires
   `.with_index(...)`. Full-table-scan + post-scan filtering is a later
   convenience, not MVP-critical.
@@ -119,8 +143,10 @@ crates/convex_native/
 │       ├── query_builder.rs -- TypedQueryBuilder (typed, unexecuted)
 │       └── mutation.rs      -- MutationCtx + MutationDb
 └── tests/
-    ├── derive_document.rs  -- integration tests for the derive macro
-    └── ctx_types.rs        -- compile-time surface tests for ctx wrappers
+    ├── derive_document.rs   -- integration tests for the derive macro
+    ├── derive_functions.rs  -- integration tests for the fn attribute macros
+    ├── ctx_types.rs         -- compile-time surface tests for ctx wrappers
+    └── runner_dispatch.rs   -- NativeFunctionRunner lookup & dispatch tests
 
 crates/convex_macro/
 ├── src/

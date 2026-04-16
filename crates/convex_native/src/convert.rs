@@ -40,6 +40,26 @@ impl ToConvex for ConvexValue {
     }
 }
 
+// `()` round-trips as `ConvexValue::Null` — useful as a mutation/query
+// return type when a function doesn't have a meaningful value.
+impl ToConvex for () {
+    fn to_convex(self) -> anyhow::Result<ConvexValue> {
+        Ok(ConvexValue::Null)
+    }
+}
+
+impl FromConvex for () {
+    fn from_convex(value: ConvexValue) -> anyhow::Result<Self> {
+        match value {
+            ConvexValue::Null => Ok(()),
+            other => Err(anyhow!(
+                "expected Null for unit type, got {}",
+                other.type_name()
+            )),
+        }
+    }
+}
+
 impl FromConvex for ConvexValue {
     fn from_convex(value: ConvexValue) -> anyhow::Result<Self> {
         Ok(value)

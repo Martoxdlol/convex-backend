@@ -25,6 +25,7 @@ runtime = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sync_types = { workspace = true }
+tokio = { workspace = true }
 value = { workspace = true }
 
 [dev-dependencies]
