@@ -7,16 +7,13 @@
 //! 2. They can **sub-call** queries and mutations, which run in their own
 //!    transactions.
 //!
-//! As such `ActionCtx` does not wrap a `Transaction<RT>` — it holds a
-//! handle to the `NativeFunctionRunner` (for typed sub-calls) and to
-//! the backend's `ActionCallbacks` trait (for raw sub-calls /
-//! scheduling / storage / etc.).
-//!
-//! Today this context is a skeleton: typed sub-calls and scheduler
-//! hooks are stubbed with `todo!()` or `bail!("not yet implemented")`.
-//! The shape is correct so developers' `#[convex::action]` functions
-//! compile against the final API; execution lands alongside the full
-//! backend wiring.
+//! `ActionCtx` holds:
+//! - an optional `Arc<NativeFunctionRunner>` — used to dispatch action
+//!   sub-calls directly (no new transaction needed); and
+//! - an optional `Arc<dyn NativeActionCallbacks>` — used for everything else
+//!   (query/mutation sub-calls with new transactions, scheduler, file storage).
+//!   When the callbacks are absent we fall through to a [`NoopCallbacks`]
+//!   instance so every API still returns a clear error rather than panicking.
 
 use std::sync::Arc;
 
@@ -27,21 +24,42 @@ use value::{
     TableNamespace,
 };
 
-use crate::runner::NativeFunctionRunner;
+use crate::{
+    callbacks::{
+        NativeActionCallbacks,
+        NoopCallbacks,
+    },
+    runner::NativeFunctionRunner,
+};
 
 /// Context passed to `#[convex::action]` functions. Actions don't hold
 /// a transaction — they do side-effectful I/O and route sub-calls
 /// through the runner / backend callbacks.
 pub struct ActionCtx<'a, RT: Runtime> {
     pub(crate) runner: Option<Arc<NativeFunctionRunner>>,
+    pub(crate) callbacks: Arc<dyn NativeActionCallbacks>,
     pub(crate) namespace: TableNamespace,
     _rt: std::marker::PhantomData<&'a RT>,
 }
 
 impl<'a, RT: Runtime> ActionCtx<'a, RT> {
+    /// Constructor used by the runner's action dispatch path. The
+    /// callbacks default to [`NoopCallbacks`] so the context is usable
+    /// in unit tests or when the backend adapter isn't attached.
     pub fn new(runner: Option<Arc<NativeFunctionRunner>>, namespace: TableNamespace) -> Self {
+        Self::with_callbacks(runner, Arc::new(NoopCallbacks), namespace)
+    }
+
+    /// Constructor that takes explicit callbacks. The backend adapter
+    /// wires a real `NativeActionCallbacks` through here.
+    pub fn with_callbacks(
+        runner: Option<Arc<NativeFunctionRunner>>,
+        callbacks: Arc<dyn NativeActionCallbacks>,
+        namespace: TableNamespace,
+    ) -> Self {
         Self {
             runner,
+            callbacks,
             namespace,
             _rt: std::marker::PhantomData,
         }
@@ -54,49 +72,42 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
 
     /// Scheduler handle — see [`super::scheduler::Scheduler`].
     pub fn scheduler(&mut self) -> super::scheduler::Scheduler<'_> {
-        super::scheduler::Scheduler::new(super::scheduler::SchedulerScope::Action)
+        super::scheduler::Scheduler::new_with_callbacks(
+            super::scheduler::SchedulerScope::Action,
+            self.namespace,
+            self.callbacks.clone(),
+        )
     }
 
     /// File-storage handle — see [`super::storage::StorageCtx`].
     pub fn storage(&mut self) -> super::storage::StorageCtx<'_> {
-        super::storage::StorageCtx::new()
+        super::storage::StorageCtx::new_with_callbacks(self.namespace, self.callbacks.clone())
     }
 
     /// Invoke a native query by name with already-serialized args.
-    /// Returns the `ConvexValue` the query produced. Typed sub-calls
-    /// land in Step 2.4 once generated args structs exist.
-    ///
-    /// Today this is a stub — full end-to-end sub-call support needs
-    /// the `ActionCallbacks`-backed transaction orchestrator from the
-    /// backend. We surface the API with a clear error so developers
-    /// see the final shape while iterating on the rest of the crate.
+    /// Routes through the attached callbacks.
     pub async fn run_query_raw(
         &mut self,
-        _name: &str,
-        _args: ConvexObject,
+        name: &str,
+        args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
-        anyhow::bail!(
-            "ActionCtx::run_query_raw is not yet wired — pending full backend integration (see \
-             convex-native/COMPOSITE_RUNNER.md)"
-        )
+        self.callbacks
+            .run_query_by_name(self.namespace, name, args)
+            .await
     }
 
-    /// Same as [`run_query_raw`] but for mutations.
+    /// Invoke a native mutation by name with already-serialized args.
     pub async fn run_mutation_raw(
         &mut self,
-        _name: &str,
-        _args: ConvexObject,
+        name: &str,
+        args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
-        anyhow::bail!(
-            "ActionCtx::run_mutation_raw is not yet wired — pending full backend integration"
-        )
+        self.callbacks
+            .run_mutation_by_name(self.namespace, name, args)
+            .await
     }
 
     /// Typed sub-call: invoke a `#[convex::query]` by marker type.
-    /// Returns the function's typed `Output`. Routes through
-    /// `run_query_raw` — which is currently a stub — so this fails
-    /// cleanly with a "not yet wired" error today, but the API surface
-    /// is the final shape.
     pub async fn run_query<F: crate::function_ref::ConvexQueryFunction>(
         &mut self,
         _marker: F,
@@ -125,9 +136,8 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
     }
 
     /// Typed sub-call: invoke a `#[convex::action]` by marker type.
-    /// Unlike queries/mutations, actions run entirely inside the
-    /// native runner (no separate transaction), so this path works
-    /// end-to-end today.
+    /// Actions are dispatched directly through the native runner (no
+    /// new transaction). If no runner is attached, returns an error.
     pub async fn run_action<F: crate::function_ref::ConvexActionFunction>(
         &mut self,
         _marker: F,
@@ -146,9 +156,8 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
         <F::Output as crate::convert::FromConvex>::from_convex(ret)
     }
 
-    /// Whether a native function with the given name is available.
-    /// Useful for smoke-testing registration wiring without needing the
-    /// full execution path.
+    /// Whether a native function with the given name is available on
+    /// the attached runner.
     pub fn has_function(&self, name: &str) -> bool {
         self.runner.as_ref().is_some_and(|r| r.has_function(name))
     }

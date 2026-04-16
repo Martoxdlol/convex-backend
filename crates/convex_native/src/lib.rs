@@ -50,6 +50,7 @@ pub mod __private {
     };
 }
 
+pub mod callbacks;
 pub mod convert;
 pub mod ctx;
 pub mod document;
@@ -61,6 +62,10 @@ pub mod registry;
 pub mod runner;
 pub mod schema;
 
+pub use callbacks::{
+    NativeActionCallbacks,
+    NoopCallbacks,
+};
 pub use convert::{
     FromConvex,
     ToConvex,

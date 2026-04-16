@@ -133,14 +133,34 @@ impl NativeFunctionRunner {
         handler(&mut ctx, args).await
     }
 
-    /// Execute a named native action. Actions don't take a transaction,
-    /// so this is called with no tx handle — the `ActionCtx` will route
-    /// sub-calls back through the runner.
+    /// Execute a named native action with `NoopCallbacks`. Actions that
+    /// need to sub-call queries/mutations or touch storage/scheduler
+    /// should go through [`run_action_with_callbacks`] instead.
     pub async fn run_action(
         self: &Arc<Self>,
         name: &str,
         namespace: TableNamespace,
         args: ConvexObject,
+    ) -> anyhow::Result<ConvexValue> {
+        self.run_action_with_callbacks(
+            name,
+            namespace,
+            args,
+            Arc::new(crate::callbacks::NoopCallbacks),
+        )
+        .await
+    }
+
+    /// Execute a named native action with explicit callbacks. The
+    /// action's `ActionCtx` gets those callbacks, so `run_query`,
+    /// `run_mutation`, `scheduler()`, and `storage()` all route through
+    /// them.
+    pub async fn run_action_with_callbacks(
+        self: &Arc<Self>,
+        name: &str,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
     ) -> anyhow::Result<ConvexValue> {
         let registration = self
             .inner
@@ -152,7 +172,7 @@ impl NativeFunctionRunner {
                 registration.udf_type(),
             );
         };
-        let mut ctx = ActionCtx::<Rt>::new(Some(self.clone()), namespace);
+        let mut ctx = ActionCtx::<Rt>::with_callbacks(Some(self.clone()), callbacks, namespace);
         handler(&mut ctx, args).await
     }
 

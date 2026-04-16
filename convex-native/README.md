@@ -7,13 +7,14 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 ## Current state
 
 **Phase 1 COMPLETE** (steps 1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1,
-1.6.1–1.6.3) **plus Phase 2 2.1–2.7 COMPLETE (surfaces for scheduler /
-storage / HTTP actions defined — backend wiring pending)**. Remaining:
-query/mutation sub-call execution (2.4 raw backend integration),
-scheduler backend (2.5), storage backend (2.6), HTTP serving
-integration (2.7), ActionCallbacks integration (2.8), composite runner
-wiring (1.5), distributed execution (3), hardening (4), and advanced
-types (5).
+1.6.1–1.6.3) **plus Phase 2 2.1–2.8 COMPLETE** (surfaces for scheduler
+/ storage / HTTP actions / callbacks defined and fully wired through
+`NativeActionCallbacks` — real backend adapter still pending).
+
+Remaining: concrete backend adapter implementing
+`NativeActionCallbacks` (future `crates/convex_native_backend` crate),
+composite runner wiring (1.5), distributed execution (3), hardening
+(4), and advanced types (5).
 
 ### What works
 
@@ -55,6 +56,30 @@ pub struct User {
 
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
+
+### New in Phase 2.8 — `NativeActionCallbacks`
+
+- `convex_native::NativeActionCallbacks` — async trait the backend
+  adapter implements to fulfill action-time capabilities:
+  - `run_query_by_name`, `run_mutation_by_name` (sub-calls)
+  - `schedule` (returns a `DeveloperDocumentId` for the scheduled job)
+  - `storage_store` / `storage_get_url` / `storage_delete`
+- `NoopCallbacks` — a built-in fallback that bails with a clear error
+  on every method, so unit tests run without a backend attached.
+- `ActionCtx::with_callbacks(runner, callbacks, namespace)` and
+  `NativeFunctionRunner::run_action_with_callbacks(...)` — how the
+  backend adapter injects a real implementation at dispatch time.
+- `ActionCtx::run_query_raw` / `run_mutation_raw` and the typed
+  `run_query` / `run_mutation` now route through the attached
+  callbacks, and `scheduler()` / `storage()` likewise.
+
+This closes the loop for the in-crate surface: `#[convex::action]`
+bodies can do typed sub-calls, schedule future work, and touch file
+storage entirely through compile-time-checked APIs. All of it works
+end-to-end today against any `Arc<dyn NativeActionCallbacks>` —
+`tests/callbacks_wiring.rs` demonstrates a full mock driving
+sub-queries, sub-mutations, scheduler, and storage through one
+`#[convex::action]` body.
 
 ### New in Phase 2.6 / 2.7 — Storage + HTTP actions
 

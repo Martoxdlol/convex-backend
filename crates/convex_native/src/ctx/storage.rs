@@ -1,12 +1,17 @@
 //! File storage handle exposed to actions and HTTP actions.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` step 2.6.
+//! Per `IMPLEMENTATION_PLAN.md` step 2.6 + 2.8 wiring.
 //!
-//! Today the methods serialize the right types and `bail!` pending
-//! file_storage backend integration. The shape is final so developers
-//! can write code against it.
+//! Methods route through the attached [`NativeActionCallbacks`]. In
+//! unit tests that use `NoopCallbacks`, every method returns a clear
+//! "no callbacks attached" error.
+
+use std::sync::Arc;
 
 use bytes::Bytes;
+use value::TableNamespace;
+
+use crate::callbacks::NativeActionCallbacks;
 
 /// Opaque storage id (uuid-like string). Returned from `store` and
 /// accepted by `get_url` / `delete`.
@@ -28,33 +33,41 @@ impl std::str::FromStr for StorageId {
 }
 
 /// Borrowed storage handle. Obtained via `ActionCtx::storage()` (or
-/// the HTTP action equivalent). Methods are stubbed pending backend
-/// integration — see `COMPOSITE_RUNNER.md`.
+/// the HTTP action equivalent).
 pub struct StorageCtx<'a> {
+    pub(crate) namespace: TableNamespace,
+    pub(crate) callbacks: Arc<dyn NativeActionCallbacks>,
     pub(crate) _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl<'a> StorageCtx<'a> {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new_with_callbacks(
+        namespace: TableNamespace,
+        callbacks: Arc<dyn NativeActionCallbacks>,
+    ) -> Self {
         Self {
+            namespace,
+            callbacks,
             _marker: std::marker::PhantomData,
         }
     }
 
     /// Store raw bytes. Returns a [`StorageId`] that can be handed back
     /// to `get_url` / `delete`.
-    pub async fn store(&self, _body: Bytes, _content_type: &str) -> anyhow::Result<StorageId> {
-        anyhow::bail!("StorageCtx::store is not yet wired — pending file_storage backend")
+    pub async fn store(&self, body: Bytes, content_type: &str) -> anyhow::Result<StorageId> {
+        self.callbacks
+            .storage_store(self.namespace, body, content_type)
+            .await
     }
 
     /// Get a presigned URL for a stored file.
-    pub async fn get_url(&self, _id: StorageId) -> anyhow::Result<Option<String>> {
-        anyhow::bail!("StorageCtx::get_url is not yet wired — pending file_storage backend")
+    pub async fn get_url(&self, id: StorageId) -> anyhow::Result<Option<String>> {
+        self.callbacks.storage_get_url(self.namespace, id).await
     }
 
     /// Delete a stored file. Returns true if the file existed and was
     /// removed.
-    pub async fn delete(&self, _id: StorageId) -> anyhow::Result<bool> {
-        anyhow::bail!("StorageCtx::delete is not yet wired — pending file_storage backend")
+    pub async fn delete(&self, id: StorageId) -> anyhow::Result<bool> {
+        self.callbacks.storage_delete(self.namespace, id).await
     }
 }

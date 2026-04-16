@@ -52,8 +52,19 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
     }
 
     /// Scheduler handle — see [`super::scheduler::Scheduler`].
+    ///
+    /// Today mutations don't have a real scheduler wired up (the
+    /// equivalent backend integration is the `VirtualSchedulerModel`
+    /// path). We return a scheduler bound to [`NoopCallbacks`] so the
+    /// API is callable but returns a clear error until the backend
+    /// integration lands.
     pub fn scheduler(&mut self) -> super::scheduler::Scheduler<'_> {
-        super::scheduler::Scheduler::new(super::scheduler::SchedulerScope::Mutation)
+        use std::sync::Arc;
+        super::scheduler::Scheduler::new_with_callbacks(
+            super::scheduler::SchedulerScope::Mutation,
+            self.namespace,
+            Arc::new(crate::callbacks::NoopCallbacks),
+        )
     }
 }
 
