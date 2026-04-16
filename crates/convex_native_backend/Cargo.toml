@@ -12,6 +12,7 @@ doctest = false
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 common = { workspace = true }
 convex_native = { workspace = true }
 database = { workspace = true }
@@ -20,6 +21,7 @@ keybroker = { workspace = true }
 model = { workspace = true }
 rand = { workspace = true }
 semver = { workspace = true }
+serde_json = { workspace = true }
 sync_types = { workspace = true }
 tokio = { workspace = true }
 udf = { workspace = true }

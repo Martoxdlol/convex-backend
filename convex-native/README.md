@@ -23,12 +23,13 @@ warmup plan),
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
 validation + 5.3 text/vector search + 5.4 bulk `get_many`).
 
-Remaining: the rest of `run_function` native dispatch (building
-`FunctionOutcome` + `FunctionFinalTransaction` for a native call —
-see `COMPOSITE_RUNNER.md`), a concrete `NativeActionCallbacks` impl
-wrapping `udf::ActionCallbacks`, wiring `CompositeFunctionRunner`
-into `make_app()`, real distributed gRPC service (3.1–3.6), and
-the rest of production hardening (4.7 rolling updates).
+Remaining: wiring `CompositeFunctionRunner` into `make_app()` at
+`local_backend/src/lib.rs:214` and an end-to-end smoke test against
+a live backend, real distributed gRPC service (3.1–3.6), and
+production hardening (4.7 rolling updates). Both of the big pieces
+that blocked earlier — native `run_function` dispatch and a real
+`NativeActionCallbacks` adapter — are now in-tree in
+`crates/convex_native_backend/`.
 
 ### What works
 

@@ -13,6 +13,8 @@
 //! `npm-packages/` rush install + build step in place. `convex_native`
 //! itself stays lightweight and has no isolate dep.
 
+mod callbacks_adapter;
 mod composite_runner;
 
+pub use callbacks_adapter::BackendCallbacks;
 pub use composite_runner::CompositeFunctionRunner;

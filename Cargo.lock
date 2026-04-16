@@ -2333,6 +2333,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "common",
  "convex_native",
  "convex_sync_types",
@@ -2342,6 +2343,7 @@ dependencies = [
  "model",
  "rand 0.9.4",
  "semver",
+ "serde_json",
  "tokio",
  "udf",
  "usage_tracking",
