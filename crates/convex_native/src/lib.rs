@@ -34,11 +34,16 @@ pub mod convex {
 #[doc(hidden)]
 pub mod __private {
     pub use common::{
-        bootstrap_model::index::database_index::IndexedFields,
+        bootstrap_model::index::{
+            database_index::IndexedFields,
+            vector_index::VectorDimensions,
+        },
         paths::FieldPath,
         schemas::{
             IndexSchema,
             TableDefinition,
+            TextIndexSchema,
+            VectorIndexSchema,
         },
         types::IndexDescriptor,
     };
@@ -52,6 +57,7 @@ pub mod __private {
 
 pub mod backend;
 pub mod callbacks;
+pub mod circuit_breaker;
 pub mod convert;
 pub mod ctx;
 pub mod distributed;
@@ -73,6 +79,10 @@ pub use backend::{
 pub use callbacks::{
     NativeActionCallbacks,
     NoopCallbacks,
+};
+pub use circuit_breaker::{
+    CircuitBreaker,
+    CircuitBreakerConfig,
 };
 pub use convert::{
     FromConvex,

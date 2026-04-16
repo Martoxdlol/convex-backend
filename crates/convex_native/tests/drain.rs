@@ -58,3 +58,49 @@ async fn await_drain_returns_true_when_no_inflight() {
     assert!(drained);
     assert_eq!(runner.in_flight(), 0);
 }
+
+#[convex::action]
+pub async fn always_fails(_ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
+    anyhow::bail!("nope")
+}
+
+#[tokio::test]
+async fn circuit_breaker_opens_after_threshold() {
+    use convex_native::{
+        CircuitBreaker,
+        CircuitBreakerConfig,
+    };
+    use value::ConvexObject;
+
+    let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+        failure_threshold: 2,
+        cooldown: Duration::from_secs(5),
+    }));
+    let runner = Arc::new(
+        NativeFunctionRunner::from_inventory()
+            .expect("from_inventory")
+            .with_circuit_breaker(cb.clone()),
+    );
+
+    let empty_obj = ConvexObject::try_from(std::collections::BTreeMap::<
+        value::FieldName,
+        value::ConvexValue,
+    >::new())
+    .unwrap();
+
+    // Two consecutive failures open the breaker.
+    for _ in 0..2 {
+        let _ = runner
+            .run_action("always_fails", TableNamespace::Global, empty_obj.clone())
+            .await
+            .unwrap_err();
+    }
+
+    // Third call is rejected by the breaker (not by the handler).
+    let err = runner
+        .run_action("always_fails", TableNamespace::Global, empty_obj)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("circuit breaker"), "got: {err}");
+    assert!(cb.is_open("always_fails"));
+}

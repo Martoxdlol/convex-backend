@@ -9,14 +9,16 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 **Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1, 1.5.2,
 1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.5
 mode alias + executor trait stub), **Phase 4 partial** (4.2 metrics
-sink + 4.3 graceful drain + 4.4 timeouts), **Phase 5 partial** (5.1 schema diff + 5.2
-compile-time index validation + 5.4 bulk `get_many`).
+sink + 4.3 graceful drain + 4.4 timeouts + 4.5 circuit breaker),
+**Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
+validation + 5.3 text/vector search + 5.4 bulk `get_many`).
 
 Remaining: concrete backend adapter implementing
 `NativeActionCallbacks` and wiring the composite runner into
 `make_app()` (future `crates/convex_native_backend` crate — 1.5.1 /
 1.5.3), real distributed gRPC service (3.1–3.6), the rest of
-production hardening (4.1 + 4.3–4.7), typed vector/text search (5.3).
+production hardening (4.1 fastrace spans, 4.6 index cache warming,
+4.7 rolling updates).
 
 ### What works
 
@@ -58,6 +60,42 @@ pub struct User {
 
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
+
+### New in Phase 4.5 — circuit breaker
+
+- `CircuitBreaker` with configurable `failure_threshold` and
+  `cooldown` (`CircuitBreakerConfig`).
+- `NativeFunctionRunner::with_circuit_breaker(Arc<CircuitBreaker>)`
+  installs the breaker. Failures are counted per function name. Past
+  the threshold the breaker opens: new calls error with a clear
+  "circuit breaker is open" message. After `cooldown` elapses one
+  probe call passes through in half-open state; if it succeeds the
+  breaker closes again.
+- Minimal today (consecutive-failure counter); can later swap for the
+  rolling-window flavor used elsewhere in the codebase.
+
+### New in Phase 5.3 — text + vector search indexes
+
+`#[derive(ConvexDocument)]` now understands:
+
+```rust
+#[convex(text_index(
+    name = "by_body",
+    search_field = "body",
+    filter_fields = ["category", "author"]
+))]
+#[convex(vector_index(
+    name = "by_embedding",
+    vector_field = "embedding",
+    dimensions = 1536,
+    filter_fields = ["category"]
+))]
+```
+
+These emit proper `TextIndexSchema` and `VectorIndexSchema` entries
+into `TableDefinition::text_indexes` / `vector_indexes`. Field
+references are validated at compile time against the struct's
+declared fields (same rules as database indexes).
 
 ### New in Phase 4.3 — graceful shutdown drain
 
@@ -377,7 +415,8 @@ crates/convex_native/
     ├── golden_path.rs                      -- full realistic app end-to-end
     ├── http_actions.rs                     -- HTTP action registration + request/response
     ├── metrics_wiring.rs                   -- runner metrics + timeout enforcement
-    └── runner_dispatch.rs                  -- NativeFunctionRunner lookup & dispatch
+    ├── runner_dispatch.rs                  -- NativeFunctionRunner lookup & dispatch
+    └── search_indexes.rs                   -- text/vector search index registration
 
 crates/convex_macro/
 ├── src/

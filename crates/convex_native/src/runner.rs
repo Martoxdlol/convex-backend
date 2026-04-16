@@ -43,6 +43,7 @@ use value::{
 };
 
 use crate::{
+    circuit_breaker::CircuitBreaker,
     ctx::{
         action::ActionCtx,
         mutation::MutationCtx,
@@ -88,6 +89,7 @@ pub struct NativeFunctionRunner {
     metrics: Arc<dyn NativeMetricsSink>,
     default_timeout: Option<Duration>,
     drain: Arc<DrainState>,
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
 }
 
 impl NativeFunctionRunner {
@@ -101,7 +103,15 @@ impl NativeFunctionRunner {
             metrics: Arc::new(NoopMetrics),
             default_timeout: None,
             drain: Arc::new(DrainState::new()),
+            circuit_breaker: None,
         })
+    }
+
+    /// Attach a shared circuit breaker. Clones inherit the same
+    /// breaker so repeated failures from one runner affect all.
+    pub fn with_circuit_breaker(mut self, breaker: Arc<CircuitBreaker>) -> Self {
+        self.circuit_breaker = Some(breaker);
+        self
     }
 
     /// Begin draining: new invocations are rejected. Clones of this
@@ -142,6 +152,19 @@ impl NativeFunctionRunner {
             anyhow::bail!("native runner is draining — rejecting {name:?}");
         }
         Ok(())
+    }
+
+    fn check_breaker(&self, name: &str) -> anyhow::Result<()> {
+        if let Some(cb) = &self.circuit_breaker {
+            cb.before_call(name)?;
+        }
+        Ok(())
+    }
+
+    fn report_breaker(&self, name: &str, ok: bool) {
+        if let Some(cb) = &self.circuit_breaker {
+            cb.after_call(name, ok);
+        }
     }
 
     fn enter(&self) -> InFlightGuard<'_> {
@@ -225,6 +248,7 @@ impl NativeFunctionRunner {
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
+        self.check_breaker(name)?;
         let _guard = self.enter();
         let registration = self
             .inner
@@ -239,6 +263,7 @@ impl NativeFunctionRunner {
         let mut ctx = QueryCtx::new(tx, namespace);
         let started = Instant::now();
         let result = self.run_with_timeout(handler(&mut ctx, args), name).await;
+        self.report_breaker(name, result.is_ok());
         self.metrics.record(
             name,
             UdfType::Query,
@@ -262,6 +287,7 @@ impl NativeFunctionRunner {
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
+        self.check_breaker(name)?;
         let _guard = self.enter();
         let registration = self
             .inner
@@ -276,6 +302,7 @@ impl NativeFunctionRunner {
         let mut ctx = MutationCtx::new(tx, namespace);
         let started = Instant::now();
         let result = self.run_with_timeout(handler(&mut ctx, args), name).await;
+        self.report_breaker(name, result.is_ok());
         self.metrics.record(
             name,
             UdfType::Mutation,
@@ -319,6 +346,7 @@ impl NativeFunctionRunner {
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
     ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
+        self.check_breaker(name)?;
         let _guard = self.enter();
         let registration = self
             .inner
@@ -333,6 +361,7 @@ impl NativeFunctionRunner {
         let mut ctx = ActionCtx::<Rt>::with_callbacks(Some(self.clone()), callbacks, namespace);
         let started = Instant::now();
         let result = self.run_with_timeout(handler(&mut ctx, args), name).await;
+        self.report_breaker(name, result.is_ok());
         self.metrics.record(
             name,
             UdfType::Action,

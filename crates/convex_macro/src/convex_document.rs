@@ -44,6 +44,19 @@ struct IndexSpec {
     fields: Vec<String>,
 }
 
+struct TextIndexSpec {
+    name: String,
+    search_field: String,
+    filter_fields: Vec<String>,
+}
+
+struct VectorIndexSpec {
+    name: String,
+    vector_field: String,
+    dimensions: u32,
+    filter_fields: Vec<String>,
+}
+
 struct FieldSpec {
     variant: Ident,
     ident: Ident,
@@ -87,12 +100,16 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let table_name = parse_table_attr(attrs)?;
     let indexes = parse_index_attrs(attrs)?;
+    let text_indexes = parse_text_index_attrs(attrs)?;
+    let vector_indexes = parse_vector_index_attrs(attrs)?;
     let fields = parse_fields(data_struct, ident)?;
 
     // Compile-time validation: each index field must reference a
     // declared struct field (matching by snake_case name, which is
     // what we use on the wire).
     validate_index_fields(&indexes, &fields)?;
+    validate_text_index_fields(&text_indexes, &fields)?;
+    validate_vector_index_fields(&vector_indexes, &fields)?;
 
     let struct_ident = ident;
     let field_enum_ident = format_ident!("{struct_ident}Field");
@@ -112,6 +129,8 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         &table_name,
         &fields,
         &indexes,
+        &text_indexes,
+        &vector_indexes,
     );
     let registration = build_registration(struct_ident, &table_name);
 
@@ -236,6 +255,271 @@ fn parse_index_attrs(attrs: &[Attribute]) -> syn::Result<Vec<IndexSpec>> {
         }
     }
     Ok(indexes)
+}
+
+fn parse_text_index_attrs(attrs: &[Attribute]) -> syn::Result<Vec<TextIndexSpec>> {
+    let mut out = Vec::new();
+    for attr in attrs {
+        if !attr.path().is_ident("convex") {
+            continue;
+        }
+        let nested = attr
+            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            .map_err(|e| syn::Error::new(attr.span(), format!("malformed #[convex] attr: {e}")))?;
+        for meta in nested {
+            let Meta::List(list) = &meta else {
+                continue;
+            };
+            if !list.path.is_ident("text_index") {
+                continue;
+            }
+            let inner = list
+                .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                .map_err(|e| {
+                    syn::Error::new(list.span(), format!("malformed text_index() args: {e}"))
+                })?;
+            let mut name = None;
+            let mut search_field = None;
+            let mut filter_fields: Option<Vec<String>> = None;
+            for entry in inner {
+                let Meta::NameValue(nv) = entry else {
+                    continue;
+                };
+                if nv.path.is_ident("name") {
+                    let Expr::Lit(ExprLit {
+                        lit: Lit::Str(s), ..
+                    }) = nv.value
+                    else {
+                        return Err(syn::Error::new(nv.path.span(), "name = must be a string"));
+                    };
+                    name = Some(s.value());
+                } else if nv.path.is_ident("search_field") {
+                    let Expr::Lit(ExprLit {
+                        lit: Lit::Str(s), ..
+                    }) = nv.value
+                    else {
+                        return Err(syn::Error::new(
+                            nv.path.span(),
+                            "search_field = must be a string",
+                        ));
+                    };
+                    search_field = Some(s.value());
+                } else if nv.path.is_ident("filter_fields") {
+                    let Expr::Array(arr) = nv.value else {
+                        return Err(syn::Error::new(
+                            nv.path.span(),
+                            "filter_fields = must be an array of strings",
+                        ));
+                    };
+                    let mut collected = Vec::new();
+                    for element in arr.elems {
+                        let Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }) = element
+                        else {
+                            return Err(syn::Error::new(
+                                arr.bracket_token.span.span(),
+                                "filter_fields = must be an array of string literals",
+                            ));
+                        };
+                        collected.push(s.value());
+                    }
+                    filter_fields = Some(collected);
+                }
+            }
+            let name = name.ok_or_else(|| {
+                syn::Error::new(list.span(), "text_index(...) requires name = \"...\"")
+            })?;
+            let search_field = search_field.ok_or_else(|| {
+                syn::Error::new(
+                    list.span(),
+                    "text_index(...) requires search_field = \"...\"",
+                )
+            })?;
+            out.push(TextIndexSpec {
+                name,
+                search_field,
+                filter_fields: filter_fields.unwrap_or_default(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn parse_vector_index_attrs(attrs: &[Attribute]) -> syn::Result<Vec<VectorIndexSpec>> {
+    let mut out = Vec::new();
+    for attr in attrs {
+        if !attr.path().is_ident("convex") {
+            continue;
+        }
+        let nested = attr
+            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            .map_err(|e| syn::Error::new(attr.span(), format!("malformed #[convex] attr: {e}")))?;
+        for meta in nested {
+            let Meta::List(list) = &meta else {
+                continue;
+            };
+            if !list.path.is_ident("vector_index") {
+                continue;
+            }
+            let inner = list
+                .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                .map_err(|e| {
+                    syn::Error::new(list.span(), format!("malformed vector_index() args: {e}"))
+                })?;
+            let mut name = None;
+            let mut vector_field = None;
+            let mut dimensions = None;
+            let mut filter_fields: Option<Vec<String>> = None;
+            for entry in inner {
+                let Meta::NameValue(nv) = entry else {
+                    continue;
+                };
+                if nv.path.is_ident("name") {
+                    let Expr::Lit(ExprLit {
+                        lit: Lit::Str(s), ..
+                    }) = nv.value
+                    else {
+                        return Err(syn::Error::new(nv.path.span(), "name = must be a string"));
+                    };
+                    name = Some(s.value());
+                } else if nv.path.is_ident("vector_field") {
+                    let Expr::Lit(ExprLit {
+                        lit: Lit::Str(s), ..
+                    }) = nv.value
+                    else {
+                        return Err(syn::Error::new(
+                            nv.path.span(),
+                            "vector_field = must be a string",
+                        ));
+                    };
+                    vector_field = Some(s.value());
+                } else if nv.path.is_ident("dimensions") {
+                    let Expr::Lit(ExprLit {
+                        lit: Lit::Int(n), ..
+                    }) = nv.value
+                    else {
+                        return Err(syn::Error::new(
+                            nv.path.span(),
+                            "dimensions = must be an integer literal",
+                        ));
+                    };
+                    dimensions = Some(n.base10_parse::<u32>()?);
+                } else if nv.path.is_ident("filter_fields") {
+                    let Expr::Array(arr) = nv.value else {
+                        return Err(syn::Error::new(
+                            nv.path.span(),
+                            "filter_fields = must be an array of strings",
+                        ));
+                    };
+                    let mut collected = Vec::new();
+                    for element in arr.elems {
+                        let Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }) = element
+                        else {
+                            return Err(syn::Error::new(
+                                arr.bracket_token.span.span(),
+                                "filter_fields = must be an array of string literals",
+                            ));
+                        };
+                        collected.push(s.value());
+                    }
+                    filter_fields = Some(collected);
+                }
+            }
+            let name = name.ok_or_else(|| {
+                syn::Error::new(list.span(), "vector_index(...) requires name = \"...\"")
+            })?;
+            let vector_field = vector_field.ok_or_else(|| {
+                syn::Error::new(
+                    list.span(),
+                    "vector_index(...) requires vector_field = \"...\"",
+                )
+            })?;
+            let dimensions = dimensions.ok_or_else(|| {
+                syn::Error::new(list.span(), "vector_index(...) requires dimensions = <int>")
+            })?;
+            out.push(VectorIndexSpec {
+                name,
+                vector_field,
+                dimensions,
+                filter_fields: filter_fields.unwrap_or_default(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn validate_text_index_fields(indexes: &[TextIndexSpec], fields: &[FieldSpec]) -> syn::Result<()> {
+    let declared: std::collections::BTreeSet<&str> =
+        fields.iter().map(|f| f.name.as_str()).collect();
+    for idx in indexes {
+        let top = idx
+            .search_field
+            .split('.')
+            .next()
+            .unwrap_or(&idx.search_field);
+        if !declared.contains(top) {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "text_index {:?} references unknown search_field {:?}",
+                    idx.name, idx.search_field,
+                ),
+            ));
+        }
+        for f in &idx.filter_fields {
+            let top = f.split('.').next().unwrap_or(f);
+            if !declared.contains(top) {
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!(
+                        "text_index {:?} references unknown filter_field {:?}",
+                        idx.name, f,
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_vector_index_fields(
+    indexes: &[VectorIndexSpec],
+    fields: &[FieldSpec],
+) -> syn::Result<()> {
+    let declared: std::collections::BTreeSet<&str> =
+        fields.iter().map(|f| f.name.as_str()).collect();
+    for idx in indexes {
+        let top = idx
+            .vector_field
+            .split('.')
+            .next()
+            .unwrap_or(&idx.vector_field);
+        if !declared.contains(top) {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "vector_index {:?} references unknown vector_field {:?}",
+                    idx.name, idx.vector_field,
+                ),
+            ));
+        }
+        for f in &idx.filter_fields {
+            let top = f.split('.').next().unwrap_or(f);
+            if !declared.contains(top) {
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!(
+                        "vector_index {:?} references unknown filter_field {:?}",
+                        idx.name, f,
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn parse_fields(ds: &DataStruct, struct_ident: &Ident) -> syn::Result<Vec<FieldSpec>> {
@@ -463,6 +747,8 @@ fn build_trait_impl(
     table_name: &str,
     fields: &[FieldSpec],
     indexes: &[IndexSpec],
+    text_indexes: &[TextIndexSpec],
+    vector_indexes: &[VectorIndexSpec],
 ) -> TokenStream2 {
     let field_to_object = fields.iter().map(|f| {
         let id = &f.ident;
@@ -523,6 +809,66 @@ fn build_trait_impl(
         }
     });
 
+    // Text index definitions -> TextIndexSchema entries.
+    let text_index_entries = text_indexes.iter().map(|t| {
+        let name = &t.name;
+        let search_field = &t.search_field;
+        let filter_fields = t.filter_fields.iter().map(|f| {
+            quote! {
+                __filter.insert(#f.parse::<::convex_native::__private::FieldPath>()?);
+            }
+        });
+        quote! {
+            {
+                let descriptor = ::convex_native::__private::IndexDescriptor::new(#name)?;
+                let search_path: ::convex_native::__private::FieldPath =
+                    #search_field.parse()?;
+                let mut __filter: ::std::collections::BTreeSet<
+                    ::convex_native::__private::FieldPath,
+                > = ::std::collections::BTreeSet::new();
+                #(#filter_fields)*
+                let schema = ::convex_native::__private::TextIndexSchema::new(
+                    descriptor.clone(),
+                    search_path,
+                    __filter,
+                )?;
+                __text_indexes.insert(descriptor, schema);
+            }
+        }
+    });
+
+    // Vector index definitions -> VectorIndexSchema entries.
+    let vector_index_entries = vector_indexes.iter().map(|v| {
+        let name = &v.name;
+        let vector_field = &v.vector_field;
+        let dimensions = v.dimensions;
+        let filter_fields = v.filter_fields.iter().map(|f| {
+            quote! {
+                __filter.insert(#f.parse::<::convex_native::__private::FieldPath>()?);
+            }
+        });
+        quote! {
+            {
+                let descriptor = ::convex_native::__private::IndexDescriptor::new(#name)?;
+                let vector_path: ::convex_native::__private::FieldPath =
+                    #vector_field.parse()?;
+                let dims: ::convex_native::__private::VectorDimensions =
+                    ::std::convert::TryFrom::try_from(#dimensions as u32)?;
+                let mut __filter: ::std::collections::BTreeSet<
+                    ::convex_native::__private::FieldPath,
+                > = ::std::collections::BTreeSet::new();
+                #(#filter_fields)*
+                let schema = ::convex_native::__private::VectorIndexSchema::new(
+                    descriptor.clone(),
+                    vector_path,
+                    dims,
+                    __filter,
+                )?;
+                __vector_indexes.insert(descriptor, schema);
+            }
+        }
+    });
+
     quote! {
         impl ::convex_native::ConvexDocument for #struct_ident {
             type Field = #field_enum_ident;
@@ -543,13 +889,25 @@ fn build_trait_impl(
                         ::convex_native::__private::IndexSchema,
                     > = ::std::collections::BTreeMap::new();
                     #(#index_entries)*
+                    #[allow(unused_mut)]
+                    let mut __text_indexes: ::std::collections::BTreeMap<
+                        ::convex_native::__private::IndexDescriptor,
+                        ::convex_native::__private::TextIndexSchema,
+                    > = ::std::collections::BTreeMap::new();
+                    #(#text_index_entries)*
+                    #[allow(unused_mut)]
+                    let mut __vector_indexes: ::std::collections::BTreeMap<
+                        ::convex_native::__private::IndexDescriptor,
+                        ::convex_native::__private::VectorIndexSchema,
+                    > = ::std::collections::BTreeMap::new();
+                    #(#vector_index_entries)*
                     ::std::result::Result::Ok(::convex_native::__private::TableDefinition {
                         table_name: <Self as ::convex_native::ConvexDocument>::table_name(),
                         indexes: __indexes,
                         staged_db_indexes: ::std::default::Default::default(),
-                        text_indexes: ::std::default::Default::default(),
+                        text_indexes: __text_indexes,
                         staged_text_indexes: ::std::default::Default::default(),
-                        vector_indexes: ::std::default::Default::default(),
+                        vector_indexes: __vector_indexes,
                         staged_vector_indexes: ::std::default::Default::default(),
                         document_type: ::std::option::Option::None,
                     })
