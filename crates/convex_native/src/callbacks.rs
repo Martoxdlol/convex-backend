@@ -65,6 +65,19 @@ pub trait NativeActionCallbacks: Send + Sync + 'static {
         delay: Duration,
     ) -> anyhow::Result<DeveloperDocumentId>;
 
+    /// Cancel a previously scheduled job. Returns `Ok(())` whether or
+    /// not the job was still pending — idempotent.
+    async fn cancel_scheduled(
+        &self,
+        namespace: TableNamespace,
+        id: DeveloperDocumentId,
+    ) -> anyhow::Result<()> {
+        let _ = (namespace, id);
+        anyhow::bail!(
+            "NativeActionCallbacks::cancel_scheduled not implemented by this backend adapter"
+        )
+    }
+
     /// Store a blob in file storage. Returns its new id.
     async fn storage_store(
         &self,
@@ -120,6 +133,14 @@ impl NativeActionCallbacks for NoopCallbacks {
         _delay: Duration,
     ) -> anyhow::Result<DeveloperDocumentId> {
         anyhow::bail!("no callbacks attached — cannot schedule {name:?}")
+    }
+
+    async fn cancel_scheduled(
+        &self,
+        _ns: TableNamespace,
+        _id: DeveloperDocumentId,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("no callbacks attached — cannot cancel scheduled job")
     }
 
     async fn storage_store(

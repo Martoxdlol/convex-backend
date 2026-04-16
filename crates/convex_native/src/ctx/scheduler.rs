@@ -94,4 +94,9 @@ impl<'a> Scheduler<'a> {
             .schedule(self.namespace, F::name(), obj, delay)
             .await
     }
+
+    /// Cancel a previously scheduled job. Idempotent.
+    pub async fn cancel(&self, id: DeveloperDocumentId) -> anyhow::Result<()> {
+        self.callbacks.cancel_scheduled(self.namespace, id).await
+    }
 }
