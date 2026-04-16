@@ -77,16 +77,19 @@ only; `convex_macro` is re-exported.
 - `MutationCtx<'tx, RT>` / `MutationDb<'tx, RT>` wrap the same
   transaction and add `insert`, `patch`, `replace`, `delete` — all typed
   by `ConvexDocument` / `ConvexPatch`.
-- `TypedQueryBuilder` exists and type-checks against `T::Index` and
-  `T::Field`, but terminal methods (`.collect()`, `.first()`) return an
-  error until the runner (Phase 1.4) wires them through.
+- `TypedQueryBuilder` type-checks against `T::Index` and `T::Field`.
+  Terminal methods `.collect()` / `.first()` now actually execute via
+  `database::DeveloperQuery`: index-range source when `.with_index()`
+  was used, full-table-scan otherwise (filters without an index still
+  rejected at runtime for now).
 
 ### What doesn't work yet
 
 - **No runner.** There is no `NativeFunctionRunner` — functions can't be
-  called end-to-end. That lands in Phase 1.4.
-- **Query execution.** `TypedQueryBuilder::collect/first/page` currently
-  `bail!` — the wire-up to `DeveloperQuery`/`RangeRequest` is pending.
+  called end-to-end yet. That lands in Phase 1.4.
+- **Non-indexed filters.** `.eq()` currently requires
+  `.with_index(...)`. Full-table-scan + post-scan filtering is a later
+  convenience, not MVP-critical.
 - **No function macros.** `#[convex::query]`, `#[convex::mutation]`, and
   `#[convex::action]` are not implemented. Phase 1.2.4 + 1.2.5 + 2.2.
 - **No context wrappers.** `QueryCtx`, `MutationCtx`, `ActionCtx` don't
