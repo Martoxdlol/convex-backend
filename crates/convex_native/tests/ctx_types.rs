@@ -42,6 +42,18 @@ async fn _widget_query<RT: common::runtime::Runtime>(ctx: &mut QueryCtx<'_, RT>)
         .first()
         .await;
 
+    // Range operators type-check against the declared field.
+    let _ = ctx
+        .db()
+        .query::<Widget>()
+        .with_index(WidgetIndex::ByOwner)
+        .gte(WidgetField::Count, 10_i64)
+        .unwrap()
+        .lt(WidgetField::Count, 100_i64)
+        .unwrap()
+        .count()
+        .await;
+
     let id: Id<Widget> = "jd72jdw7t0x9grf04vg5f65t0s7g4k1d".parse().unwrap();
     let _doc: Option<Widget> = ctx.db().get(id).await.unwrap();
 }

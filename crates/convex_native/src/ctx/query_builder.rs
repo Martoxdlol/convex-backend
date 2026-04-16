@@ -84,10 +84,36 @@ pub struct TypedQueryBuilder<'db, 'tx, RT: Runtime, T: ConvexDocument> {
     _marker: PhantomData<fn() -> T>,
 }
 
-struct EqFilter {
+#[allow(dead_code)] // fields are read when we lower to IndexRangeExpression.
+struct RangeFilter {
     field: &'static str,
+    op: RangeOp,
     value: ConvexValue,
 }
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum RangeOp {
+    Eq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+}
+
+impl RangeOp {
+    fn to_expr(self, field: common::paths::FieldPath, value: ConvexValue) -> IndexRangeExpression {
+        match self {
+            RangeOp::Eq => IndexRangeExpression::Eq(field, MaybeValue(Some(value))),
+            RangeOp::Gt => IndexRangeExpression::Gt(field, MaybeValue(Some(value))),
+            RangeOp::Gte => IndexRangeExpression::Gte(field, MaybeValue(Some(value))),
+            RangeOp::Lt => IndexRangeExpression::Lt(field, MaybeValue(Some(value))),
+            RangeOp::Lte => IndexRangeExpression::Lte(field, MaybeValue(Some(value))),
+        }
+    }
+}
+
+// Legacy alias kept to preserve the existing public API shape.
+type EqFilter = RangeFilter;
 
 impl<'db, 'tx, RT: Runtime, T: ConvexDocument> TypedQueryBuilder<'db, 'tx, RT, T> {
     pub(crate) fn new(db: &'db mut QueryDb<'tx, RT>) -> Self {
@@ -119,12 +145,59 @@ impl<'db, 'tx, RT: Runtime, T: ConvexDocument> TypedQueryBuilder<'db, 'tx, RT, T
     /// Equality filter on a field of `T`. `T::Field` ensures compile-time
     /// field validation.
     pub fn eq<V: ToConvex>(mut self, field: T::Field, value: V) -> anyhow::Result<Self> {
-        let v = value.to_convex()?;
-        self.filters.push(EqFilter {
+        self.filters.push(RangeFilter {
             field: field.as_str(),
-            value: v,
+            op: RangeOp::Eq,
+            value: value.to_convex()?,
         });
         Ok(self)
+    }
+
+    /// Strict greater-than comparator: index field must be `>` `value`.
+    pub fn gt<V: ToConvex>(mut self, field: T::Field, value: V) -> anyhow::Result<Self> {
+        self.filters.push(RangeFilter {
+            field: field.as_str(),
+            op: RangeOp::Gt,
+            value: value.to_convex()?,
+        });
+        Ok(self)
+    }
+
+    /// Greater-than-or-equal comparator.
+    pub fn gte<V: ToConvex>(mut self, field: T::Field, value: V) -> anyhow::Result<Self> {
+        self.filters.push(RangeFilter {
+            field: field.as_str(),
+            op: RangeOp::Gte,
+            value: value.to_convex()?,
+        });
+        Ok(self)
+    }
+
+    /// Strict less-than comparator.
+    pub fn lt<V: ToConvex>(mut self, field: T::Field, value: V) -> anyhow::Result<Self> {
+        self.filters.push(RangeFilter {
+            field: field.as_str(),
+            op: RangeOp::Lt,
+            value: value.to_convex()?,
+        });
+        Ok(self)
+    }
+
+    /// Less-than-or-equal comparator.
+    pub fn lte<V: ToConvex>(mut self, field: T::Field, value: V) -> anyhow::Result<Self> {
+        self.filters.push(RangeFilter {
+            field: field.as_str(),
+            op: RangeOp::Lte,
+            value: value.to_convex()?,
+        });
+        Ok(self)
+    }
+
+    /// Terminal: count matching documents without materializing them.
+    /// Runs the query under the hood, iterating to completion; future
+    /// work can replace this with a proper count optimization.
+    pub async fn count(self) -> anyhow::Result<usize> {
+        Ok(self.collect().await?.len())
     }
 
     pub fn order(mut self, order: Order) -> Self {
@@ -208,7 +281,7 @@ impl QueryHolder {
 fn make_query<T: ConvexDocument>(
     index: Option<&'static str>,
     index_fields: &'static [&'static str],
-    filters: Vec<EqFilter>,
+    filters: Vec<RangeFilter>,
     order: Order,
     limit: Option<usize>,
 ) -> anyhow::Result<QueryHolder> {
@@ -216,16 +289,13 @@ fn make_query<T: ConvexDocument>(
     let source = match index {
         Some(idx) => {
             let mut range: Vec<IndexRangeExpression> = Vec::new();
-            for EqFilter { field, value } in filters {
+            for RangeFilter { field, op, value } in filters {
                 anyhow::ensure!(
                     index_fields.contains(&field),
-                    "eq() field {field:?} is not part of index {idx:?}",
+                    "filter field {field:?} is not part of index {idx:?}",
                 );
                 let field_path: common::paths::FieldPath = field.parse()?;
-                range.push(IndexRangeExpression::Eq(
-                    field_path,
-                    MaybeValue(Some(value)),
-                ));
+                range.push(op.to_expr(field_path, value));
             }
             let descriptor = IndexDescriptor::new(idx.to_string())?;
             let name = IndexName::new(T::table_name(), descriptor)?;
@@ -238,7 +308,7 @@ fn make_query<T: ConvexDocument>(
         None => {
             anyhow::ensure!(
                 filters.is_empty(),
-                "TypedQueryBuilder: .eq() requires .with_index(...) in phase 1",
+                "TypedQueryBuilder: filters require .with_index(...) in phase 1",
             );
             QuerySource::FullTableScan(FullTableScan {
                 table_name: T::table_name(),
