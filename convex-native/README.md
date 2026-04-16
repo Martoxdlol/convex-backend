@@ -153,9 +153,13 @@ fn _nightly_cleanup_cron() {}
 Attaches to a placeholder item (name doesn't matter) and emits a
 `CronRegistration`. `ConvexBackend::new().with_crons().build()`
 collects everything into `BuiltBackend::crons`, and introspection
-includes a `crons.entries[]` array. Actually *running* the
-schedule on time is still the backend adapter's responsibility —
-this crate stops at registration.
+includes a `crons.entries[]` array.
+`BuiltBackend::validate()` cross-checks every cron `target` exists
+in the function registry and has the matching `target_kind` —
+call it at startup so misconfigured crons crash the binary rather
+than silently skipping.
+Actually *running* the schedule on time is still the backend
+adapter's responsibility — this crate stops at registration.
 
 ### New — `#[convex::query(internal)]` modifier
 

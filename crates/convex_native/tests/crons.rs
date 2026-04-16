@@ -50,3 +50,23 @@ fn crons_are_collected() {
     let hb = registry.lookup("heartbeat").expect("heartbeat");
     assert_eq!(hb.schedule, "*/5 * * * *");
 }
+
+#[test]
+fn builder_validate_accepts_consistent_crons() {
+    use std::sync::Arc;
+
+    use convex_native::{
+        ConvexBackend,
+        NoopCallbacks,
+    };
+    let built = ConvexBackend::new()
+        .with_native_functions()
+        .with_native_schema()
+        .with_crons()
+        .with_callbacks(Arc::new(NoopCallbacks))
+        .build()
+        .unwrap();
+    // Both registered crons point at `nightly_cleanup`, which is a
+    // real mutation — validation should pass.
+    built.validate().expect("validate");
+}

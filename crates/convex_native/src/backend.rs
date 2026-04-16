@@ -173,6 +173,41 @@ impl BuiltBackend {
         serde_json::to_string_pretty(&self.describe_json()).unwrap_or_else(|_| String::new())
     }
 
+    /// Cross-check internal consistency — today that's verifying every
+    /// `#[convex::cron]` target actually names a registered mutation
+    /// or action. Call this at startup so misconfigured crons crash
+    /// the binary before accepting traffic rather than silently
+    /// skipping.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let (Some(crons), Some(runner)) = (self.crons.as_ref(), self.runner.as_ref()) else {
+            // If either side is missing we can't validate; treat as OK.
+            return Ok(());
+        };
+        for entry in crons.iter() {
+            let registration = runner.get(entry.target).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cron {:?} targets unknown function {:?}",
+                    entry.name,
+                    entry.target,
+                )
+            })?;
+            let expected_kind = match registration.handler {
+                crate::registry::HandlerFn::Query(_) => "query",
+                crate::registry::HandlerFn::Mutation(_) => "mutation",
+                crate::registry::HandlerFn::Action(_) => "action",
+            };
+            anyhow::ensure!(
+                expected_kind == entry.target_kind,
+                "cron {:?} target_kind = {:?}, but function {:?} is a {}",
+                entry.name,
+                entry.target_kind,
+                entry.target,
+                expected_kind,
+            );
+        }
+        Ok(())
+    }
+
     /// Run a registered native action directly. Useful for integration
     /// tests that want to exercise an action without standing up the
     /// full backend.
