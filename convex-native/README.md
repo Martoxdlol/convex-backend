@@ -6,7 +6,8 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 
 ## Current state
 
-**Phase 1 — Layer 0, Layer 1, Layer 2 (steps 1.0.1 → 1.2.3): COMPLETE**
+**Phase 1 — Layers 0, 1, 2, 3 (steps 1.0.1 → 1.3.3): COMPLETE (with
+Phase-1.4-gated terminal methods on TypedQueryBuilder)**
 
 ### What works
 
@@ -49,10 +50,24 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
+### New in Phase 1 Layer 3 (steps 1.3.1–1.3.3)
+
+- `QueryCtx<'tx, RT>` / `QueryDb<'tx, RT>` wrap a
+  `database::Transaction<RT>`. `db().get::<T>(Id<T>)` returns
+  `Option<T>` parsed through the derived `from_convex_object`.
+- `MutationCtx<'tx, RT>` / `MutationDb<'tx, RT>` wrap the same
+  transaction and add `insert`, `patch`, `replace`, `delete` — all typed
+  by `ConvexDocument` / `ConvexPatch`.
+- `TypedQueryBuilder` exists and type-checks against `T::Index` and
+  `T::Field`, but terminal methods (`.collect()`, `.first()`) return an
+  error until the runner (Phase 1.4) wires them through.
+
 ### What doesn't work yet
 
 - **No runner.** There is no `NativeFunctionRunner` — functions can't be
   called end-to-end. That lands in Phase 1.4.
+- **Query execution.** `TypedQueryBuilder::collect/first/page` currently
+  `bail!` — the wire-up to `DeveloperQuery`/`RangeRequest` is pending.
 - **No function macros.** `#[convex::query]`, `#[convex::mutation]`, and
   `#[convex::action]` are not implemented. Phase 1.2.4 + 1.2.5 + 2.2.
 - **No context wrappers.** `QueryCtx`, `MutationCtx`, `ActionCtx` don't
@@ -75,9 +90,15 @@ crates/convex_native/
 │   ├── document.rs    -- ConvexDocument / FieldReference / IndexReference / ConvexPatch
 │   ├── schema.rs      -- TableRegistration + NativeSchema::collect()
 │   ├── registry.rs    -- NativeFunctionRegistration + NativeFunctionRegistry
-│   └── prelude.rs     -- glob-import target
+│   ├── prelude.rs     -- glob-import target
+│   └── ctx/
+│       ├── mod.rs
+│       ├── query.rs         -- QueryCtx + QueryDb
+│       ├── query_builder.rs -- TypedQueryBuilder (typed, unexecuted)
+│       └── mutation.rs      -- MutationCtx + MutationDb
 └── tests/
-    └── derive_document.rs  -- integration tests for the derive macro
+    ├── derive_document.rs  -- integration tests for the derive macro
+    └── ctx_types.rs        -- compile-time surface tests for ctx wrappers
 
 crates/convex_macro/
 ├── src/

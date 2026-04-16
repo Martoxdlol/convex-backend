@@ -34,6 +34,7 @@ pub mod __private {
 }
 
 pub mod convert;
+pub mod ctx;
 pub mod document;
 pub mod id;
 pub mod prelude;
@@ -43,6 +44,14 @@ pub mod schema;
 pub use convert::{
     FromConvex,
     ToConvex,
+};
+pub use ctx::{
+    query_builder::Order,
+    MutationCtx,
+    MutationDb,
+    QueryCtx,
+    QueryDb,
+    TypedQueryBuilder,
 };
 pub use document::{
     ConvexDocument,

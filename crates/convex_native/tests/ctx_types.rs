@@ -1,0 +1,80 @@
+//! Compile-time surface tests for QueryCtx / MutationCtx.
+//!
+//! These tests don't execute queries — the database plumbing isn't wired
+//! through to the builder yet (Phase 1.4 work). They verify that the
+//! typed API *shapes* are sound: `get`, `insert`, `patch`, `delete`,
+//! `query` and the builder chain all type-check against a derived
+//! `ConvexDocument`.
+//!
+//! Since we don't have a concrete test `Runtime` available as a
+//! dev-dependency here, the async helper fns below are generic over `RT`
+//! and only used as function-pointer casts in the runtime test — the real
+//! assertion is that they compile.
+
+use convex_native::{
+    ctx::query_builder::Order,
+    ConvexDocument,
+    FieldReference,
+    Id,
+    IndexReference,
+    MutationCtx,
+    QueryCtx,
+};
+
+#[derive(ConvexDocument, Debug, Clone)]
+#[convex(table = "widgets")]
+#[convex(index(name = "by_owner", fields = ["owner"]))]
+pub struct Widget {
+    pub owner: String,
+    pub count: i64,
+}
+
+#[allow(dead_code)]
+async fn _widget_query<RT: common::runtime::Runtime>(ctx: &mut QueryCtx<'_, RT>) {
+    let _ = ctx
+        .db()
+        .query::<Widget>()
+        .with_index(WidgetIndex::ByOwner)
+        .eq(WidgetField::Owner, "alice".to_string())
+        .unwrap()
+        .order(Order::Desc)
+        .limit(10)
+        .first()
+        .await;
+
+    let id: Id<Widget> = "jd72jdw7t0x9grf04vg5f65t0s7g4k1d".parse().unwrap();
+    let _doc: Option<Widget> = ctx.db().get(id).await.unwrap();
+}
+
+#[allow(dead_code)]
+async fn _widget_mutation<RT: common::runtime::Runtime>(ctx: &mut MutationCtx<'_, RT>) {
+    let w = Widget {
+        owner: "bob".into(),
+        count: 1,
+    };
+    let id: Id<Widget> = ctx.db().insert(w.clone()).await.unwrap();
+    let _patched: Widget = ctx
+        .db()
+        .patch(
+            id,
+            WidgetPatch {
+                count: Some(2),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let _replaced: Widget = ctx.db().replace(id, w).await.unwrap();
+    let _deleted: Widget = ctx.db().delete(id).await.unwrap();
+}
+
+#[test]
+fn ctx_api_compiles() {
+    // Real assertion: the generic async fns above compile. Here we just
+    // use the field/index enum surface so rust-analyzer doesn't flag
+    // them as unused.
+    assert_eq!(WidgetField::Owner.as_str(), "owner");
+    assert_eq!(WidgetField::Count.as_str(), "count");
+    assert_eq!(WidgetIndex::ByOwner.as_str(), "by_owner");
+    assert_eq!(WidgetIndex::ByOwner.fields(), &["owner"]);
+}
