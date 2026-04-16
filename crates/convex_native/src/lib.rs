@@ -7,6 +7,32 @@
 //! Developer code is expected to bring the common types into scope with
 //! `use convex_native::prelude::*;`.
 
+// Re-export derive macros so developers only need `convex_native` as a dep.
+pub use convex_macro::ConvexDocument;
+#[doc(hidden)]
+pub use inventory;
+
+/// Items re-exported for use by generated proc-macro code. Not part of the
+/// public API.
+#[doc(hidden)]
+pub mod __private {
+    pub use common::{
+        bootstrap_model::index::database_index::IndexedFields,
+        paths::FieldPath,
+        schemas::{
+            IndexSchema,
+            TableDefinition,
+        },
+        types::IndexDescriptor,
+    };
+    pub use value::{
+        ConvexObject,
+        ConvexValue,
+        FieldName,
+        TableName,
+    };
+}
+
 pub mod convert;
 pub mod document;
 pub mod id;

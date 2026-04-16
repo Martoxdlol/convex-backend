@@ -12,6 +12,19 @@ use syn::{
     Type,
 };
 
+mod convex_document;
+
+/// `#[derive(ConvexDocument)]`
+///
+/// See `convex-native/native-rust-functions.md` for the full design.
+/// Generates `ConvexDocument` impl, `XxxField` enum, `XxxIndex` enum,
+/// `XxxPatch` struct, `XxxWithId` struct, and registers the table with
+/// `inventory` for schema collection.
+#[proc_macro_derive(ConvexDocument, attributes(convex))]
+pub fn derive_convex_document(input: TokenStream) -> TokenStream {
+    convex_document::derive_convex_document(input)
+}
+
 #[proc_macro_attribute]
 pub fn instrument_future(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let ItemFn {
