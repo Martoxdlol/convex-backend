@@ -5,10 +5,13 @@
 //! The set is intentionally tight; add to it only when the symbol shows up
 //! in example code from the design doc.
 
+pub use std::time::Duration;
+
 pub use anyhow::{
     anyhow,
     Result,
 };
+pub use bytes::Bytes;
 
 pub use crate::{
     convert::{
@@ -22,6 +25,21 @@ pub use crate::{
         IndexReference,
     },
     id::Id,
+};
+// Common convex types developers touch in schemas.
+pub use crate::{
+    ActionCtx,
+    ConvexActionFunction,
+    ConvexMutationFunction,
+    ConvexQueryFunction,
+    HttpActionCtx,
+    HttpRequest,
+    HttpResponse,
+    MutationCtx,
+    Order,
+    QueryCtx,
+    Rt,
+    StorageId,
 };
 // Derive macros are re-exported from the crate root; bring them into
 // scope via the prelude too so `use convex_native::prelude::*;` is
