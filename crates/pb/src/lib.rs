@@ -27,6 +27,9 @@ pub mod convex_query_journal {
 pub mod errors {
     include!(concat!(env!("OUT_DIR"), "/errors.rs"));
 }
+pub mod function_execution {
+    include!(concat!(env!("OUT_DIR"), "/function_execution.rs"));
+}
 pub mod outcome {
     include!(concat!(env!("OUT_DIR"), "/outcome.rs"));
 }

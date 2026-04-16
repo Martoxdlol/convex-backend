@@ -1,19 +1,23 @@
-//! Distributed execution protocol — architectural scaffolding only.
+//! Distributed execution protocol — architectural scaffolding.
 //!
 //! Per `IMPLEMENTATION_PLAN.md` Phase 3.
 //!
 //! The full design in `native-rust-functions.md` §10 calls for a gRPC
 //! protocol where a **conductor** dispatches function calls to a pool
-//! of identical **worker** binaries, which each run the native
-//! registry and return a `FunctionOutcome` + read/write set that the
+//! of identical **worker** binaries, each running the native registry
+//! and returning a `FunctionOutcome` + read/write set that the
 //! conductor commits.
 //!
-//! This module keeps the runner-facing shape visible in one place so
-//! follow-up work can slot in: the real `.proto` definition goes in
-//! `crates/pb/proto/function_execution.proto`; the generated Rust
-//! client/server lives in `crates/convex_native_distributed/`. Until
-//! that ships, these types are the handoff shape the composite runner
-//! would use.
+//! **Phase 3.1 status:** the protobuf contract lives at
+//! `crates/pb/protos/function_execution.proto` and generates
+//! `pb::function_execution::{ExecuteRequest, ExecuteResponse,
+//! HealthRequest, HealthResponse, FunctionExecutionService}` via
+//! `tonic_build`. The Rust shapes in this module are the
+//! tonic-free equivalents the composite runner will map through.
+//!
+//! **Phase 3.2+** lands the generated client/server inside a new
+//! `crates/convex_native_distributed/` crate, which will translate
+//! between the proto and the native runner via this module's types.
 
 use std::time::Duration;
 

@@ -15,11 +15,11 @@ actions) in native Rust.
 
 ## Current state
 
-**Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1, 1.5.2,
-1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.5
-mode alias + executor trait stub), **Phase 4 partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3
-graceful drain + 4.4 timeouts + 4.5 circuit breaker + 4.6 index-cache
-warmup plan),
+**Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1–1.4.4, 1.5.1, 1.5.2,
+1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.1
+proto contract + 3.5 mode alias + executor trait stub), **Phase 4
+partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3 graceful drain
++ 4.4 timeouts + 4.5 circuit breaker + 4.6 index-cache warmup plan),
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
 validation + 5.3 text/vector search + 5.4 bulk `get_many`).
 
@@ -396,12 +396,21 @@ shuts down every clone.
   enum described in the design doc §10, parseable from
   `CONVEX_MODE=...` env strings.
 - `ExecuteRequest` / `ExecuteResponse` — request/response payloads the
-  distributed gRPC service will serialize. Full protobuf definition
-  lives in Phase 3.1 (`crates/pb/proto/function_execution.proto`,
-  not yet added); these Rust types are the architectural handoff point
-  the future `convex_native_distributed` crate consumes.
+  distributed gRPC service serializes. The protobuf contract now
+  lives at `crates/pb/protos/function_execution.proto` and generates
+  `pb::function_execution::{ExecuteRequest, ExecuteResponse,
+  HealthRequest, HealthResponse, FunctionExecutionService}` via
+  `tonic_build`. The Rust shapes in `convex_native::distributed` are
+  the tonic-free equivalents.
 - `FunctionExecutor` trait — workers implement this to accept remote
   calls.
+- **Phase 3.1 — proto service contract (shipped):** the `.proto` file
+  defines two RPCs, `Execute` (dispatches one function) and `Health`
+  (used for circuit-breaking + rolling-deploy version detection).
+  Both messages pull from `common.proto` so the conductor can feed
+  responses straight into the existing `UdfOutcome` envelope.
+  Remaining Phase 3 work (crate skeleton, worker server, conductor
+  client, mode switching, integration tests) is captured as task 52.
 
 ### New in Phase 5 (partial) — index validation + schema diff + get_many
 
