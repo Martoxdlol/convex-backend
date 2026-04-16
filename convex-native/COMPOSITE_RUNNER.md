@@ -91,10 +91,13 @@ on top of `udf::ActionCallbacks`:
   `CanonicalizedComponentFunctionPath { component: root(), udf_path }`.
 - `schedule` / `cancel_scheduled`: delegate to the underlying
   callbacks.
-- `storage_store`: errors with a clear "not implemented" message —
-  `udf::ActionCallbacks` only accepts pre-uploaded
-  `FileStorageEntry` values, so forwarding raw bytes needs a direct
-  path into the `file_storage` backend that bypasses the JS shape.
+- `storage_store`: when `with_file_storage(...)` was called on
+  construction, uploads the raw `bytes::Bytes` payload directly via
+  `FileStorage::store_file`. Wraps the byte buffer in a
+  single-chunk stream, builds `ContentLength` from the buffer size,
+  parses the supplied content-type string. Returns the resulting
+  `DeveloperDocumentId` as a `StorageId`. Without `with_file_storage`
+  it errors with a helpful message pointing at the builder.
 - `storage_get_url` / `storage_delete`: delegate.
 
 ## Known limitations
@@ -130,4 +133,3 @@ on top of `udf::ActionCallbacks`:
   the same with a one-bit flag per ctx accessor, but the
   determinism-check behaviour is the same in practice today because
   every native invocation rebuilds its transaction.
-- **Storage.** See `BackendCallbacks::storage_store` above.

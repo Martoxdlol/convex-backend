@@ -240,7 +240,8 @@ pub async fn make_app(
             native_runner,
             js_runner,
             database.clone(),
-        ),
+        )
+        .with_file_storage(file_storage.clone()),
     );
 
     let application = Application::new(

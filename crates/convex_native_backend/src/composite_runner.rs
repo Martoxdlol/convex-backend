@@ -65,6 +65,7 @@ use database::{
     Database,
     Transaction,
 };
+use file_storage::FileStorage;
 use function_runner::{
     server::{
         FunctionMetadata,
@@ -127,6 +128,10 @@ pub struct CompositeFunctionRunner<RT: Runtime> {
     pub native: Arc<NativeFunctionRunner>,
     pub js: Arc<dyn FunctionRunner<RT>>,
     pub database: Database<RT>,
+    /// Optional file-storage handle. When set, native actions can
+    /// upload raw bytes via `ctx.storage().store(...)`; when `None`,
+    /// `storage_store` errors out at dispatch time.
+    pub file_storage: Option<FileStorage<RT>>,
     /// Cached `set_action_callbacks` sink. Stored as `Weak` to match the
     /// JS-side `InProcessFunctionRunner` pattern and avoid a reference
     /// cycle with `ApplicationFunctionRunner`. Used to construct a
@@ -144,8 +149,17 @@ impl<RT: Runtime> CompositeFunctionRunner<RT> {
             native,
             js,
             database,
+            file_storage: None,
             action_callbacks: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Attach a `FileStorage` so native actions can upload raw bytes
+    /// via `ctx.storage().store(...)`. Without this, storage calls
+    /// from native actions return an error.
+    pub fn with_file_storage(mut self, file_storage: FileStorage<RT>) -> Self {
+        self.file_storage = Some(file_storage);
+        self
     }
 
     fn requested_function_name(meta: Option<&FunctionMetadata>) -> Option<String> {
@@ -332,6 +346,7 @@ async fn dispatch_native_action<RT: Runtime>(
     database: &Database<RT>,
     native: &Arc<NativeFunctionRunner>,
     action_callbacks: Arc<dyn ActionCallbacks>,
+    file_storage: Option<&FileStorage<RT>>,
     identity: Identity,
     function_metadata: FunctionMetadata,
     context: ExecutionContext,
@@ -361,13 +376,17 @@ async fn dispatch_native_action<RT: Runtime>(
         }
     };
 
-    let callbacks = Arc::new(BackendCallbacks::<RT>::with_native(
+    let mut callbacks_builder = BackendCallbacks::<RT>::with_native(
         action_callbacks,
         identity,
         context,
         native.clone(),
         database.clone(),
-    ));
+    );
+    if let Some(fs) = file_storage {
+        callbacks_builder = callbacks_builder.with_file_storage(fs.clone());
+    }
+    let callbacks = Arc::new(callbacks_builder);
 
     let started = Instant::now();
     let name = path.udf_path.function_name().to_string();
@@ -455,6 +474,7 @@ where
                 &self.database,
                 &self.native,
                 callbacks,
+                self.file_storage.as_ref(),
                 identity,
                 meta,
                 context,

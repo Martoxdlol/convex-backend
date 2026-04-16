@@ -91,6 +91,23 @@ if let Some(m) = ctx.db().get_with_meta(user_id).await? {
 `DocumentWithMeta<T>` derefs to `T` so existing code that operates on
 the typed body keeps working.
 
+### New — native-action storage uploads via `FileStorage`
+
+`ctx.storage().store(bytes, content_type)` from inside a
+`#[convex::action]` now uploads directly through `FileStorage::store_file`.
+The composite runner accepts an optional `.with_file_storage(fs)`
+builder; `local_backend::make_app()` wires in the same `file_storage`
+it hands to `Application::new`, so native actions get raw-byte
+uploads for free. Without the builder the call returns a clear
+"requires a FileStorage handle" error instead of silently failing.
+
+Under the hood the adapter wraps the `bytes::Bytes` payload in a
+single-chunk `futures::stream::once`, builds a `ContentLength`
+header from the buffer size, and parses the supplied content-type
+string into a `headers::ContentType`. The resulting
+`DeveloperDocumentId` becomes the `StorageId` returned to the
+handler.
+
 ### New — native-to-native cross-call resolver in `BackendCallbacks`
 
 `ctx.run_query_by_name("get_user", …)` and
@@ -628,12 +645,6 @@ registrations, no schema entries.
   `document_type: None` — i.e. every derived type currently gets an "any"
   schema shape. Enforcing the shape against the struct's fields is
   Phase 1 extension work, not part of the MVP critical path.
-- **Storage through actions is not forwarded.** `BackendCallbacks`
-  in `convex_native_backend` currently errors on `storage_store`
-  because the JS-side `ActionCallbacks` trait only accepts
-  pre-uploaded `FileStorageEntry` values. Wiring a direct path from
-  `ActionCtx::storage()` into the `file_storage` backend is
-  outstanding.
 - **Native action `FunctionFinalTransaction` is always `None`.** The
   composite now intercepts `UdfType::Action` and dispatches native
   actions via `run_action_with_callbacks`, building a real
@@ -764,10 +775,7 @@ Per `IMPLEMENTATION_PLAN.md`, the remaining shippable items are:
    using the `ExecuteRequest` / `ExecuteResponse` scaffolding that
    already lives in `convex_native::distributed`.
 3. **Step 4.7** — rolling updates with version-aware routing.
-4. **Storage forwarding from `ActionCtx::storage()`** directly to the
-   `file_storage` backend, bypassing the JS `ActionCallbacks` shape
-   that doesn't fit raw bytes.
-5. **Native `ActionCtx` snapshot transaction.** Today the native
+4. **Native `ActionCtx` snapshot transaction.** Today the native
    `ActionCtx` has no transaction at all; sub-calls happen through
    `run_query_by_name` which opens its own. If an action needs a
    stable read-time view, we'd either need to pass a snapshot `ts`

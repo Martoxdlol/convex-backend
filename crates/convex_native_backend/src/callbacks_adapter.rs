@@ -35,6 +35,11 @@ use database::{
     Transaction,
     WriteSource,
 };
+use file_storage::FileStorage;
+use headers::{
+    ContentLength,
+    ContentType,
+};
 use keybroker::Identity;
 use model::file_storage::FileStorageId;
 use sync_types::{
@@ -68,6 +73,10 @@ pub struct BackendCallbacks<RT: Runtime> {
     pub native: Option<Arc<NativeFunctionRunner>>,
     /// Database to open sub-transactions on when dispatching natively.
     pub database: Option<Database<RT>>,
+    /// Optional file-storage handle used by `storage_store` to upload
+    /// raw bytes directly. When `None`, `storage_store` returns an
+    /// error because there's no way to materialise the bytes.
+    pub file_storage: Option<FileStorage<RT>>,
 }
 
 impl<RT: Runtime> BackendCallbacks<RT> {
@@ -84,6 +93,7 @@ impl<RT: Runtime> BackendCallbacks<RT> {
             context,
             native: None,
             database: None,
+            file_storage: None,
         }
     }
 
@@ -106,7 +116,16 @@ impl<RT: Runtime> BackendCallbacks<RT> {
             context,
             native: Some(native),
             database: Some(database),
+            file_storage: None,
         }
+    }
+
+    /// Attach a `FileStorage` handle so `storage_store` uploads raw
+    /// bytes directly to the underlying storage backend, returning
+    /// a real `StorageId`. Without this, `storage_store` errors.
+    pub fn with_file_storage(mut self, file_storage: FileStorage<RT>) -> Self {
+        self.file_storage = Some(file_storage);
+        self
     }
 }
 
@@ -314,21 +333,38 @@ impl<RT: Runtime + 'static> NativeActionCallbacks for BackendCallbacks<RT> {
 
     async fn storage_store(
         &self,
-        _ns: TableNamespace,
-        _body: bytes::Bytes,
-        _content_type: &str,
+        ns: TableNamespace,
+        body: bytes::Bytes,
+        content_type: &str,
     ) -> anyhow::Result<StorageId> {
-        // Direct byte uploads don't have a clean counterpart on the
-        // JS-side ActionCallbacks trait, which expects the caller to
-        // have first uploaded the file via the HTTP storage path and
-        // only registers the completed entry here. Surface this as
-        // "not yet wired" with a clear error rather than silently
-        // fabricating a FileStorageEntry.
-        anyhow::bail!(
-            "BackendCallbacks::storage_store is not implemented — the backend ActionCallbacks \
-             trait only takes pre-uploaded FileStorageEntry values. Upload through the HTTP \
-             storage API first, then store the resulting id via the schema."
-        )
+        let file_storage = self.file_storage.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "BackendCallbacks::storage_store requires a FileStorage handle — construct with \
+                 .with_file_storage(...) to enable raw-byte uploads from native actions."
+            )
+        })?;
+        // Upload via a single-chunk stream. `FileStorage::store_file`
+        // already handles length + content-type + usage tracking.
+        let size = body.len();
+        let content_length = Some(ContentLength(size as u64));
+        let content_type_parsed: Option<ContentType> = if content_type.is_empty() {
+            None
+        } else {
+            Some(content_type.parse()?)
+        };
+        let stream = futures::stream::once(async move { Ok::<_, anyhow::Error>(body) });
+        let usage = usage_tracking::FunctionUsageTracker::new();
+        let id = file_storage
+            .store_file(
+                ns,
+                content_length,
+                content_type_parsed,
+                stream,
+                /* expected_sha256 */ None,
+                &usage,
+            )
+            .await?;
+        Ok(StorageId(id.to_string()))
     }
 
     async fn storage_get_url(
