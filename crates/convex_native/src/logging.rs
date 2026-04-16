@@ -16,7 +16,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 /// Severity of a single log line.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Debug,
     Info,
@@ -34,9 +34,19 @@ pub struct NativeLogLine {
 /// Shared append-only buffer. Cheap to `Clone` — both the context
 /// wrappers and the runner hold one `Arc<LogBuffer>` and the runner
 /// snapshots the contents after the handler returns.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct LogBuffer {
     inner: Arc<Mutex<Vec<NativeLogLine>>>,
+    min_level: LogLevel,
+}
+
+impl Default for LogBuffer {
+    fn default() -> Self {
+        Self {
+            inner: Arc::default(),
+            min_level: LogLevel::Debug,
+        }
+    }
 }
 
 impl LogBuffer {
@@ -44,7 +54,24 @@ impl LogBuffer {
         Self::default()
     }
 
+    /// Construct with a minimum severity. Lines below `level` are
+    /// silently dropped.
+    pub fn with_min_level(level: LogLevel) -> Self {
+        Self {
+            inner: Arc::default(),
+            min_level: level,
+        }
+    }
+
+    /// Current minimum severity filter.
+    pub fn min_level(&self) -> LogLevel {
+        self.min_level
+    }
+
     pub fn push(&self, line: NativeLogLine) {
+        if line.level < self.min_level {
+            return;
+        }
         self.inner.lock().push(line);
     }
 
@@ -124,5 +151,19 @@ mod tests {
         assert_eq!(snap.len(), 4);
         assert_eq!(snap[0].level, LogLevel::Debug);
         assert_eq!(snap[3].message, "e");
+    }
+
+    #[test]
+    fn min_level_filters_out_lower_severities() {
+        let buffer = LogBuffer::with_min_level(LogLevel::Warn);
+        let logger = Logger::new(&buffer);
+        logger.debug("d");
+        logger.info("i");
+        logger.warn("w");
+        logger.error("e");
+        let snap = buffer.snapshot();
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].level, LogLevel::Warn);
+        assert_eq!(snap[1].level, LogLevel::Error);
     }
 }

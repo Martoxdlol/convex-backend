@@ -124,7 +124,9 @@ async fn create(ctx: &mut MutationCtx, name: String) -> Result<Id<User>> {
 Lines land in a shared `LogBuffer` (cheap to clone, thread-safe). The
 runner uses `with_callbacks_and_log_buffer` (or the query/mutation
 equivalents) to inject a buffer it can drain into the backend's
-log-streaming path after the handler returns.
+log-streaming path after the handler returns. `LogBuffer` supports
+a minimum-severity filter via `with_min_level(LogLevel::Warn)` for
+production — lines below the threshold are dropped on push.
 
 Also added a `convex_native::VERSION` constant (derived from
 `CARGO_PKG_VERSION` at build time). Surfaced through

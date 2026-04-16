@@ -157,6 +157,13 @@ impl<'tx, RT: Runtime> QueryDb<'tx, RT> {
         }
         Ok(out)
     }
+
+    /// Count every document in table `T`. Runs a full scan under the
+    /// hood — prefer `.query::<T>().with_index(...)...count()` when
+    /// you only need a partial count.
+    pub async fn count_all<T: ConvexDocument>(&mut self) -> anyhow::Result<usize> {
+        self.query::<T>().count().await
+    }
 }
 
 /// Blanket helper that lets generated code recover a typed document from a
