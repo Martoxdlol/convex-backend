@@ -64,24 +64,25 @@ impl<RT: Runtime> BackendCallbacks<RT> {
             _rt: std::marker::PhantomData,
         }
     }
+}
 
-    /// Wrap the single-object `ConvexObject` into the JSON-array
-    /// shape `SerializedArgs` expects.
-    fn args_to_serialized(obj: ConvexObject) -> anyhow::Result<SerializedArgs> {
-        let arr: ConvexValue = ConvexValue::Object(obj);
-        let json: serde_json::Value = arr.into();
-        Ok(SerializedArgs::from_args(vec![json])?)
-    }
+/// Wrap the single-object `ConvexObject` into the JSON-array shape
+/// `SerializedArgs` expects (native handlers accept one object;
+/// backend `ActionCallbacks` want an array of JSON values).
+fn args_to_serialized(obj: ConvexObject) -> anyhow::Result<SerializedArgs> {
+    let arr: ConvexValue = ConvexValue::Object(obj);
+    let json: serde_json::Value = arr.into();
+    Ok(SerializedArgs::from_args(vec![json])?)
+}
 
-    fn path_for(
-        name: &str,
-    ) -> anyhow::Result<common::components::CanonicalizedComponentFunctionPath> {
-        let udf: UdfPath = name.parse()?;
-        Ok(common::components::CanonicalizedComponentFunctionPath {
-            component: ComponentPath::root(),
-            udf_path: udf.canonicalize(),
-        })
-    }
+/// Build a canonical component function path for a bare dotted name.
+/// Every native call is routed through the root component today.
+fn path_for(name: &str) -> anyhow::Result<common::components::CanonicalizedComponentFunctionPath> {
+    let udf: UdfPath = name.parse()?;
+    Ok(common::components::CanonicalizedComponentFunctionPath {
+        component: ComponentPath::root(),
+        udf_path: udf.canonicalize(),
+    })
 }
 
 #[async_trait]
@@ -92,8 +93,8 @@ impl<RT: Runtime> NativeActionCallbacks for BackendCallbacks<RT> {
         name: &str,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
-        let path = Self::path_for(name)?;
-        let serialized = Self::args_to_serialized(args)?;
+        let path = path_for(name)?;
+        let serialized = args_to_serialized(args)?;
         let result = self
             .inner
             .execute_query(
@@ -115,8 +116,8 @@ impl<RT: Runtime> NativeActionCallbacks for BackendCallbacks<RT> {
         name: &str,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
-        let path = Self::path_for(name)?;
-        let serialized = Self::args_to_serialized(args)?;
+        let path = path_for(name)?;
+        let serialized = args_to_serialized(args)?;
         let result = self
             .inner
             .execute_mutation(
@@ -139,8 +140,8 @@ impl<RT: Runtime> NativeActionCallbacks for BackendCallbacks<RT> {
         args: ConvexObject,
         delay: Duration,
     ) -> anyhow::Result<DeveloperDocumentId> {
-        let path = Self::path_for(name)?;
-        let serialized = Self::args_to_serialized(args)?;
+        let path = path_for(name)?;
+        let serialized = args_to_serialized(args)?;
         // The backend wants a UnixTimestamp wall-clock for the
         // scheduled job; compose from "now + delay" using the
         // runtime from the context.
@@ -207,5 +208,55 @@ impl<RT: Runtime> NativeActionCallbacks for BackendCallbacks<RT> {
             .storage_delete(self.identity.clone(), ComponentId::Root, storage_id)
             .await?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use value::FieldName;
+
+    use super::*;
+
+    fn sample_object() -> ConvexObject {
+        let mut fields: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+        fields.insert(
+            "name".parse().unwrap(),
+            ConvexValue::try_from("alice".to_string()).unwrap(),
+        );
+        fields.insert("count".parse().unwrap(), ConvexValue::Int64(7));
+        ConvexObject::try_from(fields).unwrap()
+    }
+
+    #[test]
+    fn args_to_serialized_wraps_object_into_single_element_array() {
+        let serialized = args_to_serialized(sample_object()).expect("encode");
+        // SerializedArgs round-trips into the raw JSON array; confirm
+        // the shape by decoding and inspecting the one entry.
+        let parsed: serde_json::Value = serde_json::from_str(serialized.get()).unwrap();
+        let arr = parsed.as_array().expect("array");
+        assert_eq!(arr.len(), 1, "native handlers take one object arg");
+        let obj = arr[0].as_object().expect("object");
+        assert!(obj.contains_key("name"));
+        assert!(obj.contains_key("count"));
+    }
+
+    #[test]
+    fn path_for_module_colon_function_roots_in_default_component() {
+        // UdfPath uses `module:function` syntax (JS convention), not
+        // dotted. Native callers of run_query_by_name / etc. need to
+        // pass a module-qualified name for cross-module dispatch.
+        let p = path_for("users:get").expect("parse");
+        assert_eq!(p.component, ComponentPath::root());
+        let again = path_for("users:get").expect("parse");
+        assert_eq!(p.udf_path, again.udf_path);
+    }
+
+    #[test]
+    fn path_for_rejects_malformed_input() {
+        assert!(path_for("").is_err());
+        // A path with an unknown extension is rejected by ModulePath.
+        assert!(path_for("users.get").is_err());
     }
 }

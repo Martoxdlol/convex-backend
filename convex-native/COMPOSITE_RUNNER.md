@@ -98,6 +98,18 @@ on top of `udf::ActionCallbacks`:
 
 ## Known limitations
 
+- **Cross-call path naming.** `BackendCallbacks::path_for` parses the
+  `name` argument through `UdfPath::from_str`, which uses the JS
+  `module:function` convention. Native functions are registered in
+  the inventory by bare identifier (the Rust fn name, e.g.
+  `"get_user"`), so calling a native function from a native action
+  via `ctx.run_query_by_name("get_user", ...)` returns a parse error
+  today. Cross-calls that go `native → JS` work as long as the name
+  is fully qualified (`"users:get"`); cross-calls that go
+  `native → native` need a registry-aware resolver that maps the
+  bare identifier to a synthetic `UdfPath` before handing off. This
+  is captured by the test `path_for_rejects_malformed_input` in
+  `callbacks_adapter.rs`.
 - **Write threading.** `begin_tx_with_writes` ignores
   `existing_writes` and opens a fresh transaction at `ts`. One-UDF-per-request
   flows work; JS-style batching inside a single
