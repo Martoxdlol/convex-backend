@@ -210,6 +210,23 @@ impl<'db, 'tx, RT: Runtime, T: ConvexDocument> TypedQueryBuilder<'db, 'tx, RT, T
         self
     }
 
+    /// Terminal: expect exactly zero or one matching document.
+    /// Errors if more than one document matches the filter. Handy for
+    /// looking up by a unique index.
+    pub async fn unique(self) -> anyhow::Result<Option<T>> {
+        let mut results = self.limit(2).collect().await?;
+        if results.len() > 1 {
+            anyhow::bail!("TypedQueryBuilder::unique() matched more than one document");
+        }
+        Ok(results.pop())
+    }
+
+    /// Terminal: take up to `n` matching documents. Equivalent to
+    /// `.limit(n).collect()`.
+    pub async fn take(self, n: usize) -> anyhow::Result<Vec<T>> {
+        self.limit(n).collect().await
+    }
+
     /// Terminal: collect all matching documents into a `Vec`.
     pub async fn collect(self) -> anyhow::Result<Vec<T>> {
         let TypedQueryBuilder {

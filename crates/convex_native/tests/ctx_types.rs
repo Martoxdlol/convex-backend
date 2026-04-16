@@ -70,6 +70,18 @@ async fn _widget_query<RT: common::runtime::Runtime>(ctx: &mut QueryCtx<'_, RT>)
         let _: &Widget = &m; // Deref
         let _: common::document::CreationTime = m.creation_time;
     }
+
+    // unique() and take() terminals compile cleanly.
+    let _: Option<Widget> = ctx
+        .db()
+        .query::<Widget>()
+        .with_index(WidgetIndex::ByOwner)
+        .eq(WidgetField::Owner, "alice".to_string())
+        .unwrap()
+        .unique()
+        .await
+        .unwrap();
+    let _: Vec<Widget> = ctx.db().query::<Widget>().take(3).await.unwrap();
 }
 
 #[allow(dead_code)]

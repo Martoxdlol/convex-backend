@@ -534,11 +534,12 @@ registrations, no schema entries.
   transaction and add `insert`, `patch`, `replace`, `delete` — all typed
   by `ConvexDocument` / `ConvexPatch`.
 - `TypedQueryBuilder` type-checks against `T::Index` and `T::Field`.
-  Terminal methods `.collect()` / `.first()` / `.count()` now actually
-  execute via `database::DeveloperQuery`. Index-range source when
-  `.with_index()` was used, full-table-scan otherwise (filters without
-  an index still rejected at runtime for now). Supports equality
-  (`.eq`) and range comparators (`.gt`, `.gte`, `.lt`, `.lte`).
+  Terminals `.collect()` / `.first()` / `.unique()` / `.take(n)` /
+  `.count()` execute via `database::DeveloperQuery`. Index-range
+  source when `.with_index()` was used, full-table-scan otherwise
+  (filters without an index still rejected at runtime for now).
+  Supports equality (`.eq`) and range comparators (`.gt` / `.gte` /
+  `.lt` / `.lte`). `.unique()` errors if more than one doc matches.
 
 ### What doesn't work yet
 
