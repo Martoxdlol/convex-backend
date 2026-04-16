@@ -57,6 +57,11 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
         super::scheduler::Scheduler::new(super::scheduler::SchedulerScope::Action)
     }
 
+    /// File-storage handle — see [`super::storage::StorageCtx`].
+    pub fn storage(&mut self) -> super::storage::StorageCtx<'_> {
+        super::storage::StorageCtx::new()
+    }
+
     /// Invoke a native query by name with already-serialized args.
     /// Returns the `ConvexValue` the query produced. Typed sub-calls
     /// land in Step 2.4 once generated args structs exist.

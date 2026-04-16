@@ -23,6 +23,7 @@ pub use inventory;
 pub mod convex {
     pub use convex_macro::{
         action,
+        http_action,
         mutation,
         query,
     };
@@ -53,6 +54,7 @@ pub mod convert;
 pub mod ctx;
 pub mod document;
 pub mod function_ref;
+pub mod http;
 pub mod id;
 pub mod prelude;
 pub mod registry;
@@ -71,6 +73,8 @@ pub use ctx::{
     QueryCtx,
     QueryDb,
     Scheduler,
+    StorageCtx,
+    StorageId,
     TypedQueryBuilder,
 };
 pub use document::{
@@ -83,6 +87,13 @@ pub use function_ref::{
     ConvexActionFunction,
     ConvexMutationFunction,
     ConvexQueryFunction,
+};
+pub use http::{
+    HttpActionCtx,
+    HttpRequest,
+    HttpResponse,
+    HttpRouteRegistration,
+    HttpRouter,
 };
 pub use id::Id;
 pub use registry::{

@@ -17,6 +17,7 @@ pub mod mutation;
 pub mod query;
 pub mod query_builder;
 pub mod scheduler;
+pub mod storage;
 
 pub use action::ActionCtx;
 pub use mutation::{
@@ -29,3 +30,7 @@ pub use query::{
 };
 pub use query_builder::TypedQueryBuilder;
 pub use scheduler::Scheduler;
+pub use storage::{
+    StorageCtx,
+    StorageId,
+};

@@ -7,11 +7,13 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 ## Current state
 
 **Phase 1 COMPLETE** (steps 1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1,
-1.6.1–1.6.3) **plus Phase 2 2.1–2.5 COMPLETE (scheduler surface
-defined — backend wiring pending)**. Remaining: query/mutation sub-call
-execution (2.4 raw backend integration), scheduler backend (2.5
-VirtualSchedulerModel), storage (2.6), HTTP actions (2.7), and the
-composite runner end of Phase 1.5.
+1.6.1–1.6.3) **plus Phase 2 2.1–2.7 COMPLETE (surfaces for scheduler /
+storage / HTTP actions defined — backend wiring pending)**. Remaining:
+query/mutation sub-call execution (2.4 raw backend integration),
+scheduler backend (2.5), storage backend (2.6), HTTP serving
+integration (2.7), ActionCallbacks integration (2.8), composite runner
+wiring (1.5), distributed execution (3), hardening (4), and advanced
+types (5).
 
 ### What works
 
@@ -53,6 +55,32 @@ pub struct User {
 
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
+
+### New in Phase 2.6 / 2.7 — Storage + HTTP actions
+
+- `StorageCtx` — obtained from `ActionCtx::storage()` or
+  `HttpActionCtx::storage()`. Exposes `store(bytes, content_type) ->
+  StorageId`, `get_url(id)`, and `delete(id)`. Each method serializes
+  its inputs then `bail!`s pending file_storage backend integration.
+- `#[convex::http_action(method = "...", path = "...")]` attribute
+  macro. Registers HTTP routes via inventory:
+
+  ```rust
+  #[convex::http_action(method = "POST", path = "/api/webhooks/stripe")]
+  async fn stripe_webhook(
+      ctx: &mut HttpActionCtx<'_, Rt>,
+      req: HttpRequest,
+  ) -> Result<HttpResponse> { .. }
+  ```
+
+- `HttpRequest` / `HttpResponse` types with helpers: `req.header(name)`,
+  `req.body_bytes()`, `req.body_text()`, `req.body_json::<T>()`,
+  `HttpResponse::json(status, value)`, `HttpResponse::redirect(status,
+  location)`, `.with_header` / `.with_body`.
+- `HttpActionCtx` wraps `ActionCtx` and delegates `run_query`,
+  `run_mutation`, `run_action`, `scheduler`, `storage`.
+- `HttpRouter::collect()` — runtime enumeration of registered routes
+  with exact-match `lookup(method, path)`.
 
 ### New in Phase 2.5 — Scheduler (surface)
 

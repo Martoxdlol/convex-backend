@@ -16,6 +16,7 @@ mod convex_document;
 mod convex_enum;
 mod convex_nested;
 mod convex_union;
+mod http_action;
 mod native_function;
 
 /// `#[derive(ConvexDocument)]`
@@ -89,6 +90,18 @@ pub fn mutation(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn action(attr: TokenStream, item: TokenStream) -> TokenStream {
     native_function::attr(native_function::FnKind::Action, attr, item)
+}
+
+/// `#[convex::http_action(method = "GET", path = "/api/...")]` —
+/// declare an HTTP action handler.
+///
+/// Expects an async fn with signature
+/// `(ctx: &mut HttpActionCtx<'_, Rt>, req: HttpRequest) ->
+/// Result<HttpResponse>`. Registers the route in the inventory; lookup happens
+/// at runtime via `convex_native::HttpRouter`.
+#[proc_macro_attribute]
+pub fn http_action(attr: TokenStream, item: TokenStream) -> TokenStream {
+    http_action::attr(attr, item)
 }
 
 #[proc_macro_attribute]
