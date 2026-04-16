@@ -68,6 +68,25 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
+### New — JSON introspection for dev tooling
+
+`BuiltBackend::describe_json()` returns a stable JSON envelope
+listing every declared table (with indexes / text-indexes /
+vector-indexes), every registered function (with name / kind / args),
+and every HTTP route. `describe_pretty()` formats the same output as
+an indented string.
+
+Shape (version 1):
+
+```json
+{
+  "version": 1,
+  "schema": { "tables": [...], "schema_validation": true },
+  "functions": { "entries": [{ "name", "kind", "args" }, ...] },
+  "http_routes": { "routes": [{ "method", "path", "name" }, ...] }
+}
+```
+
 ### New — `ctx.auth()` identity helper
 
 `QueryCtx` and `MutationCtx` now expose `ctx.auth()` returning an

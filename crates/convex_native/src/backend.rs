@@ -141,6 +141,20 @@ impl BuiltBackend {
         }
     }
 
+    /// Stable JSON envelope describing the collected app. Useful for
+    /// dev tooling and CI checks; see [`crate::introspect::describe_json`]
+    /// for the shape.
+    pub fn describe_json(&self) -> serde_json::Value {
+        let functions = self.runner.as_ref().map(|r| r.registry_ref()).flatten();
+        crate::introspect::describe_json(self.schema.as_ref(), functions, self.router.as_ref())
+    }
+
+    /// Pretty-printed string version of [`describe_json`].
+    pub fn describe_pretty(&self) -> String {
+        let functions = self.runner.as_ref().map(|r| r.registry_ref()).flatten();
+        crate::introspect::describe_pretty(self.schema.as_ref(), functions, self.router.as_ref())
+    }
+
     /// Run a registered native action directly. Useful for integration
     /// tests that want to exercise an action without standing up the
     /// full backend.

@@ -382,6 +382,11 @@ impl NativeFunctionRunner {
     pub fn iter(&self) -> impl Iterator<Item = &'static NativeFunctionRegistration> + '_ {
         self.inner.iter()
     }
+
+    /// Borrow the inner registry — used by introspection tooling.
+    pub fn registry_ref(&self) -> Option<&NativeFunctionRegistry> {
+        Some(&self.inner)
+    }
 }
 
 struct InFlightGuard<'a> {

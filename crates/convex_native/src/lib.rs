@@ -66,6 +66,7 @@ pub mod document;
 pub mod function_ref;
 pub mod http;
 pub mod id;
+pub mod introspect;
 pub mod metrics;
 pub mod prelude;
 pub mod registry;
