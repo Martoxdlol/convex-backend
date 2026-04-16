@@ -19,12 +19,39 @@ use crate::{
 pub struct QueryCtx<'tx, RT: Runtime> {
     pub(crate) tx: &'tx mut Transaction<RT>,
     pub(crate) namespace: TableNamespace,
+    pub(crate) log_buffer: crate::logging::LogBuffer,
 }
 
 impl<'tx, RT: Runtime> QueryCtx<'tx, RT> {
     /// Construct from a raw transaction. Used by the runner.
     pub fn new(tx: &'tx mut Transaction<RT>, namespace: TableNamespace) -> Self {
-        Self { tx, namespace }
+        Self {
+            tx,
+            namespace,
+            log_buffer: crate::logging::LogBuffer::new(),
+        }
+    }
+
+    /// Construct with an externally-owned log buffer. Useful when the
+    /// caller (e.g. the runner) wants to read the captured log lines
+    /// after the handler returns.
+    pub fn with_log_buffer(
+        tx: &'tx mut Transaction<RT>,
+        namespace: TableNamespace,
+        log_buffer: crate::logging::LogBuffer,
+    ) -> Self {
+        Self {
+            tx,
+            namespace,
+            log_buffer,
+        }
+    }
+
+    /// Borrow a logger that writes into the ctx's log buffer.
+    pub fn log(&self) -> crate::logging::Logger<'_> {
+        crate::logging::Logger {
+            buffer: &self.log_buffer,
+        }
     }
 
     /// Borrow the read-only database handle.

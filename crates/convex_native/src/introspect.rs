@@ -30,6 +30,7 @@ pub fn describe_json(
 
     let mut envelope = serde_json::Map::new();
     envelope.insert("version".into(), json!(1));
+    envelope.insert("convex_native_version".into(), json!(crate::VERSION));
     if let Some(s) = schema_json {
         envelope.insert("schema".into(), s);
     }

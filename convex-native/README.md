@@ -68,6 +68,29 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
+### New — `ctx.log()` helper + `convex_native::VERSION`
+
+`QueryCtx` / `MutationCtx` / `ActionCtx` now expose `ctx.log()`
+returning a `Logger<'_>` with `debug / info / warn / error` methods:
+
+```rust
+#[convex::mutation]
+async fn create(ctx: &mut MutationCtx, name: String) -> Result<Id<User>> {
+    ctx.log().info(format!("creating user {name}"));
+    // ...
+}
+```
+
+Lines land in a shared `LogBuffer` (cheap to clone, thread-safe). The
+runner uses `with_callbacks_and_log_buffer` (or the query/mutation
+equivalents) to inject a buffer it can drain into the backend's
+log-streaming path after the handler returns.
+
+Also added a `convex_native::VERSION` constant (derived from
+`CARGO_PKG_VERSION` at build time). Surfaced through
+`introspect::describe_json` as `convex_native_version` for deployment
+traceability.
+
 ### New — `#[convex::query(internal)]` modifier
 
 Mark a query/mutation/action as internal-only:

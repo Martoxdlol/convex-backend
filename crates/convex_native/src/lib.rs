@@ -68,6 +68,7 @@ pub mod function_ref;
 pub mod http;
 pub mod id;
 pub mod introspect;
+pub mod logging;
 pub mod metrics;
 pub mod prelude;
 pub mod registry;
@@ -131,6 +132,16 @@ pub use http::{
     HttpRouter,
 };
 pub use id::Id;
+pub use logging::{
+    LogBuffer,
+    LogLevel,
+    Logger,
+    NativeLogLine,
+};
+
+/// Crate version — derived at build time from `CARGO_PKG_VERSION`.
+/// Useful for introspection / deployment traceability.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use metrics::{
     CountingMetrics,
     NativeMetricsSink,

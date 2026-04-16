@@ -39,6 +39,7 @@ pub struct ActionCtx<'a, RT: Runtime> {
     pub(crate) runner: Option<Arc<NativeFunctionRunner>>,
     pub(crate) callbacks: Arc<dyn NativeActionCallbacks>,
     pub(crate) namespace: TableNamespace,
+    pub(crate) log_buffer: crate::logging::LogBuffer,
     _rt: std::marker::PhantomData<&'a RT>,
 }
 
@@ -61,7 +62,34 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
             runner,
             callbacks,
             namespace,
+            log_buffer: crate::logging::LogBuffer::new(),
             _rt: std::marker::PhantomData,
+        }
+    }
+
+    /// Same as [`with_callbacks`] but attaches an externally-owned log
+    /// buffer so callers can inspect the captured lines after the
+    /// handler returns. The runner uses this to surface log lines
+    /// through the standard log-streaming path.
+    pub fn with_callbacks_and_log_buffer(
+        runner: Option<Arc<NativeFunctionRunner>>,
+        callbacks: Arc<dyn NativeActionCallbacks>,
+        namespace: TableNamespace,
+        log_buffer: crate::logging::LogBuffer,
+    ) -> Self {
+        Self {
+            runner,
+            callbacks,
+            namespace,
+            log_buffer,
+            _rt: std::marker::PhantomData,
+        }
+    }
+
+    /// Borrow a logger that writes into the ctx's log buffer.
+    pub fn log(&self) -> crate::logging::Logger<'_> {
+        crate::logging::Logger {
+            buffer: &self.log_buffer,
         }
     }
 
