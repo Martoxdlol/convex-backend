@@ -72,14 +72,14 @@ pub fn diff(old: &DatabaseSchema, new: &DatabaseSchema) -> Vec<SchemaChange> {
     let new_tables: &BTreeMap<TableName, TableDefinition> = &new.tables;
 
     // Tables only in the new schema (additions).
-    for (name, _) in new_tables {
+    for name in new_tables.keys() {
         if !old_tables.contains_key(name) {
             changes.push(SchemaChange::TableAdded(name.clone()));
         }
     }
 
     // Tables only in the old schema (removals).
-    for (name, _) in old_tables {
+    for name in old_tables.keys() {
         if !new_tables.contains_key(name) {
             changes.push(SchemaChange::TableRemoved(name.clone()));
         }
@@ -102,7 +102,7 @@ fn diff_indexes(
     out: &mut Vec<SchemaChange>,
 ) {
     // Additions.
-    for (desc, _) in new {
+    for desc in new.keys() {
         if !old.contains_key(desc) {
             out.push(SchemaChange::IndexAdded {
                 table: table.clone(),
@@ -111,7 +111,7 @@ fn diff_indexes(
         }
     }
     // Removals.
-    for (desc, _) in old {
+    for desc in old.keys() {
         if !new.contains_key(desc) {
             out.push(SchemaChange::IndexRemoved {
                 table: table.clone(),

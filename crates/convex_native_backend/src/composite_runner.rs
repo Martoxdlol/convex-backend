@@ -162,7 +162,7 @@ async fn begin_tx_with_writes<RT: Runtime>(
 /// Shared helper: given a query/mutation `UdfType`, a handler, and
 /// the request metadata, drive the handler to completion and return
 /// the (final_tx, outcome, usage) tuple.
-async fn dispatch_native<RT: Runtime>(
+async fn dispatch_native<RT: Runtime + 'static>(
     database: &Database<RT>,
     native: &Arc<NativeFunctionRunner>,
     udf_type: UdfType,
@@ -174,10 +174,7 @@ async fn dispatch_native<RT: Runtime>(
     Option<FunctionFinalTransaction>,
     FunctionOutcome,
     FunctionUsageStats,
-)>
-where
-    RT: 'static,
-{
+)> {
     // The native handler is monomorphic over `Rt` (ProdRuntime). We
     // only reach here when RT == Rt at runtime; the static type
     // system treats them as distinct. Guard with a downcast check.

@@ -149,9 +149,9 @@ impl NativeFunctionRegistry {
 /// Actions are NOT supported here — they don't take a transaction; use
 /// `NativeFunctionRunner::run_action` or the future `ActionCtx`
 /// invocation path instead.
-pub async fn invoke<'a>(
+pub async fn invoke(
     handler: &HandlerFn,
-    tx: &'a mut Transaction<Rt>,
+    tx: &mut Transaction<Rt>,
     namespace: TableNamespace,
     args: ConvexObject,
 ) -> anyhow::Result<ConvexValue> {

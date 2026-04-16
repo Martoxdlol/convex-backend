@@ -58,16 +58,13 @@ impl<T: ConvexDocument> Id<T> {
     }
 }
 
+impl<T: ConvexDocument> Copy for Id<T> {}
+
 impl<T: ConvexDocument> Clone for Id<T> {
     fn clone(&self) -> Self {
-        Self {
-            inner: self.inner,
-            _phantom: PhantomData,
-        }
+        *self
     }
 }
-
-impl<T: ConvexDocument> Copy for Id<T> {}
 
 impl<T: ConvexDocument> PartialEq for Id<T> {
     fn eq(&self, other: &Self) -> bool {

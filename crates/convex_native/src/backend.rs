@@ -197,7 +197,7 @@ impl BuiltBackend {
     /// dev tooling and CI checks; see [`crate::introspect::describe_json`]
     /// for the shape.
     pub fn describe_json(&self) -> serde_json::Value {
-        let functions = self.runner.as_ref().map(|r| r.registry_ref()).flatten();
+        let functions = self.runner.as_ref().and_then(|r| r.registry_ref());
         crate::introspect::describe_json_full(
             self.schema.as_ref(),
             functions,

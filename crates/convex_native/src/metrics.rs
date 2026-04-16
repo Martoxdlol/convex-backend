@@ -81,7 +81,7 @@ impl NativeMetricsSink for CountingMetrics {
         let total = inner
             .total_latency
             .entry((name.to_string(), udf_type))
-            .or_insert_with(Duration::default);
+            .or_default();
         *total += latency;
     }
 }

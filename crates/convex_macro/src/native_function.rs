@@ -478,14 +478,13 @@ fn extract_result_ok_type(ret: &ReturnType) -> syn::Result<TokenStream2> {
             "function must return `anyhow::Result<T>`",
         ));
     };
-    if let Type::Path(p) = ty.as_ref() {
-        if let Some(seg) = p.path.segments.last()
-            && seg.ident == "Result"
-            && let syn::PathArguments::AngleBracketed(args) = &seg.arguments
-            && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
-        {
-            return Ok(quote! { #inner });
-        }
+    if let Type::Path(p) = ty.as_ref()
+        && let Some(seg) = p.path.segments.last()
+        && seg.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        return Ok(quote! { #inner });
     }
     // Fall back: use the whole type — generated code will fail with a
     // proper error if it's not Result<T, _>.
