@@ -50,6 +50,7 @@ pub mod __private {
     };
 }
 
+pub mod backend;
 pub mod callbacks;
 pub mod convert;
 pub mod ctx;
@@ -61,7 +62,12 @@ pub mod prelude;
 pub mod registry;
 pub mod runner;
 pub mod schema;
+pub mod schema_diff;
 
+pub use backend::{
+    BuiltBackend,
+    ConvexBackend,
+};
 pub use callbacks::{
     NativeActionCallbacks,
     NoopCallbacks,
@@ -114,4 +120,8 @@ pub use runner::NativeFunctionRunner;
 pub use schema::{
     NativeSchema,
     TableRegistration,
+};
+pub use schema_diff::{
+    diff as diff_schemas,
+    SchemaChange,
 };

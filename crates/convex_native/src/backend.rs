@@ -1,0 +1,177 @@
+//! Developer-facing builder for assembling a native Convex app.
+//!
+//! Per `IMPLEMENTATION_PLAN.md` step 1.5.2.
+//!
+//! ```ignore
+//! use convex_native::{ConvexBackend, NativeActionCallbacks};
+//! use std::sync::Arc;
+//!
+//! let built = ConvexBackend::new()
+//!     .with_native_functions()   // collect #[convex::{query, mutation, action}]
+//!     .with_native_schema()      // collect #[derive(ConvexDocument)] tables
+//!     .with_http_routes()        // collect #[convex::http_action]
+//!     .with_callbacks(Arc::new(my_backend_callbacks))
+//!     .build()?;
+//!
+//! // `built` carries the registry, schema, router, and callbacks —
+//! // the full backend's `make_app()` plugs these into the composite
+//! // function runner.
+//! ```
+//!
+//! This surface intentionally doesn't *start* a backend — that lives in
+//! the future `crates/convex_native_backend/` crate which has the
+//! `function_runner` dep and the V8 build prerequisite. What you get
+//! here is the full "collected app" object that the backend adapter
+//! consumes.
+
+use std::sync::Arc;
+
+use common::schemas::DatabaseSchema;
+
+use crate::{
+    callbacks::{
+        NativeActionCallbacks,
+        NoopCallbacks,
+    },
+    http::HttpRouter,
+    runner::NativeFunctionRunner,
+    schema::NativeSchema,
+};
+
+/// Mutable builder. Defaults are deliberately empty — you opt each
+/// piece in explicitly so test harnesses can compose a minimal backend
+/// without pulling in every capability.
+#[derive(Default)]
+pub struct ConvexBackend {
+    include_fns: bool,
+    include_schema: bool,
+    include_http: bool,
+    callbacks: Option<Arc<dyn NativeActionCallbacks>>,
+}
+
+impl ConvexBackend {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Opt into collecting every `#[convex::{query,mutation,action}]`
+    /// the binary statically registered.
+    pub fn with_native_functions(mut self) -> Self {
+        self.include_fns = true;
+        self
+    }
+
+    /// Opt into collecting every `#[derive(ConvexDocument)]` table.
+    pub fn with_native_schema(mut self) -> Self {
+        self.include_schema = true;
+        self
+    }
+
+    /// Opt into collecting every `#[convex::http_action]` route.
+    pub fn with_http_routes(mut self) -> Self {
+        self.include_http = true;
+        self
+    }
+
+    /// Provide backend callbacks. If omitted, `BuiltBackend` exposes
+    /// [`NoopCallbacks`] so unit tests can still construct a backend.
+    pub fn with_callbacks(mut self, callbacks: Arc<dyn NativeActionCallbacks>) -> Self {
+        self.callbacks = Some(callbacks);
+        self
+    }
+
+    /// Finalize: collect everything opted-in into a [`BuiltBackend`].
+    pub fn build(self) -> anyhow::Result<BuiltBackend> {
+        let runner = if self.include_fns {
+            Some(Arc::new(NativeFunctionRunner::from_inventory()?))
+        } else {
+            None
+        };
+        let schema = if self.include_schema {
+            Some(NativeSchema::collect()?)
+        } else {
+            None
+        };
+        let router = if self.include_http {
+            Some(HttpRouter::collect()?)
+        } else {
+            None
+        };
+        let callbacks = self.callbacks.unwrap_or_else(|| Arc::new(NoopCallbacks));
+        Ok(BuiltBackend {
+            runner,
+            schema,
+            router,
+            callbacks,
+        })
+    }
+}
+
+/// Fully assembled native-convex app, ready to hand to a backend
+/// adapter.
+pub struct BuiltBackend {
+    pub runner: Option<Arc<NativeFunctionRunner>>,
+    pub schema: Option<DatabaseSchema>,
+    pub router: Option<HttpRouter>,
+    pub callbacks: Arc<dyn NativeActionCallbacks>,
+}
+
+impl BuiltBackend {
+    /// Convenience: did the builder opt into functions?
+    pub fn has_runner(&self) -> bool {
+        self.runner.is_some()
+    }
+
+    /// Convenience: did the builder opt into schema collection?
+    pub fn has_schema(&self) -> bool {
+        self.schema.is_some()
+    }
+
+    /// Convenience: did the builder opt into HTTP routes?
+    pub fn has_http(&self) -> bool {
+        self.router.is_some()
+    }
+
+    /// Run a registered native action directly. Useful for integration
+    /// tests that want to exercise an action without standing up the
+    /// full backend.
+    pub async fn run_action(
+        &self,
+        name: &str,
+        namespace: value::TableNamespace,
+        args: value::ConvexObject,
+    ) -> anyhow::Result<value::ConvexValue> {
+        let runner = self.runner.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("BuiltBackend has no runner — call `.with_native_functions()`")
+        })?;
+        runner
+            .run_action_with_callbacks(name, namespace, args, self.callbacks.clone())
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_builder_defaults_are_empty() {
+        let built = ConvexBackend::new().build().unwrap();
+        assert!(!built.has_runner());
+        assert!(!built.has_schema());
+        assert!(!built.has_http());
+    }
+
+    #[test]
+    fn opting_in_picks_up_each_capability() {
+        let built = ConvexBackend::new()
+            .with_native_functions()
+            .with_native_schema()
+            .with_http_routes()
+            .build()
+            .unwrap();
+        assert!(built.has_runner());
+        assert!(built.has_schema());
+        assert!(built.has_http());
+    }
+}

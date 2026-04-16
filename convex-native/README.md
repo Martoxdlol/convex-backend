@@ -7,14 +7,14 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 ## Current state
 
 **Phase 1 COMPLETE** (steps 1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1,
-1.6.1–1.6.3) **plus Phase 2 2.1–2.8 COMPLETE** (surfaces for scheduler
-/ storage / HTTP actions / callbacks defined and fully wired through
-`NativeActionCallbacks` — real backend adapter still pending).
+1.5.2, 1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 5
+partial** (5.1 schema diff + 5.2 compile-time index validation).
 
 Remaining: concrete backend adapter implementing
-`NativeActionCallbacks` (future `crates/convex_native_backend` crate),
-composite runner wiring (1.5), distributed execution (3), hardening
-(4), and advanced types (5).
+`NativeActionCallbacks` and wiring the composite runner into
+`make_app()` (future `crates/convex_native_backend` crate — 1.5.1 /
+1.5.3), distributed execution (3), production hardening (4), and
+advanced types 5.3 / 5.4.
 
 ### What works
 
@@ -56,6 +56,39 @@ pub struct User {
 
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
+
+### New in Phase 5 (partial) — index validation + schema diff
+
+- **Compile-time index-field validation (5.2).**
+  `#[derive(ConvexDocument)]` now rejects `#[convex(index(... fields =
+  ["nonexistent"]))]` with a clear error pointing out which declared
+  fields are available. Nested field paths (`"profile.name"`) validate
+  their top-level segment only — the nested struct carries the rest.
+- **Schema diff tool (5.1).** `convex_native::diff_schemas(old, new)`
+  returns a `Vec<SchemaChange>` describing additions, removals, and
+  modified index field-sets. `SchemaChange::is_destructive()` flags
+  entries that can drop data or break queries (removed table / index
+  / changed index fields). Intended for dev-time migration tooling.
+
+### New in Phase 1.5.2 — `ConvexBackend` builder
+
+`ConvexBackend::new()` is the developer-facing assembly point:
+
+```rust
+let built = ConvexBackend::new()
+    .with_native_functions()     // collect #[convex::{query,mutation,action}]
+    .with_native_schema()        // collect #[derive(ConvexDocument)]
+    .with_http_routes()          // collect #[convex::http_action]
+    .with_callbacks(my_callbacks)
+    .build()?;
+
+let ret = built.run_action("send_email", ns, args).await?;
+```
+
+`BuiltBackend` carries an `Arc<NativeFunctionRunner>`, the collected
+`DatabaseSchema`, the `HttpRouter`, and the callbacks. It's the
+handoff object the future backend adapter consumes when integrating
+with `make_app()`.
 
 ### New in Phase 2.8 — `NativeActionCallbacks`
 

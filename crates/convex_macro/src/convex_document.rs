@@ -89,6 +89,11 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let indexes = parse_index_attrs(attrs)?;
     let fields = parse_fields(data_struct, ident)?;
 
+    // Compile-time validation: each index field must reference a
+    // declared struct field (matching by snake_case name, which is
+    // what we use on the wire).
+    validate_index_fields(&indexes, &fields)?;
+
     let struct_ident = ident;
     let field_enum_ident = format_ident!("{struct_ident}Field");
     let index_enum_ident = format_ident!("{struct_ident}Index");
@@ -255,6 +260,33 @@ fn parse_fields(ds: &DataStruct, struct_ident: &Ident) -> syn::Result<Vec<FieldS
             })
         })
         .collect()
+}
+
+/// Reject index declarations that reference fields the struct doesn't
+/// declare. We look up by exact name (snake_case, as emitted on the
+/// wire). Nested field paths like `"profile.name"` are allowed and
+/// validated against the top-level segment only — the nested struct
+/// is assumed to carry the rest.
+fn validate_index_fields(indexes: &[IndexSpec], fields: &[FieldSpec]) -> syn::Result<()> {
+    let declared: std::collections::BTreeSet<&str> =
+        fields.iter().map(|f| f.name.as_str()).collect();
+    for idx in indexes {
+        for field_ref in &idx.fields {
+            let top = field_ref.split('.').next().unwrap_or(field_ref);
+            if !declared.contains(top) {
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!(
+                        "index {:?} references unknown field {:?}. Declared fields: {:?}",
+                        idx.name,
+                        field_ref,
+                        declared.iter().copied().collect::<Vec<_>>(),
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── Codegen helpers ──────────────────────────────────────────────
