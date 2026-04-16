@@ -146,6 +146,44 @@ impl BuiltBackend {
         self.router.is_some()
     }
 
+    /// Number of registered functions (queries + mutations + actions).
+    pub fn function_count(&self) -> usize {
+        self.runner.as_ref().map_or(0, |r| r.len())
+    }
+
+    /// Number of declared tables.
+    pub fn table_count(&self) -> usize {
+        self.schema.as_ref().map_or(0, |s| s.tables.len())
+    }
+
+    /// Number of registered HTTP routes.
+    pub fn route_count(&self) -> usize {
+        self.router.as_ref().map_or(0, |r| r.len())
+    }
+
+    /// Number of registered cron entries.
+    pub fn cron_count(&self) -> usize {
+        self.crons.as_ref().map_or(0, |c| c.len())
+    }
+
+    /// The `convex_native` crate version this binary was built with.
+    /// Useful for deployment traceability.
+    pub fn convex_native_version(&self) -> &'static str {
+        crate::VERSION
+    }
+
+    /// A one-line human-readable summary suitable for startup logs.
+    pub fn summary(&self) -> String {
+        format!(
+            "convex_native {} — {} fn · {} table · {} route · {} cron",
+            self.convex_native_version(),
+            self.function_count(),
+            self.table_count(),
+            self.route_count(),
+            self.cron_count(),
+        )
+    }
+
     /// Produce the warm-up plan for the collected schema. Returns an
     /// empty vec if the builder didn't opt into schema collection.
     pub fn warmup_plan(&self) -> Vec<crate::warmup::WarmupEntry> {

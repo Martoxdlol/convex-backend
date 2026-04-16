@@ -195,6 +195,20 @@ Exposes: `bad_request` (400), `not_found` (404), `unauthenticated`
 (401), `forbidden` (403), `conflict` (409). The `ErrorMetadata` type
 is re-exported too for callers that need it directly.
 
+### New — `BuiltBackend::summary()` + `*_count()` helpers
+
+One-line startup log format:
+
+```
+convex_native 0.1.0 — 4 fn · 1 table · 1 route · 1 cron
+```
+
+`BuiltBackend::summary()` produces the above; individual counts are
+exposed as `function_count()`, `table_count()`, `route_count()`, and
+`cron_count()`. Crate version is also available via
+`convex_native_version()`. The `tiny_app` example prints the summary
+to stderr on startup.
+
 ### New — JSON introspection for dev tooling
 
 `BuiltBackend::describe_json()` returns a stable JSON envelope

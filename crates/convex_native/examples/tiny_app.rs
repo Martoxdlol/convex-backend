@@ -134,6 +134,7 @@ fn main() -> anyhow::Result<()> {
     // Cross-check cron targets exist.
     built.validate()?;
 
+    eprintln!("startup: {}", built.summary());
     println!("{}", built.describe_pretty());
     Ok(())
 }
