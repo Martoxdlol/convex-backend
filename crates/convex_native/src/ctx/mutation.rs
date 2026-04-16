@@ -124,6 +124,16 @@ impl<'tx, RT: Runtime> MutationDb<'tx, RT> {
         self.as_query_db().get(id).await
     }
 
+    /// Fetch a document by id, returning an error if it doesn't exist.
+    /// Saves the `.ok_or_else(...)` pattern in the common case where a
+    /// missing document is a logic error (e.g. following a foreign key
+    /// you just validated).
+    pub async fn try_get<T: ConvexDocument>(&mut self, id: Id<T>) -> anyhow::Result<T> {
+        self.get(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("document {} not found in {}", id, T::table_name()))
+    }
+
     /// Bulk-fetch — mirrors [`QueryDb::get_many`].
     pub async fn get_many<T: ConvexDocument>(
         &mut self,

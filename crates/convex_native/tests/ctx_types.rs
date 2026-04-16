@@ -71,6 +71,10 @@ async fn _widget_query<RT: common::runtime::Runtime>(ctx: &mut QueryCtx<'_, RT>)
         let _: common::document::CreationTime = m.creation_time;
     }
 
+    // try_get + exists compile against the typed id.
+    let _: Widget = ctx.db().try_get(id).await.unwrap();
+    let _: bool = ctx.db().exists(id).await.unwrap();
+
     // unique() and take() terminals compile cleanly.
     let _: Option<Widget> = ctx
         .db()

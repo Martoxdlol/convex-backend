@@ -97,6 +97,20 @@ impl<'tx, RT: Runtime> QueryDb<'tx, RT> {
         Ok(self.get_with_meta(id).await?.map(|m| m.doc))
     }
 
+    /// Fetch a document by id, returning an error if it doesn't exist.
+    /// Equivalent to `get(id).await?.ok_or_else(...)` but with a
+    /// consistent error message.
+    pub async fn try_get<T: ConvexDocument>(&mut self, id: Id<T>) -> anyhow::Result<T> {
+        self.get(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("document {} not found in {}", id, T::table_name()))
+    }
+
+    /// Check whether a document exists by id, without materializing it.
+    pub async fn exists<T: ConvexDocument>(&mut self, id: Id<T>) -> anyhow::Result<bool> {
+        Ok(self.get(id).await?.is_some())
+    }
+
     /// Fetch a document by id along with its metadata (id, creation time).
     /// Useful when you need to pass the id through further operations
     /// or sort by creation time.

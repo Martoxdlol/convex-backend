@@ -137,6 +137,54 @@ impl<'a, RT: Runtime> HttpActionCtx<'a, RT> {
         }
     }
 
+    /// Construct with explicit backend callbacks.
+    pub fn with_callbacks(
+        runner: Option<Arc<NativeFunctionRunner>>,
+        callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
+        namespace: TableNamespace,
+    ) -> Self {
+        Self {
+            inner: ActionCtx::with_callbacks(runner, callbacks, namespace),
+        }
+    }
+
+    /// Same as [`with_callbacks`] plus an external log buffer.
+    pub fn with_callbacks_and_log_buffer(
+        runner: Option<Arc<NativeFunctionRunner>>,
+        callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
+        namespace: TableNamespace,
+        log_buffer: crate::logging::LogBuffer,
+    ) -> Self {
+        Self {
+            inner: ActionCtx::with_callbacks_and_log_buffer(
+                runner, callbacks, namespace, log_buffer,
+            ),
+        }
+    }
+
+    /// Delegate — logger.
+    pub fn log(&self) -> crate::logging::Logger<'_> {
+        self.inner.log()
+    }
+
+    /// Delegate — run a query by name (untyped path).
+    pub async fn run_query_raw(
+        &mut self,
+        name: &str,
+        args: value::ConvexObject,
+    ) -> anyhow::Result<value::ConvexValue> {
+        self.inner.run_query_raw(name, args).await
+    }
+
+    /// Delegate — run a mutation by name (untyped path).
+    pub async fn run_mutation_raw(
+        &mut self,
+        name: &str,
+        args: value::ConvexObject,
+    ) -> anyhow::Result<value::ConvexValue> {
+        self.inner.run_mutation_raw(name, args).await
+    }
+
     /// Delegate — run a typed sub-call query.
     pub async fn run_query<F: crate::function_ref::ConvexQueryFunction>(
         &mut self,
