@@ -46,6 +46,7 @@ pub struct ConvexBackend {
     include_fns: bool,
     include_schema: bool,
     include_http: bool,
+    include_crons: bool,
     callbacks: Option<Arc<dyn NativeActionCallbacks>>,
 }
 
@@ -73,6 +74,12 @@ impl ConvexBackend {
         self
     }
 
+    /// Opt into collecting every `#[convex::cron]` registration.
+    pub fn with_crons(mut self) -> Self {
+        self.include_crons = true;
+        self
+    }
+
     /// Provide backend callbacks. If omitted, `BuiltBackend` exposes
     /// [`NoopCallbacks`] so unit tests can still construct a backend.
     pub fn with_callbacks(mut self, callbacks: Arc<dyn NativeActionCallbacks>) -> Self {
@@ -97,11 +104,17 @@ impl ConvexBackend {
         } else {
             None
         };
+        let crons = if self.include_crons {
+            Some(crate::cron::CronRegistry::collect()?)
+        } else {
+            None
+        };
         let callbacks = self.callbacks.unwrap_or_else(|| Arc::new(NoopCallbacks));
         Ok(BuiltBackend {
             runner,
             schema,
             router,
+            crons,
             callbacks,
         })
     }
@@ -113,6 +126,7 @@ pub struct BuiltBackend {
     pub runner: Option<Arc<NativeFunctionRunner>>,
     pub schema: Option<DatabaseSchema>,
     pub router: Option<HttpRouter>,
+    pub crons: Option<crate::cron::CronRegistry>,
     pub callbacks: Arc<dyn NativeActionCallbacks>,
 }
 
@@ -146,13 +160,17 @@ impl BuiltBackend {
     /// for the shape.
     pub fn describe_json(&self) -> serde_json::Value {
         let functions = self.runner.as_ref().map(|r| r.registry_ref()).flatten();
-        crate::introspect::describe_json(self.schema.as_ref(), functions, self.router.as_ref())
+        crate::introspect::describe_json_full(
+            self.schema.as_ref(),
+            functions,
+            self.router.as_ref(),
+            self.crons.as_ref(),
+        )
     }
 
     /// Pretty-printed string version of [`describe_json`].
     pub fn describe_pretty(&self) -> String {
-        let functions = self.runner.as_ref().map(|r| r.registry_ref()).flatten();
-        crate::introspect::describe_pretty(self.schema.as_ref(), functions, self.router.as_ref())
+        serde_json::to_string_pretty(&self.describe_json()).unwrap_or_else(|_| String::new())
     }
 
     /// Run a registered native action directly. Useful for integration

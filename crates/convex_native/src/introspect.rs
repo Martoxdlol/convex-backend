@@ -10,6 +10,7 @@ use common::schemas::DatabaseSchema;
 use serde_json::json;
 
 use crate::{
+    cron::CronRegistry,
     http::HttpRouter,
     registry::{
         HandlerFn,
@@ -24,9 +25,20 @@ pub fn describe_json(
     functions: Option<&NativeFunctionRegistry>,
     router: Option<&HttpRouter>,
 ) -> serde_json::Value {
+    describe_json_full(schema, functions, router, None)
+}
+
+/// Same as [`describe_json`] but also includes cron registrations.
+pub fn describe_json_full(
+    schema: Option<&DatabaseSchema>,
+    functions: Option<&NativeFunctionRegistry>,
+    router: Option<&HttpRouter>,
+    crons: Option<&CronRegistry>,
+) -> serde_json::Value {
     let schema_json = schema.map(describe_schema);
     let functions_json = functions.map(describe_functions);
     let router_json = router.map(describe_router);
+    let crons_json = crons.map(describe_crons);
 
     let mut envelope = serde_json::Map::new();
     envelope.insert("version".into(), json!(1));
@@ -40,7 +52,25 @@ pub fn describe_json(
     if let Some(r) = router_json {
         envelope.insert("http_routes".into(), r);
     }
+    if let Some(c) = crons_json {
+        envelope.insert("crons".into(), c);
+    }
     serde_json::Value::Object(envelope)
+}
+
+fn describe_crons(registry: &CronRegistry) -> serde_json::Value {
+    let entries: Vec<_> = registry
+        .iter()
+        .map(|c| {
+            json!({
+                "name": c.name,
+                "schedule": c.schedule,
+                "target": c.target,
+                "target_kind": c.target_kind,
+            })
+        })
+        .collect();
+    json!({ "entries": entries })
 }
 
 fn describe_schema(schema: &DatabaseSchema) -> serde_json::Value {

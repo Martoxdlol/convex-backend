@@ -16,6 +16,7 @@ mod convex_document;
 mod convex_enum;
 mod convex_nested;
 mod convex_union;
+mod cron;
 mod http_action;
 mod native_function;
 
@@ -102,6 +103,18 @@ pub fn action(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn http_action(attr: TokenStream, item: TokenStream) -> TokenStream {
     http_action::attr(attr, item)
+}
+
+/// `#[convex::cron(name = "...", schedule = "...", target = "...")]` —
+/// register a recurring scheduled job.
+///
+/// Attaches to an arbitrary placeholder item at module scope and
+/// emits an `inventory::submit!(CronRegistration)`. The backend
+/// adapter walks `CronRegistry::collect()` at startup to install
+/// schedulers for each entry.
+#[proc_macro_attribute]
+pub fn cron(attr: TokenStream, item: TokenStream) -> TokenStream {
+    cron::attr(attr, item)
 }
 
 #[proc_macro_attribute]

@@ -131,6 +131,29 @@ Also added a `convex_native::VERSION` constant (derived from
 `introspect::describe_json` as `convex_native_version` for deployment
 traceability.
 
+### New — `#[convex::cron(...)]`
+
+Recurring scheduled jobs via an inventory-collected attribute:
+
+```rust
+#[convex::mutation(internal)]
+async fn nightly_cleanup(ctx: &mut MutationCtx) -> Result<()> { .. }
+
+#[convex::cron(
+    name = "nightly-cleanup",
+    schedule = "0 3 * * *",
+    target = "nightly_cleanup",
+)]
+fn _nightly_cleanup_cron() {}
+```
+
+Attaches to a placeholder item (name doesn't matter) and emits a
+`CronRegistration`. `ConvexBackend::new().with_crons().build()`
+collects everything into `BuiltBackend::crons`, and introspection
+includes a `crons.entries[]` array. Actually *running* the
+schedule on time is still the backend adapter's responsibility —
+this crate stops at registration.
+
 ### New — `#[convex::query(internal)]` modifier
 
 Mark a query/mutation/action as internal-only:

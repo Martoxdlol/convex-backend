@@ -23,6 +23,7 @@ pub use inventory;
 pub mod convex {
     pub use convex_macro::{
         action,
+        cron,
         http_action,
         mutation,
         query,
@@ -60,6 +61,7 @@ pub mod backend;
 pub mod callbacks;
 pub mod circuit_breaker;
 pub mod convert;
+pub mod cron;
 pub mod ctx;
 pub mod distributed;
 pub mod document;
@@ -94,6 +96,10 @@ pub use circuit_breaker::{
 pub use convert::{
     FromConvex,
     ToConvex,
+};
+pub use cron::{
+    CronRegistration,
+    CronRegistry,
 };
 pub use ctx::{
     query_builder::Order,

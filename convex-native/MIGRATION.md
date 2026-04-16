@@ -316,8 +316,29 @@ assert!(history.count(|r| matches!(r, CallRecord::Query { name, .. } if name == 
 
 - **Components.** JS supports `defineComponent` for reusable modules;
   native has no analog yet.
-- **Crons.** JS has `cron.ts`; native schedules are all one-shot
-  through `scheduler().run_after(...)` today.
+- **Crons.** JS `cron.ts`:
+
+  ```ts
+  import { cronJobs } from "convex/server";
+  import { internal } from "./_generated/api";
+  const crons = cronJobs();
+  crons.cron("nightly-cleanup", "0 3 * * *", internal.tasks.nightlyCleanup);
+  export default crons;
+  ```
+
+  Native:
+
+  ```rust
+  #[convex::mutation(internal)]
+  async fn nightly_cleanup(_ctx: &mut MutationCtx<'_, Rt>) -> Result<()> { Ok(()) }
+
+  #[convex::cron(
+      name = "nightly-cleanup",
+      schedule = "0 3 * * *",
+      target = "nightly_cleanup",
+  )]
+  fn _nightly_cleanup_cron() {}
+  ```
 - **Deploy / dev workflow.** `npx convex dev` doesn't talk to the
   native runtime yet. You build and run the Rust binary locally and
   deploy it as a normal Rust service.
