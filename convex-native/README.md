@@ -1,8 +1,15 @@
 # Convex Native
 
 Framework crates for writing Convex server functions (queries, mutations,
-actions) in native Rust. See `native-rust-functions.md` for the design and
-`IMPLEMENTATION_PLAN.md` for the phased roadmap.
+actions) in native Rust.
+
+- **`QUICKSTART.md`** — the shipped, working-today developer surface
+  (read this if you want to use the crate).
+- **`native-rust-functions.md`** — the original design doc (rationale
+  and high-level architecture).
+- **`IMPLEMENTATION_PLAN.md`** — phase-by-phase roadmap.
+- **`COMPOSITE_RUNNER.md`** — reference implementation for the
+  future backend-adapter crate.
 
 ## Current state
 

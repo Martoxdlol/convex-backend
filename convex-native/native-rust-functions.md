@@ -26,6 +26,29 @@
 
 ---
 
+## 0. Implementation notes
+
+**Read `QUICKSTART.md` for the current API.** The code in this design
+doc is the original proposal; where the shipped API diverges, the
+quickstart is authoritative. Notable differences:
+
+- **Typed sub-calls use PascalCase markers.** The design example has
+  `ctx.run_query(get_user_by_email, ...)` where
+  `get_user_by_email` is both the fn and the call reference. Rust
+  forbids a fn and a struct sharing a name in one scope, so the macro
+  emits a PascalCase marker struct: `ctx.run_query(GetUserByEmail,
+  GetUserByEmailArgs { .. }).await`.
+- **Pinned to `ProdRuntime` for native handlers.** `inventory` can't
+  hold generic fn pointers, so native handlers are monomorphic over
+  one runtime — aliased as `convex_native::Rt`. Developer code writes
+  `ctx: &mut QueryCtx<'_, Rt>` (elidable in type position).
+- **Backend integration is a separate crate.** The surface in this
+  design lives in `convex_native`; the adapter that implements the
+  full `function_runner::FunctionRunner` trait by wrapping the V8
+  runner + the native dispatcher lives in a planned future
+  `convex_native_backend` crate. See `COMPOSITE_RUNNER.md` for the
+  reference implementation.
+
 ## 1. Overview
 
 This document proposes adding support for writing Convex server functions
