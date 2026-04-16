@@ -54,10 +54,12 @@ pub mod backend;
 pub mod callbacks;
 pub mod convert;
 pub mod ctx;
+pub mod distributed;
 pub mod document;
 pub mod function_ref;
 pub mod http;
 pub mod id;
+pub mod metrics;
 pub mod prelude;
 pub mod registry;
 pub mod runner;
@@ -88,6 +90,12 @@ pub use ctx::{
     StorageId,
     TypedQueryBuilder,
 };
+pub use distributed::{
+    ConvexMode,
+    ExecuteRequest,
+    ExecuteResponse,
+    FunctionExecutor,
+};
 pub use document::{
     ConvexDocument,
     ConvexPatch,
@@ -107,6 +115,12 @@ pub use http::{
     HttpRouter,
 };
 pub use id::Id;
+pub use metrics::{
+    CountingMetrics,
+    NativeMetricsSink,
+    NoopMetrics,
+    Outcome,
+};
 pub use registry::{
     ActionHandlerFn,
     HandlerFn,

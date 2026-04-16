@@ -77,6 +77,20 @@ impl<'tx, RT: Runtime> QueryDb<'tx, RT> {
     pub fn query<T: ConvexDocument>(&mut self) -> TypedQueryBuilder<'_, 'tx, RT, T> {
         TypedQueryBuilder::new(self)
     }
+
+    /// Bulk-fetch documents by id. Returns `None` for ids that don't
+    /// resolve. Useful for following foreign keys across a batch — e.g.
+    /// fetching the `author: Id<User>` for every `Message` in a list.
+    pub async fn get_many<T: ConvexDocument>(
+        &mut self,
+        ids: impl IntoIterator<Item = Id<T>>,
+    ) -> anyhow::Result<Vec<Option<T>>> {
+        let mut out = Vec::new();
+        for id in ids {
+            out.push(self.get(id).await?);
+        }
+        Ok(out)
+    }
 }
 
 /// Blanket helper that lets generated code recover a typed document from a

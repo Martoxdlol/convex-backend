@@ -6,15 +6,17 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 
 ## Current state
 
-**Phase 1 COMPLETE** (steps 1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1,
-1.5.2, 1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 5
-partial** (5.1 schema diff + 5.2 compile-time index validation).
+**Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1, 1.5.2,
+1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.5
+mode alias + executor trait stub), **Phase 4 partial** (4.2 metrics
+sink), **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
+validation + 5.4 bulk `get_many`).
 
 Remaining: concrete backend adapter implementing
 `NativeActionCallbacks` and wiring the composite runner into
 `make_app()` (future `crates/convex_native_backend` crate — 1.5.1 /
-1.5.3), distributed execution (3), production hardening (4), and
-advanced types 5.3 / 5.4.
+1.5.3), real distributed gRPC service (3.1–3.6), the rest of
+production hardening (4.1 + 4.3–4.7), typed vector/text search (5.3).
 
 ### What works
 
@@ -57,7 +59,31 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
-### New in Phase 5 (partial) — index validation + schema diff
+### New in Phase 4.2 — metrics hook
+
+- `NativeMetricsSink` trait — record per-function latency and
+  `Ok`/`Err` outcome without pulling a specific metrics backend into
+  the crate.
+- `NoopMetrics` (discards) and `CountingMetrics` (in-memory counters
+  + total-latency, useful for tests / dev dashboards).
+- `NativeFunctionRunner::with_metrics(Arc<dyn NativeMetricsSink>)`
+  attaches a sink; every `run_query` / `run_mutation` /
+  `run_action_with_callbacks` now records a sample.
+
+### New in Phase 3 (partial) — distributed scaffolding
+
+- `ConvexMode::{Standalone, Conductor, Worker}` — the operating-mode
+  enum described in the design doc §10, parseable from
+  `CONVEX_MODE=...` env strings.
+- `ExecuteRequest` / `ExecuteResponse` — request/response payloads the
+  distributed gRPC service will serialize. Full protobuf definition
+  lives in Phase 3.1 (`crates/pb/proto/function_execution.proto`,
+  not yet added); these Rust types are the architectural handoff point
+  the future `convex_native_distributed` crate consumes.
+- `FunctionExecutor` trait — workers implement this to accept remote
+  calls.
+
+### New in Phase 5 (partial) — index validation + schema diff + get_many
 
 - **Compile-time index-field validation (5.2).**
   `#[derive(ConvexDocument)]` now rejects `#[convex(index(... fields =
@@ -69,6 +95,10 @@ only; `convex_macro` is re-exported.
   modified index field-sets. `SchemaChange::is_destructive()` flags
   entries that can drop data or break queries (removed table / index
   / changed index fields). Intended for dev-time migration tooling.
+- **Bulk `get_many` (5.4).** `QueryDb::get_many(ids)` and
+  `MutationDb::get_many(ids)` — fetch multiple documents in one call.
+  Useful for chasing foreign keys (`message.author: Id<User>`) across
+  a batch without writing the loop.
 
 ### New in Phase 1.5.2 — `ConvexBackend` builder
 

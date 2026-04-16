@@ -19,7 +19,10 @@
 //! - [`NativeFunctionRunner::has_function`] — name-based check so the composite
 //!   runner knows whether to dispatch natively or fall through to V8.
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::Instant,
+};
 
 use common::types::UdfType;
 use database::Transaction;
@@ -34,6 +37,11 @@ use crate::{
         action::ActionCtx,
         mutation::MutationCtx,
         query::QueryCtx,
+    },
+    metrics::{
+        NativeMetricsSink,
+        NoopMetrics,
+        Outcome,
     },
     registry::{
         HandlerFn,
@@ -50,14 +58,30 @@ use crate::{
 #[derive(Clone)]
 pub struct NativeFunctionRunner {
     inner: Arc<NativeFunctionRegistry>,
+    metrics: Arc<dyn NativeMetricsSink>,
 }
 
 impl NativeFunctionRunner {
     /// Collect every `inventory::submit!`ed registration in the binary.
+    /// Metrics default to [`NoopMetrics`]; use [`with_metrics`] to
+    /// install a real sink.
     pub fn from_inventory() -> anyhow::Result<Self> {
         Ok(Self {
             inner: Arc::new(NativeFunctionRegistry::collect()?),
+            metrics: Arc::new(NoopMetrics),
         })
+    }
+
+    /// Attach a metrics sink. Returns a new runner that shares the
+    /// same registry — existing clones keep the previous sink.
+    pub fn with_metrics(mut self, metrics: Arc<dyn NativeMetricsSink>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    /// Borrow the attached metrics sink.
+    pub fn metrics(&self) -> &Arc<dyn NativeMetricsSink> {
+        &self.metrics
     }
 
     /// Number of registered functions.
@@ -88,7 +112,8 @@ impl NativeFunctionRunner {
     }
 
     /// Execute a named native query. Errors if the name isn't registered
-    /// or isn't a query.
+    /// or isn't a query. Records latency + outcome to the attached
+    /// metrics sink.
     pub async fn run_query(
         &self,
         name: &str,
@@ -107,7 +132,19 @@ impl NativeFunctionRunner {
             );
         };
         let mut ctx = QueryCtx::new(tx, namespace);
-        handler(&mut ctx, args).await
+        let started = Instant::now();
+        let result = handler(&mut ctx, args).await;
+        self.metrics.record(
+            name,
+            UdfType::Query,
+            if result.is_ok() {
+                Outcome::Ok
+            } else {
+                Outcome::Err
+            },
+            started.elapsed(),
+        );
+        result
     }
 
     /// Execute a named native mutation. Errors if the name isn't
@@ -130,7 +167,19 @@ impl NativeFunctionRunner {
             );
         };
         let mut ctx = MutationCtx::new(tx, namespace);
-        handler(&mut ctx, args).await
+        let started = Instant::now();
+        let result = handler(&mut ctx, args).await;
+        self.metrics.record(
+            name,
+            UdfType::Mutation,
+            if result.is_ok() {
+                Outcome::Ok
+            } else {
+                Outcome::Err
+            },
+            started.elapsed(),
+        );
+        result
     }
 
     /// Execute a named native action with `NoopCallbacks`. Actions that
@@ -173,7 +222,19 @@ impl NativeFunctionRunner {
             );
         };
         let mut ctx = ActionCtx::<Rt>::with_callbacks(Some(self.clone()), callbacks, namespace);
-        handler(&mut ctx, args).await
+        let started = Instant::now();
+        let result = handler(&mut ctx, args).await;
+        self.metrics.record(
+            name,
+            UdfType::Action,
+            if result.is_ok() {
+                Outcome::Ok
+            } else {
+                Outcome::Err
+            },
+            started.elapsed(),
+        );
+        result
     }
 
     /// Iterate the registered functions (metadata only).

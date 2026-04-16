@@ -89,6 +89,14 @@ impl<'tx, RT: Runtime> MutationDb<'tx, RT> {
         self.as_query_db().get(id).await
     }
 
+    /// Bulk-fetch — mirrors [`QueryDb::get_many`].
+    pub async fn get_many<T: ConvexDocument>(
+        &mut self,
+        ids: impl IntoIterator<Item = Id<T>>,
+    ) -> anyhow::Result<Vec<Option<T>>> {
+        self.as_query_db().get_many(ids).await
+    }
+
     pub fn query<T: ConvexDocument>(&mut self) -> TypedQueryBuilder<'_, 'tx, RT, T> {
         // Safety: `TypedQueryBuilder` only needs a `&mut QueryDb`. We
         // cannot hand out an intermediate `QueryDb` and store it inside
