@@ -6,10 +6,12 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 
 ## Current state
 
-**Phase 1 — Layers 0, 1, 2, 3, function attribute macros, native
-runner stub, and additional derive macros (steps 1.0.1 → 1.3.3, 1.2.4,
-1.2.5, 1.4.1, 1.6.1–1.6.3): COMPLETE** (composite runner + full
-backend wiring in Phases 1.4.2–1.5 remain)
+**Phase 1 — Layers 0, 1, 2, 3, function attribute macros (Q/M/A),
+native runner stub with real action dispatch, and additional derive
+macros (steps 1.0.1 → 1.3.3, 1.2.4, 1.2.5, 1.4.1, 1.6.1–1.6.3) plus
+Phase 2 foundations (2.1, 2.2): COMPLETE** — composite runner,
+query/mutation execution with real FunctionOutcome, and full backend
+wiring remain (Phases 1.4.2–1.5, 2.3–2.8, 3+).
 
 ### What works
 
@@ -51,6 +53,28 @@ pub struct User {
 
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
+
+### New in Phase 2 foundations — Actions
+
+- `#[convex::action]` attribute macro. Developers write:
+
+  ```rust
+  #[convex::action]
+  async fn send_email(ctx: &mut ActionCtx, user_id: Id<User>) -> Result<()> { .. }
+  ```
+
+  The macro follows the same shape as `#[convex::query]` /
+  `#[convex::mutation]` and registers the function under
+  `UdfType::Action`.
+- `convex_native::ActionCtx<'a, RT>` — context for actions. Unlike
+  `QueryCtx` / `MutationCtx`, it does NOT hold a transaction; instead
+  it carries an optional `Arc<NativeFunctionRunner>` for sub-calls and
+  a namespace.
+- `NativeFunctionRunner::run_action(name, namespace, args)` dispatches
+  an action end-to-end — **actions with no external I/O or sub-calls
+  actually execute today** (see the `action_dispatch_returns_handler_result`
+  test). Typed / raw sub-calls (`ctx.run_query_raw` etc.) are still
+  stubbed `bail!` pending backend integration (Step 2.4+).
 
 ### New in Phase 1.6 — additional derive macros
 
@@ -155,11 +179,13 @@ crates/convex_native/
 │   ├── schema.rs      -- TableRegistration + NativeSchema::collect()
 │   ├── registry.rs    -- NativeFunctionRegistration + NativeFunctionRegistry
 │   ├── prelude.rs     -- glob-import target
+│   ├── runner.rs            -- NativeFunctionRunner (dispatch)
 │   └── ctx/
 │       ├── mod.rs
 │       ├── query.rs         -- QueryCtx + QueryDb
-│       ├── query_builder.rs -- TypedQueryBuilder (typed, unexecuted)
-│       └── mutation.rs      -- MutationCtx + MutationDb
+│       ├── query_builder.rs -- TypedQueryBuilder (typed, executable)
+│       ├── mutation.rs      -- MutationCtx + MutationDb
+│       └── action.rs        -- ActionCtx (Phase 2 skeleton + dispatch)
 └── tests/
     ├── derive_document.rs                  -- integration tests for ConvexDocument
     ├── derive_enums_nested_unions.rs       -- ConvexEnum / ConvexNested / ConvexUnion

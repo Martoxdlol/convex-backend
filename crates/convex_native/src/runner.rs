@@ -31,6 +31,7 @@ use value::{
 
 use crate::{
     ctx::{
+        action::ActionCtx,
         mutation::MutationCtx,
         query::QueryCtx,
     },
@@ -129,6 +130,29 @@ impl NativeFunctionRunner {
             );
         };
         let mut ctx = MutationCtx::new(tx, namespace);
+        handler(&mut ctx, args).await
+    }
+
+    /// Execute a named native action. Actions don't take a transaction,
+    /// so this is called with no tx handle — the `ActionCtx` will route
+    /// sub-calls back through the runner.
+    pub async fn run_action(
+        self: &Arc<Self>,
+        name: &str,
+        namespace: TableNamespace,
+        args: ConvexObject,
+    ) -> anyhow::Result<ConvexValue> {
+        let registration = self
+            .inner
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("no native function registered with name {name:?}"))?;
+        let HandlerFn::Action(handler) = registration.handler else {
+            anyhow::bail!(
+                "native function {name:?} is not an action (got {:?})",
+                registration.udf_type(),
+            );
+        };
+        let mut ctx = ActionCtx::<Rt>::new(Some(self.clone()), namespace);
         handler(&mut ctx, args).await
     }
 

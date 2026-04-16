@@ -42,6 +42,7 @@ use syn::{
 pub enum FnKind {
     Query,
     Mutation,
+    Action,
 }
 
 impl FnKind {
@@ -49,6 +50,7 @@ impl FnKind {
         match self {
             FnKind::Query => "QueryCtx",
             FnKind::Mutation => "MutationCtx",
+            FnKind::Action => "ActionCtx",
         }
     }
 
@@ -56,6 +58,15 @@ impl FnKind {
         match self {
             FnKind::Query => format_ident!("Query"),
             FnKind::Mutation => format_ident!("Mutation"),
+            FnKind::Action => format_ident!("Action"),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            FnKind::Query => "query",
+            FnKind::Mutation => "mutation",
+            FnKind::Action => "action",
         }
     }
 }
@@ -79,19 +90,14 @@ fn expand(kind: FnKind, input: ItemFn) -> syn::Result<TokenStream2> {
     if sig.asyncness.is_none() {
         return Err(syn::Error::new(
             sig.span(),
-            format!(
-                "#[convex::{}] requires an async fn",
-                match kind {
-                    FnKind::Query => "query",
-                    FnKind::Mutation => "mutation",
-                }
-            ),
+            format!("#[convex::{}] requires an async fn", kind.label()),
         ));
     }
     if !sig.generics.params.is_empty() {
         return Err(syn::Error::new(
             sig.generics.span(),
-            "#[convex::query] / #[convex::mutation] do not support generic parameters",
+            "#[convex::query] / #[convex::mutation] / #[convex::action] do not support generic \
+             parameters",
         ));
     }
 
@@ -110,10 +116,7 @@ fn expand(kind: FnKind, input: ItemFn) -> syn::Result<TokenStream2> {
             sig.span(),
             format!(
                 "#[convex::{}] functions must take `ctx: &mut {}` as the first parameter",
-                match kind {
-                    FnKind::Query => "query",
-                    FnKind::Mutation => "mutation",
-                },
+                kind.label(),
                 kind.ctx_type_name(),
             ),
         )
@@ -197,6 +200,9 @@ fn expand(kind: FnKind, input: ItemFn) -> syn::Result<TokenStream2> {
         FnKind::Mutation => quote! {
             &mut ::convex_native::MutationCtx<'_, ::convex_native::Rt>
         },
+        FnKind::Action => quote! {
+            &mut ::convex_native::ActionCtx<'_, ::convex_native::Rt>
+        },
     };
     let ctx_param_ty: TokenStream2 = match kind {
         FnKind::Query => quote! {
@@ -204,6 +210,9 @@ fn expand(kind: FnKind, input: ItemFn) -> syn::Result<TokenStream2> {
         },
         FnKind::Mutation => quote! {
             &'a mut ::convex_native::MutationCtx<'a, ::convex_native::Rt>
+        },
+        FnKind::Action => quote! {
+            &'a mut ::convex_native::ActionCtx<'a, ::convex_native::Rt>
         },
     };
     let _ = ctx_type_name;

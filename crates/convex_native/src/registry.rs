@@ -49,11 +49,17 @@ pub type QueryHandlerFn =
 pub type MutationHandlerFn =
     for<'a> fn(ctx: &'a mut MutationCtx<'a, Rt>, args: ConvexObject) -> HandlerFuture<'a>;
 
-/// Tagged union over the three handler shapes. Actions come later
-/// (Phase 2); for now queries and mutations suffice.
+/// Fn pointer signature emitted for `#[convex::action]` functions.
+pub type ActionHandlerFn = for<'a> fn(
+    ctx: &'a mut crate::ctx::action::ActionCtx<'a, Rt>,
+    args: ConvexObject,
+) -> HandlerFuture<'a>;
+
+/// Tagged union over the three handler shapes.
 pub enum HandlerFn {
     Query(QueryHandlerFn),
     Mutation(MutationHandlerFn),
+    Action(ActionHandlerFn),
 }
 
 impl HandlerFn {
@@ -61,6 +67,7 @@ impl HandlerFn {
         match self {
             HandlerFn::Query(_) => UdfType::Query,
             HandlerFn::Mutation(_) => UdfType::Mutation,
+            HandlerFn::Action(_) => UdfType::Action,
         }
     }
 }
@@ -129,6 +136,9 @@ impl NativeFunctionRegistry {
 }
 
 /// Helper: invoke the handler against a concrete transaction.
+/// Actions are NOT supported here — they don't take a transaction; use
+/// `NativeFunctionRunner::run_action` or the future `ActionCtx`
+/// invocation path instead.
 pub async fn invoke<'a>(
     handler: &HandlerFn,
     tx: &'a mut Transaction<Rt>,
@@ -143,6 +153,12 @@ pub async fn invoke<'a>(
         HandlerFn::Mutation(f) => {
             let mut ctx = MutationCtx::new(tx, namespace);
             f(&mut ctx, args).await
+        },
+        HandlerFn::Action(_) => {
+            anyhow::bail!(
+                "invoke() does not execute actions — route through the ActionCallbacks path in \
+                 the backend instead"
+            )
         },
     }
 }

@@ -80,6 +80,17 @@ pub fn mutation(attr: TokenStream, item: TokenStream) -> TokenStream {
     native_function::attr(native_function::FnKind::Mutation, attr, item)
 }
 
+/// `#[convex::action]` — declare a native Convex action.
+///
+/// Requires an async fn whose first parameter is `ctx: &mut ActionCtx`.
+/// Actions run outside the database transaction and can perform
+/// external I/O. Subsequent parameters must be `ToConvex + FromConvex`
+/// types.
+#[proc_macro_attribute]
+pub fn action(attr: TokenStream, item: TokenStream) -> TokenStream {
+    native_function::attr(native_function::FnKind::Action, attr, item)
+}
+
 #[proc_macro_attribute]
 pub fn instrument_future(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let ItemFn {

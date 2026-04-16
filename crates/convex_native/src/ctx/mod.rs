@@ -12,10 +12,12 @@
 //! we implement only the subset required for a working MVP today, expanding
 //! as each later phase needs it.
 
+pub mod action;
 pub mod mutation;
 pub mod query;
 pub mod query_builder;
 
+pub use action::ActionCtx;
 pub use mutation::{
     MutationCtx,
     MutationDb,

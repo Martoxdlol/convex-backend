@@ -17,10 +17,12 @@ pub use convex_macro::{
 #[doc(hidden)]
 pub use inventory;
 
-/// Pseudo-namespace so developers can write `#[convex::query]` and
-/// `#[convex::mutation]` by importing `convex_native::convex`.
+/// Pseudo-namespace so developers can write `#[convex::query]`,
+/// `#[convex::mutation]`, and `#[convex::action]` by importing
+/// `convex_native::convex`.
 pub mod convex {
     pub use convex_macro::{
+        action,
         mutation,
         query,
     };
@@ -62,6 +64,7 @@ pub use convert::{
 };
 pub use ctx::{
     query_builder::Order,
+    ActionCtx,
     MutationCtx,
     MutationDb,
     QueryCtx,
@@ -76,6 +79,7 @@ pub use document::{
 };
 pub use id::Id;
 pub use registry::{
+    ActionHandlerFn,
     HandlerFn,
     MutationHandlerFn,
     NativeFunctionRegistration,
