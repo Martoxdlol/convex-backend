@@ -1,25 +1,30 @@
 # CompositeFunctionRunner — integration reference
 
-**Now shipped in-workspace** at
-`crates/convex_native_backend/src/composite_runner.rs`. This doc kept
-around for historical context and for the full TODO list of wiring
-still needed inside `run_function`.
+**Shipped in-workspace** at
+`crates/convex_native_backend/src/composite_runner.rs`. This doc
+describes the adapter's responsibilities and the one-to-one mapping
+of `FunctionRunner` trait methods onto either the native path or the
+wrapped JS runner.
 
-The adapter wires `convex_native::NativeFunctionRunner` into the
-backend's `function_runner::FunctionRunner` trait. It depends on
-`function_runner` (and transitively on `isolate`), which means the
-npm-packages rush install + build step must have run at least once.
-`convex_native` itself stays isolate-free.
+The adapter depends on `function_runner` (transitively on `isolate`),
+which means the `npm-packages/` rush install + build step must have
+run at least once for the host crate to compile. `convex_native`
+itself stays isolate-free and builds on its own.
 
-Now wired in `crates/local_backend/src/lib.rs` — every
-`convex-local-backend` build transparently routes registered native
-functions through the composite:
+## How it is wired
+
+`crates/local_backend/src/lib.rs` instantiates the composite ahead of
+the `Application::new` call:
 
 ```rust
 let js_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(
     InProcessFunctionRunner::new(... database.clone() ...)?,
 );
 let native_runner = Arc::new(convex_native::NativeFunctionRunner::from_inventory()?);
+tracing::info!(
+    "Native function registry: {} registered",
+    native_runner.len(),
+);
 let function_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(
     convex_native_backend::CompositeFunctionRunner::new(
         native_runner,
@@ -29,257 +34,83 @@ let function_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(
 );
 ```
 
-## Reference implementation
+Every build of `convex-local-backend` therefore transparently picks
+up any `#[convex::query]` / `#[convex::mutation]` / `#[convex::action]`
+statically registered via `inventory::submit!`.
 
-```rust
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+## Method-by-method behaviour
 
-use async_trait::async_trait;
-use common::{
-    auth::AuthConfig,
-    bootstrap_model::components::definition::ComponentDefinitionMetadata,
-    components::{ComponentDefinitionPath, ComponentName, Resource},
-    errors::JsError,
-    execution_context::ExecutionContext,
-    log_lines::LogLine,
-    runtime::{Runtime, UnixTimestamp},
-    schemas::DatabaseSchema,
-    types::{IndexId, RepeatableTimestamp, UdfType},
-};
-use convex_native::{NativeFunctionRunner, schema::NativeSchema};
-use function_runner::{
-    FunctionFinalTransaction, FunctionRunner, FunctionWrites,
-    server::{FunctionMetadata, HttpActionMetadata},
-};
-use keybroker::Identity;
-use model::{
-    config::types::ModuleConfig,
-    environment_variables::types::{EnvVarName, EnvVarValue},
-    modules::module_versions::{AnalyzedModule, ModuleSource, SourceMap},
-    udf_config::types::UdfConfig,
-};
-use sync_types::{CanonicalizedModulePath, Timestamp};
-use tokio::sync::mpsc;
-use udf::{ActionCallbacks, EvaluateAppDefinitionsResult, FunctionOutcome};
-use usage_tracking::FunctionUsageStats;
-use value::identifier::Identifier;
+| Trait method | Composite behaviour |
+|---|---|
+| `run_function` (query/mutation, native name) | `dispatch_native`: open `Transaction<RT>` via `Database::begin_with_ts`, run native handler, convert to `FunctionFinalTransaction`, build synthetic `UdfOutcome`. |
+| `run_function` (query/mutation, non-native) | Delegate to wrapped JS runner. |
+| `run_function` (action/http_action) | Delegate to wrapped JS runner. Native actions go through `NativeFunctionRunner::run_action_with_callbacks` elsewhere; they do not fit the "run inside a transaction" shape. |
+| `analyze` | Delegate to JS. |
+| `evaluate_app_definitions` | Delegate to JS. |
+| `evaluate_component_initializer` | Delegate to JS. |
+| `evaluate_schema` | Merge `NativeSchema::collect()` with the JS schema; collision on table name is a hard error. |
+| `evaluate_auth_config` | Delegate to JS. |
+| `set_action_callbacks` | Delegate to JS. |
 
-/// Wraps a JS `FunctionRunner` and intercepts native function calls.
-pub struct CompositeFunctionRunner<RT: Runtime> {
-    pub native: NativeFunctionRunner,
-    pub js: Arc<dyn FunctionRunner<RT>>,
-}
+## The native dispatch path
 
-impl<RT: Runtime> CompositeFunctionRunner<RT> {
-    pub fn new(native: NativeFunctionRunner, js: Arc<dyn FunctionRunner<RT>>) -> Self {
-        Self { native, js }
-    }
-}
+`dispatch_native::<RT>` (in `composite_runner.rs`):
 
-#[async_trait]
-impl<RT: Runtime> FunctionRunner<RT> for CompositeFunctionRunner<RT> {
-    async fn run_function(
-        &self,
-        udf_type: UdfType,
-        identity: Identity,
-        ts: RepeatableTimestamp,
-        existing_writes: FunctionWrites,
-        log_line_sender: Option<mpsc::UnboundedSender<LogLine>>,
-        function_metadata: Option<FunctionMetadata>,
-        http_action_metadata: Option<HttpActionMetadata>,
-        default_system_env_vars: BTreeMap<EnvVarName, EnvVarValue>,
-        in_memory_index_last_modified: BTreeMap<IndexId, Timestamp>,
-        context: ExecutionContext,
-    ) -> anyhow::Result<(
-        Option<FunctionFinalTransaction>,
-        FunctionOutcome,
-        FunctionUsageStats,
-    )> {
-        // Native dispatch path — full FunctionOutcome wiring is TODO.
-        // The shape of this work:
-        //   1. Snapshot the Database at `ts` (self.db.snapshot(ts)?).
-        //   2. Construct a Transaction<RT> from the snapshot +
-        //      identity + existing_writes.
-        //   3. Invoke NativeFunctionRunner::run_query/run_mutation
-        //      against the transaction; capture the ConvexValue result
-        //      and, on error, a JsError (we'll need an anyhow-to-JsError
-        //      conversion since native code uses anyhow).
-        //   4. Extract a FunctionFinalTransaction via
-        //      FunctionFinalTransaction::try_from(transaction).
-        //   5. Build a UdfOutcome with:
-        //        - path = function_metadata.path
-        //        - arguments = function_metadata.arguments (as
-        //          SerializedArgs)
-        //        - identity = identity.inert()
-        //        - observed_identity = false (or track if ctx saw it)
-        //        - rng_seed = rand::random()
-        //        - unix_timestamp = current time
-        //        - observed_* = false placeholders initially
-        //        - log_lines / audit_log_lines = Vec::new() (wire a
-        //          real collector via QueryCtx later)
-        //        - journal = QueryJournal::default()
-        //        - result = Ok(JsonPackedValue::from_value(value)?)
-        //        - syscall_trace = SyscallTrace::default()
-        //        - udf_server_version = None
-        //        - memory_in_mb = 0
-        //        - user_execution_time = Some(elapsed)
-        //   6. Return (Some(final_tx), FunctionOutcome::Query/Mutation(udf_outcome),
-        //      FunctionUsageStats::default()).
-        if let Some(name) = function_metadata
-            .as_ref()
-            .map(|m| m.path.path.udf_path.function_name())
-            && self.native.has_function(name)
-        {
-            anyhow::bail!(
-                "Native dispatch for function {name:?} is registered but \
-                 full FunctionOutcome wiring is not yet implemented \
-                 (Phase 1.4 TODO)."
-            );
-        }
+1. TypeId-checks that `RT == convex_native::Rt` — native handlers
+   are monomorphic over `ProdRuntime` because `inventory` can't hold
+   generic fn pointers. Other runtimes bail with a clear error.
+2. Opens `database.begin_with_ts(identity, *ts, usage_tracker)` and
+   then performs a guarded unsafe cast from `&mut Transaction<RT>`
+   to `&mut Transaction<Rt>`. The TypeId check above is what makes
+   the cast sound.
+3. Decodes the serialized args into a single `ConvexObject` (native
+   handlers accept a single object, mirroring the JS calling
+   convention).
+4. Dispatches on `HandlerFn::{Query, Mutation}` — a kind mismatch
+   between the request's `UdfType` and the registered handler kind
+   is a hard error.
+5. Converts the finished `Transaction<RT>` into
+   `FunctionFinalTransaction::try_from(tx)?`.
+6. Maps the handler's `anyhow::Result<ConvexValue>` to
+   `Result<JsonPackedValue, JsError>` via `JsError::from_error_ref`
+   (preserves `ErrorMetadata` categorization for user-vs-system
+   errors).
+7. Wraps the result in a `UdfOutcome` (with `rng_seed` drawn from the
+   runtime's RNG, `unix_timestamp` from the runtime's clock,
+   `user_execution_time` from the measured `Instant::elapsed`) and
+   returns the `(final_tx, outcome, usage_stats)` tuple.
 
-        self.js
-            .run_function(
-                udf_type,
-                identity,
-                ts,
-                existing_writes,
-                log_line_sender,
-                function_metadata,
-                http_action_metadata,
-                default_system_env_vars,
-                in_memory_index_last_modified,
-                context,
-            )
-            .await
-    }
+## `BackendCallbacks`
 
-    async fn analyze(
-        &self,
-        udf_config: UdfConfig,
-        modules: BTreeMap<CanonicalizedModulePath, ModuleConfig>,
-        environment_variables: BTreeMap<EnvVarName, EnvVarValue>,
-        max_user_heap_size: usize,
-    ) -> anyhow::Result<Result<BTreeMap<CanonicalizedModulePath, AnalyzedModule>, JsError>> {
-        self.js
-            .analyze(udf_config, modules, environment_variables, max_user_heap_size)
-            .await
-    }
+`callbacks_adapter.rs` implements `convex_native::NativeActionCallbacks`
+on top of `udf::ActionCallbacks`:
 
-    async fn evaluate_app_definitions(
-        &self,
-        app_definition: ModuleConfig,
-        component_definitions: BTreeMap<ComponentDefinitionPath, ModuleConfig>,
-        dependency_graph: BTreeSet<(ComponentDefinitionPath, ComponentDefinitionPath)>,
-        user_environment_variables: BTreeMap<EnvVarName, EnvVarValue>,
-        system_env_vars: BTreeMap<EnvVarName, EnvVarValue>,
-    ) -> anyhow::Result<EvaluateAppDefinitionsResult> {
-        self.js
-            .evaluate_app_definitions(
-                app_definition,
-                component_definitions,
-                dependency_graph,
-                user_environment_variables,
-                system_env_vars,
-            )
-            .await
-    }
+- `run_query_by_name` / `run_mutation_by_name`: wrap the callback's
+  UDF invocation and canonicalize the path through
+  `CanonicalizedComponentFunctionPath { component: root(), udf_path }`.
+- `schedule` / `cancel_scheduled`: delegate to the underlying
+  callbacks.
+- `storage_store`: errors with a clear "not implemented" message —
+  `udf::ActionCallbacks` only accepts pre-uploaded
+  `FileStorageEntry` values, so forwarding raw bytes needs a direct
+  path into the `file_storage` backend that bypasses the JS shape.
+- `storage_get_url` / `storage_delete`: delegate.
 
-    async fn evaluate_component_initializer(
-        &self,
-        evaluated_definitions: BTreeMap<ComponentDefinitionPath, ComponentDefinitionMetadata>,
-        path: ComponentDefinitionPath,
-        definition: ModuleConfig,
-        args: BTreeMap<Identifier, Resource>,
-        name: ComponentName,
-    ) -> anyhow::Result<BTreeMap<Identifier, Resource>> {
-        self.js
-            .evaluate_component_initializer(evaluated_definitions, path, definition, args, name)
-            .await
-    }
+## Known limitations
 
-    async fn evaluate_schema(
-        &self,
-        schema_bundle: ModuleSource,
-        source_map: Option<SourceMap>,
-        rng_seed: [u8; 32],
-        unix_timestamp: UnixTimestamp,
-    ) -> anyhow::Result<DatabaseSchema> {
-        // Merge native + JS schemas. Native tables collide is a hard
-        // error — callers should either declare a table in JS or via
-        // #[derive(ConvexDocument)], never both.
-        let js_schema = self
-            .js
-            .evaluate_schema(schema_bundle, source_map, rng_seed, unix_timestamp)
-            .await?;
-        let mut native_schema = NativeSchema::collect()?;
-        native_schema.schema_validation = js_schema.schema_validation;
-        for (name, def) in js_schema.tables {
-            if native_schema.tables.contains_key(&name) {
-                anyhow::bail!(
-                    "table {name:?} is declared both natively and in JS \
-                     schema.ts — remove one of the declarations"
-                );
-            }
-            native_schema.tables.insert(name, def);
-        }
-        Ok(native_schema)
-    }
-
-    async fn evaluate_auth_config(
-        &self,
-        auth_config_bundle: ModuleSource,
-        source_map: Option<SourceMap>,
-        environment_variables: BTreeMap<EnvVarName, EnvVarValue>,
-        explanation: &str,
-    ) -> anyhow::Result<AuthConfig> {
-        self.js
-            .evaluate_auth_config(
-                auth_config_bundle,
-                source_map,
-                environment_variables,
-                explanation,
-            )
-            .await
-    }
-
-    fn set_action_callbacks(&self, action_callbacks: Arc<dyn ActionCallbacks>) {
-        self.js.set_action_callbacks(action_callbacks);
-    }
-}
-```
-
-## Wiring into `make_app()`
-
-`crates/local_backend/src/lib.rs` has a `make_app()` function that
-constructs the `FunctionRunner`. Once this crate lands it should become:
-
-```rust
-let js_runner = Arc::new(InProcessFunctionRunner::new(...)?);
-let native_runner = NativeFunctionRunner::from_inventory()?;
-let composite = Arc::new(CompositeFunctionRunner::new(native_runner, js_runner));
-// ... use `composite` wherever `FunctionRunner` is expected ...
-```
-
-## TODO list for full native execution path
-
-1. Build `Transaction<RT>` from a `Database<RT>::snapshot(ts)`
-   plus identity/existing_writes — copy the transaction-construction
-   dance from `FunctionRunnerCore::run_function_no_retention_check` but
-   stripped of V8 setup.
-2. Provide a log-line collector accessible to native handlers (likely
-   a field on `QueryCtx` / `MutationCtx`).
-3. Route `ctx.db().get()`/`insert()` usage through the existing
-   `Transaction` read-tracking so `FunctionFinalTransaction::try_from`
-   produces a correct read set.
-4. Serialize the return value as `JsonPackedValue` for `UdfOutcome`.
-5. Handle anyhow errors → JsError translation (the JS path distinguishes
-   user-surface errors from system errors via `ErrorMetadata`; native
-   errors need the same categorization).
-6. Emit usage stats (rows read, bytes read) via
-   `tx.usage_tracker.take_stats()`.
-
-Until these pieces land, `run_function` for native names returns a
-placeholder error as shown in the reference impl above.
+- **Write threading.** `begin_tx_with_writes` ignores
+  `existing_writes` and opens a fresh transaction at `ts`. One-UDF-per-request
+  flows work; JS-style batching inside a single
+  `ApplicationFunctionRunner` call does not.
+- **Log lines.** The composite builds a `UdfOutcome` with
+  `log_lines: vec![].into()`. The native `LogBuffer` that
+  `ctx.log()` fills is not yet drained into the outcome. Not a
+  correctness issue; it means `ctx.log()` output does not surface in
+  the backend's log-streaming path yet.
+- **Observed flags.** `observed_identity`, `observed_rng`,
+  `observed_time` are hard-coded `false`. The JS path tracks whether
+  the UDF actually looked at identity/rng/time; native code could do
+  the same with a one-bit flag per ctx accessor, but the
+  determinism-check behaviour is the same in practice today because
+  every native invocation rebuilds its transaction.
+- **Storage.** See `BackendCallbacks::storage_store` above.

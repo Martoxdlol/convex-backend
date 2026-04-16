@@ -596,69 +596,100 @@ registrations, no schema entries.
 
 ### What doesn't work yet
 
-- **No end-to-end execution yet.** `NativeFunctionRunner` can dispatch
-  handlers given a `Transaction<Rt>`, but building that transaction
-  and rendering the result as `FunctionOutcome` /
-  `FunctionFinalTransaction` is Phase 1.4.2+ TODO work; see
-  `COMPOSITE_RUNNER.md` for the full todo list.
-- **No backend wiring.** `make_app()` hasn't been updated. The
-  `CompositeFunctionRunner` integration shape is documented but not
-  in-tree; it belongs in a future `crates/convex_native_backend` crate
-  that can depend on `function_runner`.
+- **No end-to-end smoke test driven from a real client.** The
+  composite runner dispatches native queries/mutations, the wiring
+  in `make_app()` is in place, and `cargo build --bin
+  convex-local-backend` completes cleanly. What's missing is a
+  scripted test that boots the backend with a registered
+  `#[convex::query]` and exercises it through the HTTP client path —
+  currently the integration is verified by `cargo test -p
+  convex_native` plus the successful binary build.
 - **Non-indexed filters.** `.eq()` currently requires
   `.with_index(...)`. Full-table-scan + post-scan filtering is a later
   convenience, not MVP-critical.
-- **No function macros.** `#[convex::query]`, `#[convex::mutation]`, and
-  `#[convex::action]` are not implemented. Phase 1.2.4 + 1.2.5 + 2.2.
-- **No context wrappers.** `QueryCtx`, `MutationCtx`, `ActionCtx` don't
-  exist. Phase 1.3.
-- **Placeholder handler signature.** `registry::HandlerFn = fn()` until
-  the context wrappers pin down the real shape.
 - **Document type validation is off.** `table_definition()` emits
   `document_type: None` — i.e. every derived type currently gets an "any"
   schema shape. Enforcing the shape against the struct's fields is
   Phase 1 extension work, not part of the MVP critical path.
+- **Storage through actions is not forwarded.** `BackendCallbacks`
+  in `convex_native_backend` currently errors on `storage_store`
+  because the JS-side `ActionCallbacks` trait only accepts
+  pre-uploaded `FileStorageEntry` values. Wiring a direct path from
+  `ActionCtx::storage()` into the `file_storage` backend is
+  outstanding.
+- **Multi-UDF-per-request write threading.** `begin_tx_with_writes`
+  ignores `existing_writes`; one-UDF-per-request flows work, but
+  the private `NestedWrites` path used by JS batching isn't wired
+  through yet.
 
 ## Architecture (today)
 
 ```
-crates/convex_native/
+crates/convex_native/              -- framework crate (no isolate dep)
 ├── src/
-│   ├── lib.rs         -- re-exports, __private module for macro-generated code
-│   ├── convert.rs     -- ToConvex / FromConvex
-│   ├── id.rs          -- Id<T: ConvexDocument>
-│   ├── document.rs    -- ConvexDocument / FieldReference / IndexReference / ConvexPatch
-│   ├── schema.rs      -- TableRegistration + NativeSchema::collect()
-│   ├── registry.rs    -- NativeFunctionRegistration + NativeFunctionRegistry
-│   ├── prelude.rs     -- glob-import target
-│   ├── runner.rs            -- NativeFunctionRunner (dispatch)
-│   └── ctx/
-│       ├── mod.rs
-│       ├── query.rs         -- QueryCtx + QueryDb
-│       ├── query_builder.rs -- TypedQueryBuilder (typed, executable)
-│       ├── mutation.rs      -- MutationCtx + MutationDb
-│       └── action.rs        -- ActionCtx (Phase 2 skeleton + dispatch)
+│   ├── lib.rs                     -- re-exports, __private module for generated code
+│   ├── auth.rs                    -- AuthInfo (ctx.auth())
+│   ├── backend.rs                 -- ConvexBackend builder + BuiltBackend
+│   ├── callbacks.rs               -- NativeActionCallbacks trait + NoopCallbacks
+│   ├── circuit_breaker.rs         -- CircuitBreaker + config
+│   ├── convert.rs                 -- ToConvex / FromConvex
+│   ├── ctx/
+│   │   ├── action.rs              -- ActionCtx
+│   │   ├── mutation.rs            -- MutationCtx + MutationDb
+│   │   ├── query.rs               -- QueryCtx + QueryDb
+│   │   ├── query_builder.rs       -- TypedQueryBuilder (typed, executable)
+│   │   ├── scheduler.rs           -- Scheduler
+│   │   └── storage.rs             -- StorageCtx + StorageId
+│   ├── distributed.rs             -- ConvexMode + ExecuteRequest/Response + trait stub
+│   ├── document.rs                -- ConvexDocument + FieldReference + IndexReference
+│   ├── errors.rs                  -- bad_request / unauthenticated / ... helpers
+│   ├── function_ref.rs            -- ConvexQueryFunction / Mutation / Action marker traits
+│   ├── http.rs                    -- HttpActionCtx + HttpRequest/Response + HttpRouter
+│   ├── id.rs                      -- Id<T: ConvexDocument>
+│   ├── introspect.rs              -- describe_json / describe_pretty
+│   ├── logging.rs                 -- LogBuffer + Logger (ctx.log())
+│   ├── metrics.rs                 -- NativeMetricsSink + CountingMetrics
+│   ├── prelude.rs                 -- glob-import target
+│   ├── registry.rs                -- NativeFunctionRegistration + NativeFunctionRegistry
+│   ├── runner.rs                  -- NativeFunctionRunner (dispatch, timeout, drain, breaker)
+│   ├── schema.rs                  -- TableRegistration + NativeSchema::collect()
+│   ├── schema_diff.rs             -- diff(old, new) -> Vec<SchemaChange>
+│   ├── testing.rs                 -- TestCallbacks + args! macro
+│   └── warmup.rs                  -- plan_warmup(schema)
+├── examples/
+│   └── tiny_app.rs                -- end-to-end runnable demo
 └── tests/
-    ├── backend_builder.rs                  -- ConvexBackend end-to-end
-    ├── callbacks_wiring.rs                 -- NativeActionCallbacks sub-calls / scheduler / storage
-    ├── ctx_types.rs                        -- compile-time surface tests for ctx wrappers
-    ├── drain.rs                            -- graceful shutdown drain
-    ├── derive_document.rs                  -- integration tests for ConvexDocument
-    ├── derive_enums_nested_unions.rs       -- ConvexEnum / ConvexNested / ConvexUnion
-    ├── derive_functions.rs                 -- integration tests for fn attribute macros
-    ├── function_refs.rs                    -- marker types + ConvexQueryFunction / etc.
-    ├── golden_path.rs                      -- full realistic app end-to-end
-    ├── http_actions.rs                     -- HTTP action registration + request/response
-    ├── metrics_wiring.rs                   -- runner metrics + timeout enforcement
-    ├── runner_dispatch.rs                  -- NativeFunctionRunner lookup & dispatch
-    ├── search_indexes.rs                   -- text/vector search index registration
-    └── testing_utilities.rs                -- TestCallbacks builder smoke test
+    ├── backend_builder.rs         -- ConvexBackend end-to-end
+    ├── callbacks_wiring.rs        -- NativeActionCallbacks sub-calls / scheduler / storage
+    ├── ctx_types.rs               -- compile-time surface tests for ctx wrappers
+    ├── drain.rs                   -- graceful shutdown drain
+    ├── derive_document.rs         -- ConvexDocument integration
+    ├── derive_enums_nested_unions.rs -- ConvexEnum / Nested / Union
+    ├── derive_functions.rs        -- function attribute macros
+    ├── function_refs.rs           -- marker types
+    ├── golden_path.rs             -- full realistic app end-to-end
+    ├── http_actions.rs            -- HTTP action registration
+    ├── metrics_wiring.rs          -- runner metrics + timeout enforcement
+    ├── runner_dispatch.rs         -- NativeFunctionRunner dispatch
+    ├── search_indexes.rs          -- text/vector search indexes
+    └── testing_utilities.rs       -- TestCallbacks smoke test
+
+crates/convex_native_backend/      -- backend adapter (requires isolate dep)
+├── src/
+│   ├── lib.rs                     -- re-exports
+│   ├── composite_runner.rs        -- CompositeFunctionRunner<RT>: FunctionRunner impl
+│   └── callbacks_adapter.rs       -- BackendCallbacks: NativeActionCallbacks -> ActionCallbacks
 
 crates/convex_macro/
 ├── src/
-│   ├── lib.rs                -- #[proc_macro_derive(ConvexDocument)] entry point
-│   ├── convex_document.rs    -- derive implementation
-│   ├── (instrument_future, v8_op — pre-existing, unchanged)
+│   ├── lib.rs                     -- proc macro entry points
+│   ├── convex_document.rs         -- #[derive(ConvexDocument)]
+│   ├── convex_enum.rs             -- #[derive(ConvexEnum)]
+│   ├── convex_nested.rs           -- #[derive(ConvexNested)]
+│   ├── convex_union.rs            -- #[derive(ConvexUnion)]
+│   ├── cron.rs                    -- #[convex::cron(...)]
+│   ├── http_action.rs             -- #[convex::http_action(...)]
+│   └── native_function.rs         -- #[convex::query/mutation/action]
 ```
 
 `inventory::collect!` is the collection backbone for both the schema
@@ -702,16 +733,21 @@ cargo +nightly fmt -p convex_native -p convex_macro
 
 ## Next up
 
-Per `IMPLEMENTATION_PLAN.md`:
+Per `IMPLEMENTATION_PLAN.md`, the remaining shippable items are:
 
-1. **Step 1.3.1** — `QueryCtx` + `QueryDb` (read-only database handle
-   wrapping `Transaction<RT>`).
-2. **Step 1.3.2** — `TypedQueryBuilder<T>` with typed field/index filters.
-3. **Step 1.3.3** — `MutationCtx` + `MutationDb` (read + write).
-4. **Step 1.2.4** — `#[convex::query]` proc macro.
-5. **Step 1.2.5** — `#[convex::mutation]` proc macro.
-6. **Step 1.4.x** — `NativeFunctionRunner` implementing the
-   `FunctionRunner` trait.
+1. **End-to-end client smoke test.** Boot `convex-local-backend` with
+   a registered `#[convex::query]`, drive it through the websocket /
+   HTTP client, assert the response matches what the handler returns.
+2. **Step 3.1–3.6** — real `convex_native_distributed` gRPC crate
+   using the `ExecuteRequest` / `ExecuteResponse` scaffolding that
+   already lives in `convex_native::distributed`.
+3. **Step 4.7** — rolling updates with version-aware routing.
+4. **Storage forwarding from `ActionCtx::storage()`** directly to the
+   `file_storage` backend, bypassing the JS `ActionCallbacks` shape
+   that doesn't fit raw bytes.
+5. **Multi-UDF-per-request write threading** — feed `existing_writes`
+   into `begin_tx_with_writes` to support JS-style batching inside a
+   single `ApplicationFunctionRunner` call.
 
 Agents iterating on this project: please keep this document honest about
 what is merged vs what is planned, after each commit.

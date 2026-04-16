@@ -60,10 +60,14 @@ native_function.rs      -- #[convex::query/mutation/action(...)]
   (aliased `Rt`). `inventory` can't hold generic fn pointers, so this
   is a hard constraint — don't try to make the registry generic over
   RT.
-- **Feature work in `convex_native_backend` is blocked.** The full
-  `function_runner::FunctionRunner` impl needs the `isolate` crate
-  which needs `rush install` of `npm-packages/`. We can't build it
-  locally; the reference impl lives in `convex-native/COMPOSITE_RUNNER.md`.
+- **`convex_native_backend` is in-tree and wired.** The composite
+  runner lives at `crates/convex_native_backend/` and is instantiated
+  in `crates/local_backend/src/lib.rs` ahead of the `Application::new`
+  call. Building it requires the `isolate` crate (needs `rush install`
+  in `npm-packages/`); once those steps have run, `cargo build --bin
+  convex-local-backend` succeeds. The reference notes in
+  `convex-native/COMPOSITE_RUNNER.md` now describe the shipped
+  behaviour, not a plan.
 - **Every significant change gets a commit.** Prefer small, focused
   commits with a conventional-commits subject (`feat(convex_native):
   …`) and a body explaining *why*. Update
@@ -94,8 +98,8 @@ the offending `quote! { ... }` block.
 
 `README.md` tracks this accurately. The crate exposes the complete
 Phase 1/2/5 developer surface plus most of Phase 3 scaffolding and
-Phase 4 operational knobs. The one missing chunk is the backend
-adapter crate — implementing `NativeActionCallbacks` against the real
-`database::Transaction` + `udf::ActionCallbacks`, and plugging the
-resulting `CompositeFunctionRunner` into `local_backend::make_app()`.
-That work is blocked on the npm-packages build prerequisite.
+Phase 4 operational knobs. The backend adapter crate
+(`crates/convex_native_backend/`) is now in-tree and wired into
+`local_backend::make_app()`. The remaining gaps are: an end-to-end
+smoke test driven from a real client, the distributed gRPC service
+(Phase 3.1–3.6), and rolling-update routing (Phase 4.7).
