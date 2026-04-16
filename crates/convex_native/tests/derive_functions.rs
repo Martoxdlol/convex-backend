@@ -46,6 +46,14 @@ pub async fn create_post(
     Ok(42)
 }
 
+#[convex::mutation(internal)]
+pub async fn internal_rebuild(
+    _ctx: &mut MutationCtx<'_, Rt>,
+    _token: String,
+) -> anyhow::Result<()> {
+    Ok(())
+}
+
 #[test]
 fn functions_register_with_correct_metadata() {
     let registry = NativeFunctionRegistry::collect().expect("collect");
@@ -65,4 +73,12 @@ fn functions_register_with_correct_metadata() {
     assert_eq!(create.udf_type(), UdfType::Mutation);
 
     assert!(registry.get("not_real").is_none());
+
+    // The `internal` modifier is reflected in the registration.
+    let internal = registry
+        .get("internal_rebuild")
+        .expect("internal_rebuild registered");
+    assert!(internal.is_internal);
+    // And non-internal ones are flagged accordingly.
+    assert!(!create.is_internal);
 }

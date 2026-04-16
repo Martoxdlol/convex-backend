@@ -80,15 +80,52 @@ impl FnKind {
     }
 }
 
-pub fn attr(kind: FnKind, _attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn attr(kind: FnKind, attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Parse the attribute args: we accept the bare `internal` flag.
+    let attr_ts: proc_macro2::TokenStream = attr.into();
+    let is_internal = match parse_attr_flags(attr_ts) {
+        Ok(flags) => flags.is_internal,
+        Err(e) => return e.to_compile_error().into(),
+    };
     let input = parse_macro_input!(item as ItemFn);
-    match expand(kind, input) {
+    match expand(kind, is_internal, input) {
         Ok(ts) => ts.into(),
         Err(e) => e.to_compile_error().into(),
     }
 }
 
-fn expand(kind: FnKind, input: ItemFn) -> syn::Result<TokenStream2> {
+struct AttrFlags {
+    is_internal: bool,
+}
+
+fn parse_attr_flags(attr: proc_macro2::TokenStream) -> syn::Result<AttrFlags> {
+    if attr.is_empty() {
+        return Ok(AttrFlags { is_internal: false });
+    }
+    use syn::{
+        parse::Parser as _,
+        punctuated::Punctuated as Punct,
+    };
+    let parsed: Punct<syn::Path, syn::Token![,]> =
+        Punct::<syn::Path, syn::Token![,]>::parse_terminated.parse2(attr)?;
+    let mut is_internal = false;
+    for p in parsed {
+        if p.is_ident("internal") {
+            is_internal = true;
+        } else {
+            return Err(syn::Error::new(
+                p.span(),
+                format!(
+                    "unknown flag {:?} — only `internal` is supported",
+                    quote! { #p }.to_string(),
+                ),
+            ));
+        }
+    }
+    Ok(AttrFlags { is_internal })
+}
+
+fn expand(kind: FnKind, is_internal: bool, input: ItemFn) -> syn::Result<TokenStream2> {
     let ItemFn {
         attrs,
         vis,
@@ -260,6 +297,7 @@ fn expand(kind: FnKind, input: ItemFn) -> syn::Result<TokenStream2> {
                 name: #fn_name_str,
                 arg_names: &[ #(#arg_name_strs),* ],
                 handler: ::convex_native::HandlerFn::#handler_variant(#handler_ident),
+                is_internal: #is_internal,
             }
         }
     };

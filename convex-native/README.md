@@ -68,6 +68,21 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
+### New — `#[convex::query(internal)]` modifier
+
+Mark a query/mutation/action as internal-only:
+
+```rust
+#[convex::mutation(internal)]
+async fn rebuild_index(ctx: &mut MutationCtx, token: String) -> Result<()> { .. }
+```
+
+The flag lands on `NativeFunctionRegistration::is_internal` and in
+the JSON introspection output (`functions.entries[].internal`). The
+backend adapter is expected to reject external client calls to
+internal functions — they remain callable from other native
+functions and from trusted server-side callers.
+
 ### New — `convex_native::errors` helpers
 
 User-facing vs system errors are distinguished in Convex by the

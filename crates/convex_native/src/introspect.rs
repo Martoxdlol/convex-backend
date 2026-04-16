@@ -106,6 +106,7 @@ fn describe_functions(functions: &NativeFunctionRegistry) -> serde_json::Value {
                 "name": r.name,
                 "kind": kind,
                 "args": r.arg_names,
+                "internal": r.is_internal,
             })
         })
         .collect();

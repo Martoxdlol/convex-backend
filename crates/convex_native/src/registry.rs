@@ -80,6 +80,12 @@ pub struct NativeFunctionRegistration {
     pub arg_names: &'static [&'static str],
     /// Typed dispatcher.
     pub handler: HandlerFn,
+    /// `true` when the function was declared with the
+    /// `#[convex::query(internal)]` / `internal_mutation` /
+    /// `internal_action` modifier. The backend adapter must reject
+    /// external client calls to internal functions (they're only
+    /// callable from other native functions and from trusted callers).
+    pub is_internal: bool,
 }
 
 impl NativeFunctionRegistration {
