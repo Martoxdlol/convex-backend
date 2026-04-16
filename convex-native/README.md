@@ -61,6 +61,31 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
+### New — `convex_native::testing` unit-test utilities
+
+Writing a full `NativeActionCallbacks` mock per test is tedious. The
+`testing` module provides a builder:
+
+```rust
+use convex_native::testing::{TestCallbacks, CallRecord};
+
+let (cb, history) = TestCallbacks::new()
+    .on_query("get_user_count", |_args| Ok(ConvexValue::Int64(7)))
+    .on_mutation("create_user", |_args| Ok(ConvexValue::Null))
+    .build();
+
+// ... runner.run_action_with_callbacks(..., cb).await?
+
+assert_eq!(
+    history.count(|r| matches!(r, CallRecord::Query { name, .. } if name == "get_user_count")),
+    1,
+);
+```
+
+`TestHistory::count(pred)` lets tests assert which paths fired
+without writing boilerplate. `CallRecord` covers queries, mutations,
+schedules, and the three storage operations.
+
 ### New in Phase 4.1 / 4.6 — fastrace spans + index-cache warmup
 
 - Every `run_query` / `run_mutation` / `run_action_with_callbacks`
@@ -428,7 +453,8 @@ crates/convex_native/
     ├── http_actions.rs                     -- HTTP action registration + request/response
     ├── metrics_wiring.rs                   -- runner metrics + timeout enforcement
     ├── runner_dispatch.rs                  -- NativeFunctionRunner lookup & dispatch
-    └── search_indexes.rs                   -- text/vector search index registration
+    ├── search_indexes.rs                   -- text/vector search index registration
+    └── testing_utilities.rs                -- TestCallbacks builder smoke test
 
 crates/convex_macro/
 ├── src/

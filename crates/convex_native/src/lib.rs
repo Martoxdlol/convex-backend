@@ -71,6 +71,7 @@ pub mod registry;
 pub mod runner;
 pub mod schema;
 pub mod schema_diff;
+pub mod testing;
 pub mod warmup;
 
 pub use backend::{
