@@ -23,13 +23,16 @@ warmup plan),
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
 validation + 5.3 text/vector search + 5.4 bulk `get_many`).
 
-Remaining: wiring `CompositeFunctionRunner` into `make_app()` at
-`local_backend/src/lib.rs:214` and an end-to-end smoke test against
-a live backend, real distributed gRPC service (3.1–3.6), and
-production hardening (4.7 rolling updates). Both of the big pieces
-that blocked earlier — native `run_function` dispatch and a real
-`NativeActionCallbacks` adapter — are now in-tree in
-`crates/convex_native_backend/`.
+Remaining: end-to-end smoke test against a live backend, real
+distributed gRPC service (3.1–3.6), and production hardening (4.7
+rolling updates). Everything up to the `make_app()` wiring is now
+in-tree: `crates/convex_native_backend/` provides the
+`CompositeFunctionRunner` (native dispatch) and `BackendCallbacks`
+(native → `udf::ActionCallbacks` bridge), and
+`crates/local_backend/src/lib.rs` now instantiates the composite
+runner ahead of the `Application::new` call, so every build of
+`convex-local-backend` transparently picks up any statically
+registered native functions.
 
 ### What works
 

@@ -11,17 +11,22 @@ backend's `function_runner::FunctionRunner` trait. It depends on
 npm-packages rush install + build step must have run at least once.
 `convex_native` itself stays isolate-free.
 
-Wire into `make_app()` (`crates/local_backend/src/lib.rs:214`) like
-this:
+Now wired in `crates/local_backend/src/lib.rs` — every
+`convex-local-backend` build transparently routes registered native
+functions through the composite:
 
 ```rust
-use convex_native::NativeFunctionRunner;
-use convex_native_backend::CompositeFunctionRunner;
-
-let native = Arc::new(NativeFunctionRunner::from_inventory()?);
-let js = Arc::new(InProcessFunctionRunner::new(...)?);
-let composite = Arc::new(CompositeFunctionRunner::new(native, js));
-// ...use `composite` wherever `FunctionRunner<RT>` is expected.
+let js_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(
+    InProcessFunctionRunner::new(... database.clone() ...)?,
+);
+let native_runner = Arc::new(convex_native::NativeFunctionRunner::from_inventory()?);
+let function_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(
+    convex_native_backend::CompositeFunctionRunner::new(
+        native_runner,
+        js_runner,
+        database.clone(),
+    ),
+);
 ```
 
 ## Reference implementation

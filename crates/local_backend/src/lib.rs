@@ -211,7 +211,7 @@ pub async fn make_app(
         config.name(),
         reqwest::redirect::Policy::default(),
     );
-    let function_runner: Arc<dyn FunctionRunner<ProdRuntime>> =
+    let js_runner: Arc<dyn FunctionRunner<ProdRuntime>> =
         Arc::new(InProcessFunctionRunner::new(
             config.name().clone(),
             key_broker.function_runner_keybroker(),
@@ -225,6 +225,23 @@ pub async fn make_app(
             database.clone(),
             fetch_client.clone(),
         )?);
+
+    // Wrap in the composite runner so any statically-registered
+    // native functions (#[convex::query/mutation/action]) intercept
+    // before the request reaches V8. When the registry is empty the
+    // composite is a thin pass-through to the JS runner.
+    let native_runner = Arc::new(convex_native::NativeFunctionRunner::from_inventory()?);
+    tracing::info!(
+        "Native function registry: {} registered",
+        native_runner.len(),
+    );
+    let function_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(
+        convex_native_backend::CompositeFunctionRunner::new(
+            native_runner,
+            js_runner,
+            database.clone(),
+        ),
+    );
 
     let application = Application::new(
         runtime.clone(),
