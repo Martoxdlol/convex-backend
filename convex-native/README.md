@@ -133,7 +133,10 @@ traceability.
 
 ### New — `#[convex::cron(...)]`
 
-Recurring scheduled jobs via an inventory-collected attribute:
+Recurring scheduled jobs via an inventory-collected attribute. The
+schedule string is parsed with `saffron` at macro-expansion time, so
+typos like `"0 3 * *"` (missing a field) fail the build rather than
+surfacing at runtime.
 
 ```rust
 #[convex::mutation(internal)]

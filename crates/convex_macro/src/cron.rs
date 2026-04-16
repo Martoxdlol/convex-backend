@@ -78,6 +78,15 @@ impl syn::parse::Parse for AttrArgs {
                 "#[convex::cron] requires schedule = \"<cron-expr>\"",
             )
         })?;
+        // Compile-time validation: parse the schedule with saffron.
+        // Typos like `0 3 * *` (missing a field) fail the build
+        // instead of hiding until the cron registry is collected.
+        if let Err(e) = schedule.parse::<saffron::Cron>() {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("invalid cron schedule {:?}: {e}", schedule),
+            ));
+        }
         let target = target.ok_or_else(|| {
             syn::Error::new(
                 proc_macro2::Span::call_site(),

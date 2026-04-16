@@ -16,6 +16,7 @@ testing = []
 heck = "0.5"
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
+saffron = { workspace = true }
 syn = { workspace = true }
 
 [dev-dependencies]
