@@ -5,6 +5,8 @@ actions) in native Rust.
 
 - **`QUICKSTART.md`** — the shipped, working-today developer surface
   (read this if you want to use the crate).
+- **`MIGRATION.md`** — side-by-side JS → Rust cheatsheet for porting
+  an existing Convex app.
 - **`native-rust-functions.md`** — the original design doc (rationale
   and high-level architecture).
 - **`IMPLEMENTATION_PLAN.md`** — phase-by-phase roadmap.
