@@ -19,9 +19,10 @@ bytes = { workspace = true }
 common = { workspace = true }
 convex_macro = { workspace = true }
 database = { workspace = true }
+errors = { workspace = true }
+fastrace = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
-fastrace = { workspace = true }
 inventory = { workspace = true }
 keybroker = { workspace = true }
 parking_lot = { workspace = true }

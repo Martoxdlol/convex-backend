@@ -63,6 +63,7 @@ pub mod convert;
 pub mod ctx;
 pub mod distributed;
 pub mod document;
+pub mod errors;
 pub mod function_ref;
 pub mod http;
 pub mod id;

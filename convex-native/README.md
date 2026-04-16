@@ -68,6 +68,25 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
+### New — `convex_native::errors` helpers
+
+User-facing vs system errors are distinguished in Convex by the
+`ErrorMetadata` tag attached to an `anyhow::Error`. Native functions
+now have ergonomic builders:
+
+```rust
+if !ctx.auth().is_authenticated() {
+    return Err(convex_native::errors::unauthenticated(
+        "MissingToken",
+        "Request requires an auth token",
+    ).into());
+}
+```
+
+Exposes: `bad_request` (400), `not_found` (404), `unauthenticated`
+(401), `forbidden` (403), `conflict` (409). The `ErrorMetadata` type
+is re-exported too for callers that need it directly.
+
 ### New — JSON introspection for dev tooling
 
 `BuiltBackend::describe_json()` returns a stable JSON envelope
