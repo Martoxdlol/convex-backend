@@ -20,7 +20,14 @@
 //!   runner knows whether to dispatch natively or fall through to V8.
 
 use std::{
-    sync::Arc,
+    sync::{
+        atomic::{
+            AtomicBool,
+            AtomicU64,
+            Ordering,
+        },
+        Arc,
+    },
     time::{
         Duration,
         Instant,
@@ -58,11 +65,29 @@ use crate::{
 ///
 /// Cheap to `Clone` — internally `Arc`'d so multiple subsystems (backend
 /// schema bootstrap, composite runner, etc.) share the same table.
+/// Shared state for graceful shutdown: when `draining` is set, the
+/// runner rejects new invocations, and `in_flight` lets the caller
+/// wait for outstanding ones to finish.
+struct DrainState {
+    draining: AtomicBool,
+    in_flight: AtomicU64,
+}
+
+impl DrainState {
+    fn new() -> Self {
+        Self {
+            draining: AtomicBool::new(false),
+            in_flight: AtomicU64::new(0),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct NativeFunctionRunner {
     inner: Arc<NativeFunctionRegistry>,
     metrics: Arc<dyn NativeMetricsSink>,
     default_timeout: Option<Duration>,
+    drain: Arc<DrainState>,
 }
 
 impl NativeFunctionRunner {
@@ -75,7 +100,53 @@ impl NativeFunctionRunner {
             inner: Arc::new(NativeFunctionRegistry::collect()?),
             metrics: Arc::new(NoopMetrics),
             default_timeout: None,
+            drain: Arc::new(DrainState::new()),
         })
+    }
+
+    /// Begin draining: new invocations are rejected. Clones of this
+    /// runner share the drain state, so calling this on any clone
+    /// shuts down the whole set.
+    pub fn begin_drain(&self) {
+        self.drain.draining.store(true, Ordering::SeqCst);
+    }
+
+    /// `true` once [`begin_drain`] has been called.
+    pub fn is_draining(&self) -> bool {
+        self.drain.draining.load(Ordering::Relaxed)
+    }
+
+    /// Current number of in-flight handler invocations.
+    pub fn in_flight(&self) -> u64 {
+        self.drain.in_flight.load(Ordering::Relaxed)
+    }
+
+    /// Await until every in-flight invocation has completed or
+    /// `timeout` elapses. Returns `true` if drained cleanly, `false`
+    /// on timeout.
+    pub async fn await_drain(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.in_flight() == 0 {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    fn check_drain(&self, name: &str) -> anyhow::Result<()> {
+        if self.is_draining() {
+            anyhow::bail!("native runner is draining — rejecting {name:?}");
+        }
+        Ok(())
+    }
+
+    fn enter(&self) -> InFlightGuard<'_> {
+        self.drain.in_flight.fetch_add(1, Ordering::SeqCst);
+        InFlightGuard { drain: &self.drain }
     }
 
     /// Attach a metrics sink. Returns a new runner that shares the
@@ -153,6 +224,8 @@ impl NativeFunctionRunner {
         namespace: TableNamespace,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
+        self.check_drain(name)?;
+        let _guard = self.enter();
         let registration = self
             .inner
             .get(name)
@@ -188,6 +261,8 @@ impl NativeFunctionRunner {
         namespace: TableNamespace,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
+        self.check_drain(name)?;
+        let _guard = self.enter();
         let registration = self
             .inner
             .get(name)
@@ -243,6 +318,8 @@ impl NativeFunctionRunner {
         args: ConvexObject,
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
     ) -> anyhow::Result<ConvexValue> {
+        self.check_drain(name)?;
+        let _guard = self.enter();
         let registration = self
             .inner
             .get(name)
@@ -272,6 +349,16 @@ impl NativeFunctionRunner {
     /// Iterate the registered functions (metadata only).
     pub fn iter(&self) -> impl Iterator<Item = &'static NativeFunctionRegistration> + '_ {
         self.inner.iter()
+    }
+}
+
+struct InFlightGuard<'a> {
+    drain: &'a DrainState,
+}
+
+impl<'a> Drop for InFlightGuard<'a> {
+    fn drop(&mut self) {
+        self.drain.in_flight.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
