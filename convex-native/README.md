@@ -617,14 +617,15 @@ registrations, no schema entries.
   pre-uploaded `FileStorageEntry` values. Wiring a direct path from
   `ActionCtx::storage()` into the `file_storage` backend is
   outstanding.
-- **Native action dispatch through the composite.** `UdfType::Action`
-  requests fall through to the JS runner even when the name matches
-  a `#[convex::action]` registration. Native actions registered via
-  inventory are dispatchable through `NativeFunctionRunner::run_action_with_callbacks`
-  directly, but the composite runner's `run_function` path doesn't
-  intercept the action `UdfType` yet — wiring that requires cached
-  `Arc<dyn ActionCallbacks>` plumbing and the right `ActionOutcome`
-  construction.
+- **Native action `FunctionFinalTransaction` is always `None`.** The
+  composite now intercepts `UdfType::Action` and dispatches native
+  actions via `run_action_with_callbacks`, building a real
+  `FunctionOutcome::Action(ActionOutcome { .. })`. What's not
+  threaded through is a transaction snapshot — native `ActionCtx`
+  has no tx today, so the returned `final_tx` is always `None`. JS
+  actions behave the same way (no transaction writes), but the lack
+  of a tx means native actions can't observe read-time consistency
+  without round-tripping to `run_query_by_name`.
 
 ## Architecture (today)
 
@@ -749,10 +750,12 @@ Per `IMPLEMENTATION_PLAN.md`, the remaining shippable items are:
 4. **Storage forwarding from `ActionCtx::storage()`** directly to the
    `file_storage` backend, bypassing the JS `ActionCallbacks` shape
    that doesn't fit raw bytes.
-5. **Native action dispatch in composite.** Intercept
-   `UdfType::Action` in `CompositeFunctionRunner::run_function`,
-   route to `NativeFunctionRunner::run_action_with_callbacks`, and
-   synthesize a matching `ActionOutcome`.
+5. **Native `ActionCtx` snapshot transaction.** Today the native
+   `ActionCtx` has no transaction at all; sub-calls happen through
+   `run_query_by_name` which opens its own. If an action needs a
+   stable read-time view, we'd either need to pass a snapshot `ts`
+   through the `BackendCallbacks` or give `ActionCtx` its own
+   optional `Transaction<Rt>`.
 
 Agents iterating on this project: please keep this document honest about
 what is merged vs what is planned, after each commit.

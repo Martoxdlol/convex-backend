@@ -44,13 +44,14 @@ statically registered via `inventory::submit!`.
 |---|---|
 | `run_function` (query/mutation, native name) | `dispatch_native`: open `Transaction<RT>` via `Database::begin_with_ts`, run native handler, convert to `FunctionFinalTransaction`, build synthetic `UdfOutcome`. |
 | `run_function` (query/mutation, non-native) | Delegate to wrapped JS runner. |
-| `run_function` (action/http_action) | Delegate to wrapped JS runner. Native actions go through `NativeFunctionRunner::run_action_with_callbacks` elsewhere; they do not fit the "run inside a transaction" shape. |
+| `run_function` (action, native name) | `dispatch_native_action`: resolve the cached `ActionCallbacks` via the `Weak` stored from `set_action_callbacks`, wrap it in a `BackendCallbacks`, call `NativeFunctionRunner::run_action_with_callbacks`, synthesize an `ActionOutcome`. Returns `final_tx = None` because native actions don't take a transaction. |
+| `run_function` (action, non-native; http_action) | Delegate to wrapped JS runner. |
 | `analyze` | Delegate to JS. |
 | `evaluate_app_definitions` | Delegate to JS. |
 | `evaluate_component_initializer` | Delegate to JS. |
 | `evaluate_schema` | Merge `NativeSchema::collect()` with the JS schema; collision on table name is a hard error. |
 | `evaluate_auth_config` | Delegate to JS. |
-| `set_action_callbacks` | Delegate to JS. |
+| `set_action_callbacks` | Store a `Weak<dyn ActionCallbacks>` locally (for native action dispatch) and forward the `Arc` to the wrapped JS runner. |
 
 ## The native dispatch path
 

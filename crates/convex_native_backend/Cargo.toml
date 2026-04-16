@@ -19,6 +19,7 @@ database = { workspace = true }
 function_runner = { workspace = true }
 keybroker = { workspace = true }
 model = { workspace = true }
+parking_lot = { workspace = true }
 rand = { workspace = true }
 semver = { workspace = true }
 serde_json = { workspace = true }

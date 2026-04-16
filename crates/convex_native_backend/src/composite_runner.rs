@@ -1,23 +1,28 @@
 //! `CompositeFunctionRunner` — wraps a JS `FunctionRunner<RT>` and
 //! intercepts calls whose function names match the native registry.
 //!
-//! For native queries and mutations the composite runner now drives
-//! the full end-to-end path: builds a `Transaction<RT>` against the
+//! For native queries and mutations the composite runner drives the
+//! full end-to-end path: builds a `Transaction<RT>` against the
 //! owned `Database<RT>`, runs the native handler, extracts the
 //! read/write set into a `FunctionFinalTransaction`, and builds a
 //! synthetic `UdfOutcome` so the caller sees the usual
 //! `(final_tx, outcome, usage)` tuple.
 //!
-//! Native actions are still handled by `NativeFunctionRunner::run_action`
-//! elsewhere — they don't fit the "run inside a transaction" shape
-//! this method assumes.
+//! For native actions the composite dispatches through
+//! `NativeFunctionRunner::run_action_with_callbacks`, wrapping the
+//! cached `Arc<dyn ActionCallbacks>` in a `BackendCallbacks`. Actions
+//! don't take a `Transaction`, so `final_tx` is always `None` in the
+//! returned tuple.
 
 use std::{
     collections::{
         BTreeMap,
         BTreeSet,
     },
-    sync::Arc,
+    sync::{
+        Arc,
+        Weak,
+    },
     time::Instant,
 };
 
@@ -84,6 +89,7 @@ use model::{
     },
     udf_config::types::UdfConfig,
 };
+use parking_lot::RwLock;
 use rand::Rng;
 use sync_types::{
     CanonicalizedModulePath,
@@ -92,6 +98,7 @@ use sync_types::{
 use tokio::sync::mpsc;
 use udf::{
     ActionCallbacks,
+    ActionOutcome,
     EvaluateAppDefinitionsResult,
     FunctionOutcome,
     SyscallTrace,
@@ -107,6 +114,8 @@ use value::{
     TableNamespace,
 };
 
+use crate::callbacks_adapter::BackendCallbacks;
+
 /// Wraps a JS `FunctionRunner<RT>` and routes recognized native
 /// function names through a real dispatch path.
 ///
@@ -118,6 +127,11 @@ pub struct CompositeFunctionRunner<RT: Runtime> {
     pub native: Arc<NativeFunctionRunner>,
     pub js: Arc<dyn FunctionRunner<RT>>,
     pub database: Database<RT>,
+    /// Cached `set_action_callbacks` sink. Stored as `Weak` to match the
+    /// JS-side `InProcessFunctionRunner` pattern and avoid a reference
+    /// cycle with `ApplicationFunctionRunner`. Used to construct a
+    /// `BackendCallbacks` when dispatching native actions.
+    action_callbacks: Arc<RwLock<Option<Weak<dyn ActionCallbacks>>>>,
 }
 
 impl<RT: Runtime> CompositeFunctionRunner<RT> {
@@ -130,6 +144,7 @@ impl<RT: Runtime> CompositeFunctionRunner<RT> {
             native,
             js,
             database,
+            action_callbacks: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -137,6 +152,16 @@ impl<RT: Runtime> CompositeFunctionRunner<RT> {
         let meta = meta?;
         let path = meta.path_and_args.path();
         Some(path.udf_path.function_name().to_string())
+    }
+
+    /// Resolve the strong `Arc<dyn ActionCallbacks>` from the stored
+    /// weak reference. Returns `None` if `set_action_callbacks` hasn't
+    /// been called yet or the action runner has been dropped.
+    fn resolve_action_callbacks(&self) -> Option<Arc<dyn ActionCallbacks>> {
+        self.action_callbacks
+            .read()
+            .as_ref()
+            .and_then(Weak::upgrade)
     }
 }
 
@@ -296,6 +321,85 @@ async fn dispatch_native<RT: Runtime + 'static>(
     Ok((final_tx, wrapped, usage_stats))
 }
 
+/// Dispatch a native `#[convex::action]` through
+/// `NativeFunctionRunner::run_action_with_callbacks`. Unlike the
+/// query/mutation path we don't open a `Transaction` here — native
+/// actions don't take one (their `ActionCtx` carries a callbacks
+/// handle, not a tx). Writes happen indirectly via
+/// `run_mutation_by_name` / `schedule`, which go back through the
+/// wrapped `ActionCallbacks`.
+async fn dispatch_native_action<RT: Runtime>(
+    database: &Database<RT>,
+    native: &Arc<NativeFunctionRunner>,
+    action_callbacks: Arc<dyn ActionCallbacks>,
+    identity: Identity,
+    function_metadata: FunctionMetadata,
+    context: ExecutionContext,
+) -> anyhow::Result<(
+    Option<FunctionFinalTransaction>,
+    FunctionOutcome,
+    FunctionUsageStats,
+)> {
+    let (path, arguments, udf_server_version) = function_metadata.path_and_args.clone().consume();
+    let inert_identity = identity.clone().into();
+    let usage_tracker = FunctionUsageTracker::new();
+
+    let args_obj = {
+        use value::{
+            serialized_args_ext::SerializedArgsExt,
+            ConvexValue,
+        };
+        let raw_args = arguments.clone().into_args()?;
+        let first = raw_args
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("native action: missing args object"))?;
+        let cv: ConvexValue = first.try_into()?;
+        match cv {
+            ConvexValue::Object(obj) => obj,
+            _ => anyhow::bail!("native action args must be a single object"),
+        }
+    };
+
+    let callbacks = Arc::new(BackendCallbacks::<RT>::new(
+        action_callbacks,
+        identity,
+        context,
+    ));
+
+    let started = Instant::now();
+    let name = path.udf_path.function_name().to_string();
+    let result = native
+        .run_action_with_callbacks(&name, TableNamespace::Global, args_obj, callbacks)
+        .await;
+    let duration = started.elapsed();
+
+    let (result_packed, error): (Option<JsonPackedValue>, Option<JsError>) = match result {
+        Ok(v) => (Some(JsonPackedValue::pack(v)), None),
+        Err(e) => (None, Some(JsError::from_error_ref(&e))),
+    };
+    let outcome_result = match (result_packed, error) {
+        (Some(p), None) => Ok(p),
+        (_, Some(e)) => Err(e),
+        _ => unreachable!(),
+    };
+
+    let runtime = database.runtime();
+    let outcome = ActionOutcome {
+        path: path.for_logging(),
+        arguments,
+        identity: inert_identity,
+        unix_timestamp: runtime.unix_timestamp(),
+        result: outcome_result,
+        syscall_trace: SyscallTrace::new(),
+        udf_server_version,
+        user_execution_time: Some(duration),
+    };
+
+    let usage_stats = usage_tracker.gather_user_stats();
+    Ok((None, FunctionOutcome::Action(outcome), usage_stats))
+}
+
 #[async_trait]
 impl<RT: Runtime> FunctionRunner<RT> for CompositeFunctionRunner<RT>
 where
@@ -337,7 +441,26 @@ where
             .await;
         }
 
-        // Not native (or not a query/mutation): delegate.
+        if is_native && matches!(udf_type, UdfType::Action) {
+            let meta = function_metadata.expect("is_native implies function_metadata is Some");
+            let callbacks = self.resolve_action_callbacks().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "CompositeFunctionRunner: action_callbacks not set — set_action_callbacks \
+                     must be invoked before native actions can be dispatched"
+                )
+            })?;
+            return dispatch_native_action::<RT>(
+                &self.database,
+                &self.native,
+                callbacks,
+                identity,
+                meta,
+                context,
+            )
+            .await;
+        }
+
+        // Not native (or not a query/mutation/action): delegate.
         self.js
             .run_function(
                 udf_type,
@@ -446,6 +569,10 @@ where
     }
 
     fn set_action_callbacks(&self, action_callbacks: Arc<dyn ActionCallbacks>) {
+        // Cache locally so native action dispatch can reach the
+        // callbacks without a reference cycle, then forward to the
+        // wrapped JS runner so its own action path still works.
+        *self.action_callbacks.write() = Some(Arc::downgrade(&action_callbacks));
         self.js.set_action_callbacks(action_callbacks);
     }
 }
