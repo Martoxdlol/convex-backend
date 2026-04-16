@@ -31,8 +31,14 @@
 This document proposes adding support for writing Convex server functions
 (queries, mutations, and actions) in native Rust. Functions are defined using
 proc macro attributes (`#[convex::query]`, `#[convex::mutation]`,
-`#[convex::action]`), compiled directly into the backend binary, and executed
-without V8 or any intermediate runtime.
+`#[convex::action]`), compiled into the developer's own backend binary, and
+executed without V8 or any intermediate runtime.
+
+This repository provides the **framework crates** (`convex_native`,
+`convex_macro`, `convex_native_distributed`) that developers consume as
+dependencies — either from **crates.io** or directly from **git**. Application
+code (schemas, functions, components) lives in the developer's own project and
+repository, not in this one.
 
 The design supports both **single-node** and **distributed multi-node**
 execution, where a pool of identical worker binaries can execute functions in
@@ -41,7 +47,11 @@ client sync.
 
 ### Motivating Example
 
+The following shows what a developer's project looks like when using the
+`convex_native` crate as a dependency:
+
 ```rust
+// In the developer's own project (not this repo)
 use convex_native::prelude::*;
 
 // ── Schema: define tables as Rust structs ──────────────────────
@@ -144,7 +154,7 @@ async fn send_welcome_email(ctx: &mut ActionCtx, user_id: Id<User>) -> Result<()
     Ok(())
 }
 
-// ── Entry point ────────────────────────────────────────────────
+// ── Entry point (in the developer's own project) ──────────────
 
 fn main() {
     ConvexBackend::new()
@@ -168,8 +178,9 @@ fn main() {
 - **G3:** Provide maximum type safety: phantom-typed `Id<T>` prevents
   cross-table ID confusion, typed query builders prevent querying with
   wrong index/field names, and typed insert/patch prevents field mismatches.
-- **G4:** Compile all functions into a single binary that can run as a
-  standalone Convex backend or as a distributed worker node.
+- **G4:** Publish framework crates (`convex_native`, `convex_macro`) to
+  crates.io (and support git dependencies) so that developers can build their
+  own backend binary — runnable as a standalone server or distributed worker.
 - **G5:** Support horizontal scaling by running multiple identical worker
   nodes behind a load balancer.
 - **G6:** Reuse the existing `FunctionRunner` trait as the distribution
@@ -188,6 +199,58 @@ fn main() {
   `FunctionRouter`.
 - **NG4:** WASM compilation — this design targets native execution. A WASM
   path is a valid future extension but out of scope.
+
+### Consumption Model
+
+This repository **does not contain application code**. It provides the
+framework crates that developers depend on from their own projects.
+
+**Published crates (this repo):**
+
+| Crate | Description | Phase |
+|-------|-------------|-------|
+| `convex_native` | Core type system, derive macros, context wrappers, `NativeFunctionRunner`, `ConvexBackend` builder | 1 |
+| `convex_macro` | Proc macros (`#[convex::query]`, `#[convex::mutation]`, `#[convex::action]`, `#[derive(ConvexDocument)]`, etc.) | 1 |
+| `convex_native_distributed` | gRPC worker/conductor support for multi-node deployments | 3 |
+
+**Developer's project (separate repo):**
+
+```toml
+# my-backend/Cargo.toml
+[package]
+name = "my-backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# From crates.io (after publish):
+convex_native = "0.1"
+
+# Or from git (before publish / for bleeding edge):
+# convex_native = { git = "https://github.com/nicorp/convex-backend", branch = "main" }
+
+# For distributed mode (Phase 3):
+# convex_native_distributed = "0.1"
+
+# Reusable components are also just crate dependencies:
+# convex-rate-limiter = "1.0"
+```
+
+```
+my-backend/
+├── Cargo.toml
+├── src/
+│   ├── main.rs           # ConvexBackend::new()...run()
+│   ├── schema.rs          # #[derive(ConvexDocument)] structs
+│   └── functions/
+│       ├── mod.rs
+│       ├── users.rs       # #[convex::query], #[convex::mutation]
+│       └── messages.rs
+```
+
+The developer runs `cargo build` in their own project to produce their
+backend binary. This repo never contains or compiles application-specific
+schemas, functions, or business logic.
 
 ---
 
@@ -310,9 +373,12 @@ Rust design, they become direct method calls on the context wrapper types.
 
 ### 4.1 Standalone Mode (Single Node)
 
+The developer's binary (built in their own project using `convex_native` as a
+dependency) runs everything in a single process:
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                   Your Rust Binary                            │
+│          Developer's Binary (their project)                   │
 │                                                              │
 │  ┌─────────────────────────────────────────────────────┐     │
 │  │  Native Function Registry                            │     │
@@ -354,16 +420,21 @@ Rust design, they become direct method calls on the context wrapper types.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-In standalone mode, the single binary runs everything: HTTP server, WebSocket
-sync, database, and function execution. The `NativeFunctionRunner` replaces
-(or supplements) the `InProcessFunctionRunner`.
+In standalone mode, the developer's binary runs everything: HTTP server,
+WebSocket sync, database, and function execution. The `NativeFunctionRunner`
+(provided by `convex_native`) replaces or supplements the
+`InProcessFunctionRunner`.
 
 ### 4.2 Distributed Mode (Multi-Node)
+
+In distributed mode, the developer deploys the same binary (from their
+project) with different mode flags. The `convex_native_distributed` crate
+provides the gRPC conductor/worker infrastructure:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        CONDUCTOR NODE                            │
-│                     (same binary, mode=conductor)                │
+│                  (developer's binary, mode=conductor)            │
 │                                                                 │
 │  ┌──────────┐    ┌─────────────────────┐    ┌────────────────┐  │
 │  │  HTTP /   │    │ ApplicationFunction │    │  Database       │  │
@@ -393,7 +464,7 @@ sync, database, and function execution. The `NativeFunctionRunner` replaces
           ▼                 ▼                     ▼
 ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
 │   WORKER NODE 1  │ │   WORKER NODE 2  │ │   WORKER NODE N  │
-│ (same binary,    │ │ (same binary,    │ │ (same binary,    │
+│ (dev's binary,   │ │ (dev's binary,   │ │ (dev's binary,   │
 │  mode=worker)    │ │  mode=worker)    │ │  mode=worker)    │
 │                  │ │                  │ │                  │
 │ ┌──────────────┐ │ │ ┌──────────────┐ │ │ ┌──────────────┐ │
@@ -2969,11 +3040,14 @@ The primary new protobuf definitions needed are:
 
 ### 12.1 Deployment Topologies
 
+All topologies use the binary produced by `cargo build` in the **developer's
+own project** (which depends on the `convex_native` crate from this repo).
+
 #### Topology A: Single Node (Development / Small Apps)
 
 ```
 ┌─────────────────────────────────┐
-│         Single Binary            │
+│    Developer's Binary            │
 │     CONVEX_MODE=standalone       │
 │                                 │
 │  HTTP + WS + DB + Functions     │
@@ -3091,13 +3165,14 @@ The primary new protobuf definitions needed are:
 
 ### 12.4 Graceful Shutdown and Rolling Updates
 
-Since all workers run the same binary with the same functions compiled in,
-rolling updates require restarting workers with the new binary:
+Since all workers run the same binary (built from the developer's project)
+with the same functions compiled in, rolling updates require restarting
+workers with a new build of that binary:
 
 ```
     Rolling update sequence:
     
-    1. Build new binary with updated functions
+    1. Developer builds new binary with updated functions
     2. Start new workers (v2) alongside existing (v1)
     
          ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐
@@ -3709,6 +3784,12 @@ queries and mutations in a single-node backend.
 │ 5. Integration with local_backend                        │
 │    └── FunctionRouter routes to native or V8             │
 │                                                          │
+│ 6. Crate publishing / git consumption                    │
+│    ├── convex_native and convex_macro publishable to     │
+│    │   crates.io with stable public API surface          │
+│    ├── Also consumable via git dependency                │
+│    └── Example project (separate repo) as smoke test     │
+│                                                          │
 │ Key: Schema + types are foundational — everything else   │
 │ builds on them. Doing this first means Phase 2-4 code    │
 │ is type-safe from the start.                             │
@@ -3880,28 +3961,60 @@ migration tooling, and codegen.
 ## Appendix A: Crate Dependency Map
 
 ```
-    convex_native (new)                convex_macro (extended)
-        │                                   │
-        ├── common                          │
-        ├── database (Transaction)          │
-        ├── function_runner (FunctionRunner) │
-        ├── model (ModuleConfig, etc.)      │
-        ├── value (ConvexValue, ConvexObject)│
-        ├── udf (FunctionOutcome, ActionCallbacks)
-        ├── keybroker (Identity)            │
-        ├── usage_tracking                  │
-        ├── indexing (InMemoryIndexCache)   │
-        └── pb (protobuf, for Phase 3)     │
-                                            │
-    convex_native_distributed (new, Phase 3)│
-        │                                   │
-        ├── convex_native                   │
-        ├── tonic (gRPC)                    │
-        ├── pb (extended protos)            │
-        └── common (knobs, service discovery)
+    ┌─────────────────────────────────────────────────────────┐
+    │  THIS REPO — framework crates (published to crates.io   │
+    │  or consumed via git dependency)                        │
+    │                                                         │
+    │  convex_native (new)                convex_macro (ext.) │
+    │      │                                   │              │
+    │      ├── common                          │              │
+    │      ├── database (Transaction)          │              │
+    │      ├── function_runner (FunctionRunner) │              │
+    │      ├── model (ModuleConfig, etc.)      │              │
+    │      ├── value (ConvexValue, ConvexObject)│              │
+    │      ├── udf (FunctionOutcome, ActionCallbacks)         │
+    │      ├── keybroker (Identity)            │              │
+    │      ├── usage_tracking                  │              │
+    │      ├── indexing (InMemoryIndexCache)   │              │
+    │      └── pb (protobuf, for Phase 3)     │              │
+    │                                          │              │
+    │  convex_native_distributed (new, Phase 3)│              │
+    │      │                                   │              │
+    │      ├── convex_native                   │              │
+    │      ├── tonic (gRPC)                    │              │
+    │      ├── pb (extended protos)            │              │
+    │      └── common (knobs, service discovery)              │
+    └─────────────────────────────────────────────────────────┘
+                         │
+                  cargo dependency
+                         │
+    ┌────────────────────▼────────────────────────────────────┐
+    │  DEVELOPER'S PROJECT (separate repo)                    │
+    │                                                         │
+    │  my-backend                                             │
+    │      ├── convex_native (from crates.io or git)          │
+    │      ├── convex_native_distributed (optional, Phase 3)  │
+    │      └── any component crates (e.g. convex-rate-limiter)│
+    └─────────────────────────────────────────────────────────┘
 ```
 
 ## Appendix B: Full Example Application
+
+This is a complete example of the **developer's own project** (a separate
+repository that depends on the `convex_native` crate from this repo).
+
+```toml
+# Cargo.toml (in the developer's project)
+[package]
+name = "my-chat-backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+convex_native = "0.1"       # from crates.io
+# convex_native = { git = "https://github.com/nicorp/convex-backend" }  # or from git
+anyhow = "1"
+```
 
 ```rust
 // ══════════════════════════════════════════════════════════════
@@ -4096,7 +4209,7 @@ async fn send_welcome(ctx: &mut ActionCtx, user_id: Id<User>) -> Result<()> {
 
 
 // ══════════════════════════════════════════════════════════════
-// src/main.rs — Entry point
+// src/main.rs — Entry point (in the developer's project)
 // ══════════════════════════════════════════════════════════════
 use convex_native::prelude::*;
 
@@ -4110,4 +4223,11 @@ fn main() {
         .with_persistence("postgres://localhost:5432/myapp")
         .run();
 }
+```
+
+Build and run:
+```bash
+# In the developer's project directory (not this repo)
+cargo build --release
+./target/release/my-chat-backend  # standalone mode
 ```
