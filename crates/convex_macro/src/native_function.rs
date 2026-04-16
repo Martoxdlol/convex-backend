@@ -81,14 +81,13 @@ impl FnKind {
 }
 
 pub fn attr(kind: FnKind, attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse the attribute args: we accept the bare `internal` flag.
     let attr_ts: proc_macro2::TokenStream = attr.into();
-    let is_internal = match parse_attr_flags(attr_ts) {
-        Ok(flags) => flags.is_internal,
+    let flags = match parse_attr_flags(attr_ts) {
+        Ok(f) => f,
         Err(e) => return e.to_compile_error().into(),
     };
     let input = parse_macro_input!(item as ItemFn);
-    match expand(kind, is_internal, input) {
+    match expand(kind, flags, input) {
         Ok(ts) => ts.into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -96,36 +95,57 @@ pub fn attr(kind: FnKind, attr: TokenStream, item: TokenStream) -> TokenStream {
 
 struct AttrFlags {
     is_internal: bool,
+    timeout_ms: u64,
 }
 
 fn parse_attr_flags(attr: proc_macro2::TokenStream) -> syn::Result<AttrFlags> {
+    let mut flags = AttrFlags {
+        is_internal: false,
+        timeout_ms: 0,
+    };
     if attr.is_empty() {
-        return Ok(AttrFlags { is_internal: false });
+        return Ok(flags);
     }
     use syn::{
         parse::Parser as _,
         punctuated::Punctuated as Punct,
     };
-    let parsed: Punct<syn::Path, syn::Token![,]> =
-        Punct::<syn::Path, syn::Token![,]>::parse_terminated.parse2(attr)?;
-    let mut is_internal = false;
-    for p in parsed {
-        if p.is_ident("internal") {
-            is_internal = true;
-        } else {
-            return Err(syn::Error::new(
-                p.span(),
-                format!(
-                    "unknown flag {:?} — only `internal` is supported",
-                    quote! { #p }.to_string(),
-                ),
-            ));
+    let parsed: Punct<syn::Meta, syn::Token![,]> =
+        Punct::<syn::Meta, syn::Token![,]>::parse_terminated.parse2(attr)?;
+    for meta in parsed {
+        match &meta {
+            syn::Meta::Path(p) if p.is_ident("internal") => {
+                flags.is_internal = true;
+            },
+            syn::Meta::NameValue(nv) if nv.path.is_ident("timeout_ms") => {
+                let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Int(n),
+                    ..
+                }) = &nv.value
+                else {
+                    return Err(syn::Error::new(
+                        nv.value.span(),
+                        "timeout_ms = must be an integer literal",
+                    ));
+                };
+                flags.timeout_ms = n.base10_parse::<u64>()?;
+            },
+            _ => {
+                return Err(syn::Error::new(
+                    meta.span(),
+                    "unsupported modifier — expected `internal` or `timeout_ms = N`",
+                ));
+            },
         }
     }
-    Ok(AttrFlags { is_internal })
+    Ok(flags)
 }
 
-fn expand(kind: FnKind, is_internal: bool, input: ItemFn) -> syn::Result<TokenStream2> {
+fn expand(kind: FnKind, flags: AttrFlags, input: ItemFn) -> syn::Result<TokenStream2> {
+    let AttrFlags {
+        is_internal,
+        timeout_ms,
+    } = flags;
     let ItemFn {
         attrs,
         vis,
@@ -298,6 +318,7 @@ fn expand(kind: FnKind, is_internal: bool, input: ItemFn) -> syn::Result<TokenSt
                 arg_names: &[ #(#arg_name_strs),* ],
                 handler: ::convex_native::HandlerFn::#handler_variant(#handler_ident),
                 is_internal: #is_internal,
+                timeout_ms: #timeout_ms,
             }
         }
     };

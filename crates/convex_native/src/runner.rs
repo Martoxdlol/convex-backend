@@ -192,13 +192,25 @@ impl NativeFunctionRunner {
         &self.metrics
     }
 
-    /// Timeout-wrap a handler future. If the runner has no default
-    /// timeout, the future runs unchanged.
-    async fn run_with_timeout<F>(&self, fut: F, name: &str) -> anyhow::Result<ConvexValue>
+    /// Timeout-wrap a handler future. Uses the per-function
+    /// `timeout_ms` from the registration when set, otherwise falls
+    /// back to the runner-level default. If neither is set, the
+    /// future runs unchanged.
+    async fn run_with_timeout<F>(
+        &self,
+        fut: F,
+        name: &str,
+        reg_timeout_ms: u64,
+    ) -> anyhow::Result<ConvexValue>
     where
         F: std::future::Future<Output = anyhow::Result<ConvexValue>> + Send,
     {
-        match self.default_timeout {
+        let effective = if reg_timeout_ms > 0 {
+            Some(Duration::from_millis(reg_timeout_ms))
+        } else {
+            self.default_timeout
+        };
+        match effective {
             None => fut.await,
             Some(t) => match tokio::time::timeout(t, fut).await {
                 Ok(r) => r,
@@ -263,7 +275,9 @@ impl NativeFunctionRunner {
         };
         let mut ctx = QueryCtx::new(tx, namespace);
         let started = Instant::now();
-        let result = self.run_with_timeout(handler(&mut ctx, args), name).await;
+        let result = self
+            .run_with_timeout(handler(&mut ctx, args), name, registration.timeout_ms)
+            .await;
         self.report_breaker(name, result.is_ok());
         self.metrics.record(
             name,
@@ -303,7 +317,9 @@ impl NativeFunctionRunner {
         };
         let mut ctx = MutationCtx::new(tx, namespace);
         let started = Instant::now();
-        let result = self.run_with_timeout(handler(&mut ctx, args), name).await;
+        let result = self
+            .run_with_timeout(handler(&mut ctx, args), name, registration.timeout_ms)
+            .await;
         self.report_breaker(name, result.is_ok());
         self.metrics.record(
             name,
@@ -363,7 +379,9 @@ impl NativeFunctionRunner {
         };
         let mut ctx = ActionCtx::<Rt>::with_callbacks(Some(self.clone()), callbacks, namespace);
         let started = Instant::now();
-        let result = self.run_with_timeout(handler(&mut ctx, args), name).await;
+        let result = self
+            .run_with_timeout(handler(&mut ctx, args), name, registration.timeout_ms)
+            .await;
         self.report_breaker(name, result.is_ok());
         self.metrics.record(
             name,

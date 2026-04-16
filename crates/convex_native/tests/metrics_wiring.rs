@@ -42,6 +42,33 @@ pub async fn slow_action(_ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[convex::action(timeout_ms = 50)]
+pub async fn slow_action_with_per_fn_timeout(_ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
+    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn per_function_timeout_beats_runner_default() {
+    use value::ConvexObject;
+
+    // Runner has *no* default timeout — only the per-fn timeout
+    // should kick in.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory().expect("from_inventory"));
+    let obj =
+        ConvexObject::try_from(std::collections::BTreeMap::<value::FieldName, ConvexValue>::new())
+            .unwrap();
+    let err = runner
+        .run_action(
+            "slow_action_with_per_fn_timeout",
+            TableNamespace::Global,
+            obj,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("timed out"), "got: {err}");
+}
+
 #[tokio::test]
 async fn runner_aborts_handlers_past_default_timeout() {
     use value::ConvexObject;

@@ -86,6 +86,10 @@ pub struct NativeFunctionRegistration {
     /// external client calls to internal functions (they're only
     /// callable from other native functions and from trusted callers).
     pub is_internal: bool,
+    /// Optional per-function timeout (milliseconds). If set, the
+    /// runner uses this in preference to its default. 0 means
+    /// "no per-function override".
+    pub timeout_ms: u64,
 }
 
 impl NativeFunctionRegistration {

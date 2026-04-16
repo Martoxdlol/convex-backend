@@ -103,12 +103,16 @@ fn describe_functions(functions: &NativeFunctionRegistry) -> serde_json::Value {
                 HandlerFn::Mutation(_) => "mutation",
                 HandlerFn::Action(_) => "action",
             };
-            json!({
+            let mut entry = serde_json::json!({
                 "name": r.name,
                 "kind": kind,
                 "args": r.arg_names,
                 "internal": r.is_internal,
-            })
+            });
+            if r.timeout_ms > 0 {
+                entry["timeout_ms"] = json!(r.timeout_ms);
+            }
+            entry
         })
         .collect();
     json!({ "entries": entries })

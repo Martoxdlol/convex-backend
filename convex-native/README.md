@@ -68,6 +68,28 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
+### New — `#[convex::action(timeout_ms = N)]` per-function timeout
+
+Query/mutation/action attribute macros now accept `timeout_ms = N`
+as a per-function override of the runner's default timeout:
+
+```rust
+#[convex::action(timeout_ms = 5_000)]
+async fn poll_external_api(ctx: &mut ActionCtx) -> Result<()> { .. }
+```
+
+The value lands on `NativeFunctionRegistration::timeout_ms` and the
+runner honours it ahead of its own default (if any). `timeout_ms = 0`
+(the default) means "no per-function override — inherit from runner".
+Surfaced in the JSON introspection output alongside `internal`.
+
+Modifiers compose:
+
+```rust
+#[convex::mutation(internal, timeout_ms = 30_000)]
+async fn heavy_backfill(ctx: &mut MutationCtx) -> Result<()> { .. }
+```
+
 ### New — `ctx.log()` helper + `convex_native::VERSION`
 
 `QueryCtx` / `MutationCtx` / `ActionCtx` now expose `ctx.log()`
