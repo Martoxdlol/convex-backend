@@ -7,6 +7,7 @@
 //! running as) and installed on the ActionCtx before dispatch.
 
 use std::{
+    any::TypeId,
     sync::Arc,
     time::Duration,
 };
@@ -25,7 +26,14 @@ use common::{
 };
 use convex_native::{
     NativeActionCallbacks,
+    NativeFunctionRunner,
+    Rt,
     StorageId,
+};
+use database::{
+    Database,
+    Transaction,
+    WriteSource,
 };
 use keybroker::Identity;
 use model::file_storage::FileStorageId;
@@ -44,14 +52,27 @@ use value::{
 /// Adapter that implements `NativeActionCallbacks` by delegating to a
 /// shared `udf::ActionCallbacks` implementation. The wrapped impl
 /// typically comes from the backend's `ApplicationFunctionRunner`.
+///
+/// When `native` + `database` are provided, `run_query_by_name` /
+/// `run_mutation_by_name` short-circuit to the native registry
+/// before falling back to the JS `ActionCallbacks` path. This is
+/// what makes native-from-native cross-calls by bare identifier
+/// (e.g. `"get_user"`) actually land on the native handler instead
+/// of trying to load a JS module of the same name.
 pub struct BackendCallbacks<RT: Runtime> {
     pub inner: Arc<dyn ActionCallbacks>,
     pub identity: Identity,
     pub context: ExecutionContext,
-    _rt: std::marker::PhantomData<RT>,
+    /// Native registry to short-circuit when the name is known. Not
+    /// wiring this means every sub-call goes through `inner`.
+    pub native: Option<Arc<NativeFunctionRunner>>,
+    /// Database to open sub-transactions on when dispatching natively.
+    pub database: Option<Database<RT>>,
 }
 
 impl<RT: Runtime> BackendCallbacks<RT> {
+    /// Construct callbacks that only reach the JS runner. Used for
+    /// callers that don't need native cross-call support.
     pub fn new(
         inner: Arc<dyn ActionCallbacks>,
         identity: Identity,
@@ -61,9 +82,88 @@ impl<RT: Runtime> BackendCallbacks<RT> {
             inner,
             identity,
             context,
-            _rt: std::marker::PhantomData,
+            native: None,
+            database: None,
         }
     }
+
+    /// Construct callbacks that short-circuit known native names to
+    /// `native.run_query` / `native.run_mutation` before falling back
+    /// to the JS `ActionCallbacks`. Use this variant when dispatching
+    /// native actions from the composite runner, so that
+    /// `ctx.run_query_by_name("get_user", …)` lands on the native
+    /// registration instead of the JS module loader.
+    pub fn with_native(
+        inner: Arc<dyn ActionCallbacks>,
+        identity: Identity,
+        context: ExecutionContext,
+        native: Arc<NativeFunctionRunner>,
+        database: Database<RT>,
+    ) -> Self {
+        Self {
+            inner,
+            identity,
+            context,
+            native: Some(native),
+            database: Some(database),
+        }
+    }
+}
+
+/// Run a native query inline against a fresh transaction at the
+/// latest snapshot. Returns `None` when RT ≠ Rt (caller should fall
+/// back to the JS path); returns `Some(result)` on native dispatch.
+///
+/// Dropping the transaction discards any reads — queries are
+/// read-only by design, so that's the intended behaviour.
+async fn try_run_native_query<RT: Runtime + 'static>(
+    native: &NativeFunctionRunner,
+    database: &Database<RT>,
+    identity: &Identity,
+    name: &str,
+    namespace: TableNamespace,
+    args: ConvexObject,
+) -> anyhow::Result<Option<ConvexValue>> {
+    if TypeId::of::<RT>() != TypeId::of::<Rt>() {
+        return Ok(None);
+    }
+    let ts = database.now_ts_for_reads();
+    let usage = usage_tracking::FunctionUsageTracker::new();
+    let mut tx = database.begin_with_ts(identity.clone(), *ts, usage).await?;
+    // SAFETY: TypeId check above ensures RT == Rt.
+    let tx_as_rt: &mut Transaction<Rt> =
+        unsafe { &mut *((&mut tx) as *mut Transaction<RT> as *mut Transaction<Rt>) };
+    let result = native.run_query(name, tx_as_rt, namespace, args).await?;
+    Ok(Some(result))
+}
+
+/// Run a native mutation inline: open a tx, run the handler, then
+/// commit. On success returns the handler's return value; on handler
+/// error the tx is dropped without committing.
+async fn try_run_native_mutation<RT: Runtime + 'static>(
+    native: &NativeFunctionRunner,
+    database: &Database<RT>,
+    identity: &Identity,
+    name: &str,
+    namespace: TableNamespace,
+    args: ConvexObject,
+) -> anyhow::Result<Option<ConvexValue>> {
+    if TypeId::of::<RT>() != TypeId::of::<Rt>() {
+        return Ok(None);
+    }
+    let ts = database.now_ts_for_reads();
+    let usage = usage_tracking::FunctionUsageTracker::new();
+    let mut tx = database.begin_with_ts(identity.clone(), *ts, usage).await?;
+    let result = {
+        // SAFETY: TypeId check above ensures RT == Rt.
+        let tx_as_rt: &mut Transaction<Rt> =
+            unsafe { &mut *((&mut tx) as *mut Transaction<RT> as *mut Transaction<Rt>) };
+        native.run_mutation(name, tx_as_rt, namespace, args).await?
+    };
+    database
+        .commit_with_write_source(tx, WriteSource::system("convex_native"))
+        .await?;
+    Ok(Some(result))
 }
 
 /// Wrap the single-object `ConvexObject` into the JSON-array shape
@@ -76,15 +176,16 @@ fn args_to_serialized(obj: ConvexObject) -> anyhow::Result<SerializedArgs> {
 }
 
 /// Build a canonical component function path for a `module:function`
-/// name (the JS calling convention). Every native-from-action call
-/// is routed through the root component today.
+/// name (the JS calling convention). Every JS-fallback call is routed
+/// through the root component.
 ///
-/// Bare identifiers like `"get_user"` parse as a JS module with the
-/// default export — they'll resolve against the JS module loader at
-/// the backend side. For native-to-native dispatch, prefer the typed
-/// `ctx.run_query(Marker, Args { .. })` form which bypasses path
-/// parsing entirely (tracked in task "Fix native→native cross-call
-/// name resolution in BackendCallbacks").
+/// Native names (bare identifiers like `"get_user"`) are now handled
+/// by the native short-circuit in `run_query_by_name` /
+/// `run_mutation_by_name`; this function is only reached when the
+/// name isn't in the native registry. Typed sub-calls
+/// `ctx.run_query(Marker, Args { .. })` bypass name resolution
+/// entirely and remain the preferred form for native-to-native
+/// cross-calls.
 fn path_for(name: &str) -> anyhow::Result<common::components::CanonicalizedComponentFunctionPath> {
     let udf: UdfPath = name.parse()?;
     Ok(common::components::CanonicalizedComponentFunctionPath {
@@ -94,13 +195,25 @@ fn path_for(name: &str) -> anyhow::Result<common::components::CanonicalizedCompo
 }
 
 #[async_trait]
-impl<RT: Runtime> NativeActionCallbacks for BackendCallbacks<RT> {
+impl<RT: Runtime + 'static> NativeActionCallbacks for BackendCallbacks<RT> {
     async fn run_query_by_name(
         &self,
-        _ns: TableNamespace,
+        ns: TableNamespace,
         name: &str,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
+        // Native short-circuit: if both the registry and a database
+        // handle are wired and the name matches a registered query,
+        // run it natively and skip the JS module loader entirely.
+        if let (Some(native), Some(database)) = (&self.native, &self.database)
+            && native.has_function_of_type(name, common::types::UdfType::Query)
+            && let Some(v) =
+                try_run_native_query::<RT>(native, database, &self.identity, name, ns, args.clone())
+                    .await?
+        {
+            return Ok(v);
+        }
+
         let path = path_for(name)?;
         let serialized = args_to_serialized(args)?;
         let result = self
@@ -120,10 +233,29 @@ impl<RT: Runtime> NativeActionCallbacks for BackendCallbacks<RT> {
 
     async fn run_mutation_by_name(
         &self,
-        _ns: TableNamespace,
+        ns: TableNamespace,
         name: &str,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
+        // Native short-circuit: run the mutation inline against a
+        // fresh transaction, then commit. The sub-call therefore
+        // persists its writes even though it runs outside the
+        // enclosing action's transaction (actions don't have one).
+        if let (Some(native), Some(database)) = (&self.native, &self.database)
+            && native.has_function_of_type(name, common::types::UdfType::Mutation)
+            && let Some(v) = try_run_native_mutation::<RT>(
+                native,
+                database,
+                &self.identity,
+                name,
+                ns,
+                args.clone(),
+            )
+            .await?
+        {
+            return Ok(v);
+        }
+
         let path = path_for(name)?;
         let serialized = args_to_serialized(args)?;
         let result = self

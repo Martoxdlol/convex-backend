@@ -361,10 +361,12 @@ async fn dispatch_native_action<RT: Runtime>(
         }
     };
 
-    let callbacks = Arc::new(BackendCallbacks::<RT>::new(
+    let callbacks = Arc::new(BackendCallbacks::<RT>::with_native(
         action_callbacks,
         identity,
         context,
+        native.clone(),
+        database.clone(),
     ));
 
     let started = Instant::now();

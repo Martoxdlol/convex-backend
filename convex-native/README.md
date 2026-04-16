@@ -91,6 +91,23 @@ if let Some(m) = ctx.db().get_with_meta(user_id).await? {
 `DocumentWithMeta<T>` derefs to `T` so existing code that operates on
 the typed body keeps working.
 
+### New — native-to-native cross-call resolver in `BackendCallbacks`
+
+`ctx.run_query_by_name("get_user", …)` and
+`ctx.run_mutation_by_name(...)` from inside a `#[convex::action]`
+now route through the native registry first. When the name matches
+a registered native query/mutation and kinds agree, the adapter
+opens a fresh `Transaction<Rt>` on the composite's `Database<RT>`
+(TypeId-guarded, same pattern as the main dispatch path), runs the
+handler, and returns the result (mutations also commit via
+`commit_with_write_source`). Unknown names fall back to the existing
+JS `ActionCallbacks` path so JS targets still work.
+
+Typed sub-calls `ctx.run_query(Marker, Args { .. })` remain the
+preferred form — they skip name resolution entirely and preserve
+the compile-time arg/return signature. The name-based form is
+mostly a fallback for JS targets and dynamic dispatch.
+
 ### New — `#[convex::action(timeout_ms = N)]` per-function timeout
 
 Query/mutation/action attribute macros now accept `timeout_ms = N`

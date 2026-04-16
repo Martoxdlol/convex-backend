@@ -99,18 +99,20 @@ on top of `udf::ActionCallbacks`:
 
 ## Known limitations
 
-- **Cross-call path naming.** `BackendCallbacks::path_for` parses the
-  `name` argument through `UdfPath::from_str`, which uses the JS
-  `module:function` convention. Native functions are registered in
-  the inventory by bare Rust identifier (e.g. `"get_user"`). A
-  native action that calls `ctx.run_query_by_name("get_user", ...)`
-  will see its path resolved against the JS module loader — not
-  against the native registry — so the call goes to JS and fails
-  if no matching module exists. For native-to-native dispatch the
-  typed form `ctx.run_query(Marker, Args { .. })` bypasses name
-  parsing entirely and is the supported path today. A
-  registry-aware resolver (that short-circuits native names to the
-  native runner) is tracked as task 54.
+- **Cross-call name resolution.** `BackendCallbacks::run_query_by_name`
+  and `run_mutation_by_name` now short-circuit native names: before
+  the path is parsed as a JS `module:function` reference, the adapter
+  asks the native registry whether the bare name is registered. If
+  it is — and the kind matches — the sub-call runs inline against a
+  fresh `Database::begin_with_ts` transaction (queries drop the tx,
+  mutations commit via `commit_with_write_source`). This makes
+  `ctx.run_query_by_name("get_user", …)` land on the native handler
+  even though "get_user" isn't a valid JS path.
+  Known limitation: sub-mutations commit in a **separate** transaction
+  from the caller's action, so there's no outer atomicity. Actions
+  don't have transactions in the first place, so this matches the
+  user-visible semantics; but a `#[convex::action]` that calls two
+  mutations in a row will not see them as atomic.
 - **Write threading.** `begin_tx_with_writes` now forwards
   `existing_writes.updates` through `tx.merge_writes` after opening
   the transaction, mirroring the JS `FunctionRunnerCore::begin_tx`
