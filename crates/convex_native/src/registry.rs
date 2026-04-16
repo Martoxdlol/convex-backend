@@ -1,37 +1,84 @@
 //! Native function registration and lookup.
 //!
 //! Each `#[convex::query]`, `#[convex::mutation]`, and `#[convex::action]`
-//! proc macro emits one `inventory::submit!(NativeFunctionRegistration { ...
-//! })`. `NativeFunctionRegistry::collect` aggregates them into a name ->
-//! handler map used by the `NativeFunctionRunner`.
+//! proc macro emits one `inventory::submit!(NativeFunctionRegistration)`.
+//! `NativeFunctionRegistry::collect` aggregates them into a name -> handler
+//! map the `NativeFunctionRunner` dispatches through.
 //!
-//! The concrete handler signature is deliberately left as a future-filled
-//! type (`HandlerFn`) — phase 1.2.4 will pin down the exact shape. Keeping
-//! it opaque here means the registry type compiles on its own and can be
-//! wired into the runner before proc macros are wired up.
+//! ## Runtime binding
+//!
+//! `inventory` can only collect monomorphic entries. To keep handler fn
+//! pointers storable there, native functions are pinned to a single
+//! `Runtime` type — `runtime::prod::ProdRuntime` — via the `Rt` alias in
+//! this module. All generated handlers cast the transaction they receive
+//! to `Transaction<Rt>` at call time. Tests that want to execute native
+//! functions under a different runtime are not supported today; the
+//! pinning decision is revisited alongside Phase 4 hardening work.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+};
 
 use common::types::UdfType;
+use database::Transaction;
+use value::{
+    ConvexObject,
+    ConvexValue,
+    TableNamespace,
+};
 
-/// Erased handler function pointer.
-///
-/// The exact signature is filled in once the context wrappers
-/// (`QueryCtx`, `MutationCtx`, `ActionCtx`) are stable in phase 1.3. Today
-/// it is a unit-function placeholder so the registry can be constructed and
-/// inspected by tests.
-pub type HandlerFn = fn();
+use crate::ctx::{
+    mutation::MutationCtx,
+    query::QueryCtx,
+};
+
+/// The one runtime native functions are compiled against. See module docs.
+pub type Rt = runtime::prod::ProdRuntime;
+
+/// Future returned by every native handler.
+pub type HandlerFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<ConvexValue>> + Send + 'a>>;
+
+/// Fn pointer signature emitted for `#[convex::query]` functions.
+pub type QueryHandlerFn =
+    for<'a> fn(ctx: &'a mut QueryCtx<'a, Rt>, args: ConvexObject) -> HandlerFuture<'a>;
+
+/// Fn pointer signature emitted for `#[convex::mutation]` functions.
+pub type MutationHandlerFn =
+    for<'a> fn(ctx: &'a mut MutationCtx<'a, Rt>, args: ConvexObject) -> HandlerFuture<'a>;
+
+/// Tagged union over the three handler shapes. Actions come later
+/// (Phase 2); for now queries and mutations suffice.
+pub enum HandlerFn {
+    Query(QueryHandlerFn),
+    Mutation(MutationHandlerFn),
+}
+
+impl HandlerFn {
+    pub fn udf_type(&self) -> UdfType {
+        match self {
+            HandlerFn::Query(_) => UdfType::Query,
+            HandlerFn::Mutation(_) => UdfType::Mutation,
+        }
+    }
+}
 
 /// Metadata for one native function.
 pub struct NativeFunctionRegistration {
-    /// Fully qualified function name in dotted form (e.g. `"users.get"`).
+    /// Dotted name, e.g. `"users.get"`.
     pub name: &'static str,
-    /// Query / Mutation / Action.
-    pub udf_type: UdfType,
     /// Argument names in declaration order.
     pub arg_names: &'static [&'static str],
-    /// Handler fn pointer (type-erased, see [`HandlerFn`]).
+    /// Typed dispatcher.
     pub handler: HandlerFn,
+}
+
+impl NativeFunctionRegistration {
+    pub fn udf_type(&self) -> UdfType {
+        self.handler.udf_type()
+    }
 }
 
 inventory::collect!(NativeFunctionRegistration);
@@ -39,6 +86,7 @@ inventory::collect!(NativeFunctionRegistration);
 /// Lookup table populated by [`NativeFunctionRegistry::collect`].
 pub struct NativeFunctionRegistry {
     by_name: HashMap<&'static str, &'static NativeFunctionRegistration>,
+    _rt: PhantomData<Rt>,
 }
 
 impl NativeFunctionRegistry {
@@ -53,7 +101,10 @@ impl NativeFunctionRegistry {
                 );
             }
         }
-        Ok(Self { by_name })
+        Ok(Self {
+            by_name,
+            _rt: PhantomData,
+        })
     }
 
     /// Look up a function by dotted name.
@@ -77,6 +128,25 @@ impl NativeFunctionRegistry {
     }
 }
 
+/// Helper: invoke the handler against a concrete transaction.
+pub async fn invoke<'a>(
+    handler: &HandlerFn,
+    tx: &'a mut Transaction<Rt>,
+    namespace: TableNamespace,
+    args: ConvexObject,
+) -> anyhow::Result<ConvexValue> {
+    match handler {
+        HandlerFn::Query(f) => {
+            let mut ctx = QueryCtx::new(tx, namespace);
+            f(&mut ctx, args).await
+        },
+        HandlerFn::Mutation(f) => {
+            let mut ctx = MutationCtx::new(tx, namespace);
+            f(&mut ctx, args).await
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,8 +154,18 @@ mod tests {
     #[test]
     fn empty_registry() {
         let registry = NativeFunctionRegistry::collect().expect("collect");
-        // No proc-macro registrations in this crate's tests.
+        // No proc-macro registrations in this crate's tests — test-binary
+        // specific registrations live in tests/*.rs.
         assert!(registry.is_empty());
         assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn runtime_is_prod() {
+        // Keeps us honest: if the Rt alias changes, this fails loudly.
+        assert_eq!(
+            std::any::TypeId::of::<Rt>(),
+            std::any::TypeId::of::<runtime::prod::ProdRuntime>()
+        );
     }
 }

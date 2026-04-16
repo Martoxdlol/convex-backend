@@ -13,6 +13,7 @@ use syn::{
 };
 
 mod convex_document;
+mod native_function;
 
 /// `#[derive(ConvexDocument)]`
 ///
@@ -23,6 +24,24 @@ mod convex_document;
 #[proc_macro_derive(ConvexDocument, attributes(convex))]
 pub fn derive_convex_document(input: TokenStream) -> TokenStream {
     convex_document::derive_convex_document(input)
+}
+
+/// `#[convex::query]` — declare a native Convex query.
+///
+/// Requires an async fn whose first parameter is `ctx: &mut QueryCtx`.
+/// Subsequent parameters must be `ToConvex + FromConvex` types.
+#[proc_macro_attribute]
+pub fn query(attr: TokenStream, item: TokenStream) -> TokenStream {
+    native_function::attr(native_function::FnKind::Query, attr, item)
+}
+
+/// `#[convex::mutation]` — declare a native Convex mutation.
+///
+/// Requires an async fn whose first parameter is `ctx: &mut MutationCtx`.
+/// Subsequent parameters must be `ToConvex + FromConvex` types.
+#[proc_macro_attribute]
+pub fn mutation(attr: TokenStream, item: TokenStream) -> TokenStream {
+    native_function::attr(native_function::FnKind::Mutation, attr, item)
 }
 
 #[proc_macro_attribute]

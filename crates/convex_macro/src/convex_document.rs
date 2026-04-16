@@ -110,12 +110,15 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     );
     let registration = build_registration(struct_ident, &table_name);
 
+    let convert_impls = build_convert_impls(struct_ident);
+
     Ok(quote! {
         #field_enum
         #index_enum
         #patch_struct
         #with_id_struct
         #trait_impl
+        #convert_impls
         #registration
     })
 }
@@ -372,6 +375,31 @@ fn build_patch(patch_ident: &Ident, struct_ident: &Ident, fields: &[FieldSpec]) 
                 > = ::std::collections::BTreeMap::new();
                 #(#set_statements)*
                 ::std::result::Result::Ok(::std::convert::TryFrom::try_from(__map)?)
+            }
+        }
+    }
+}
+
+fn build_convert_impls(struct_ident: &Ident) -> TokenStream2 {
+    quote! {
+        impl ::convex_native::ToConvex for #struct_ident {
+            fn to_convex(self)
+                -> ::anyhow::Result<::convex_native::__private::ConvexValue>
+            {
+                ::std::result::Result::Ok(
+                    ::convex_native::__private::ConvexValue::Object(
+                        <Self as ::convex_native::ConvexDocument>::to_convex_object(&self)?,
+                    ),
+                )
+            }
+        }
+
+        impl ::convex_native::FromConvex for #struct_ident {
+            fn from_convex(
+                value: ::convex_native::__private::ConvexValue,
+            ) -> ::anyhow::Result<Self> {
+                let obj = ::convex_native::__private::ConvexObject::try_from(value)?;
+                <Self as ::convex_native::ConvexDocument>::from_convex_object(obj)
             }
         }
     }

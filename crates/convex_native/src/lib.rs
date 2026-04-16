@@ -12,6 +12,15 @@ pub use convex_macro::ConvexDocument;
 #[doc(hidden)]
 pub use inventory;
 
+/// Pseudo-namespace so developers can write `#[convex::query]` and
+/// `#[convex::mutation]` by importing `convex_native::convex`.
+pub mod convex {
+    pub use convex_macro::{
+        mutation,
+        query,
+    };
+}
+
 /// Items re-exported for use by generated proc-macro code. Not part of the
 /// public API.
 #[doc(hidden)]
@@ -62,8 +71,11 @@ pub use document::{
 pub use id::Id;
 pub use registry::{
     HandlerFn,
+    MutationHandlerFn,
     NativeFunctionRegistration,
     NativeFunctionRegistry,
+    QueryHandlerFn,
+    Rt,
 };
 pub use schema::{
     NativeSchema,

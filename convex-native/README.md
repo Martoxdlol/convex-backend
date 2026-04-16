@@ -6,8 +6,9 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 
 ## Current state
 
-**Phase 1 — Layers 0, 1, 2, 3 (steps 1.0.1 → 1.3.3): COMPLETE (with
-Phase-1.4-gated terminal methods on TypedQueryBuilder)**
+**Phase 1 — Layers 0, 1, 2, 3 and function attribute macros (steps
+1.0.1 → 1.3.3 + 1.2.4 + 1.2.5): COMPLETE (with Phase-1.4-gated terminal
+methods on TypedQueryBuilder and no runner yet)**
 
 ### What works
 
@@ -49,6 +50,24 @@ pub struct User {
 
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
+
+### New in Phase 1.2.4 / 1.2.5 — function attribute macros
+
+- `#[convex::query]` and `#[convex::mutation]` (imported via
+  `use convex_native::convex;`).
+- Both accept async fns whose first parameter is `ctx: &mut QueryCtx`
+  (or `MutationCtx`). Subsequent parameters must be `FromConvex`;
+  return values must be `ToConvex + Send`.
+- Derive macro now also emits `ToConvex` / `FromConvex` impls for the
+  decorated struct, so developers don't need to implement them
+  manually.
+- Native function dispatch is pinned to
+  `runtime::prod::ProdRuntime` (aliased as `convex_native::Rt`) — see
+  `registry.rs` module docs for the rationale.
+- `NativeFunctionRegistration` carries `name`, `arg_names`, and a
+  `HandlerFn::{Query|Mutation}(fn_ptr)` — the runner (Phase 1.4) will
+  consume these. `NativeFunctionRegistry::collect()` surfaces all
+  registrations with O(1) lookup by name.
 
 ### New in Phase 1 Layer 3 (steps 1.3.1–1.3.3)
 

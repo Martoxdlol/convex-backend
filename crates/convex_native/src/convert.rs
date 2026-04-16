@@ -200,6 +200,11 @@ impl FromConvex for ConvexObject {
     }
 }
 
+// `ToConvex` / `FromConvex` impls for types produced by
+// `#[derive(ConvexDocument)]` are emitted by the derive macro itself —
+// we can't blanket-impl them here without `specialization`, which would
+// conflict with the primitive impls above.
+
 #[cfg(test)]
 mod tests {
     use super::*;
