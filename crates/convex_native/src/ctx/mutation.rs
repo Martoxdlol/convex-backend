@@ -132,6 +132,14 @@ impl<'tx, RT: Runtime> MutationDb<'tx, RT> {
         self.as_query_db().get_many(ids).await
     }
 
+    /// Fetch with metadata — mirrors [`QueryDb::get_with_meta`].
+    pub async fn get_with_meta<T: ConvexDocument>(
+        &mut self,
+        id: Id<T>,
+    ) -> anyhow::Result<Option<crate::document::DocumentWithMeta<T>>> {
+        self.as_query_db().get_with_meta(id).await
+    }
+
     pub fn query<T: ConvexDocument>(&mut self) -> TypedQueryBuilder<'_, 'tx, RT, T> {
         // Safety: `TypedQueryBuilder` only needs a `&mut QueryDb`. We
         // cannot hand out an intermediate `QueryDb` and store it inside

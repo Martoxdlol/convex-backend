@@ -62,6 +62,14 @@ async fn _widget_query<RT: common::runtime::Runtime>(ctx: &mut QueryCtx<'_, RT>)
 
     let id: Id<Widget> = "jd72jdw7t0x9grf04vg5f65t0s7g4k1d".parse().unwrap();
     let _doc: Option<Widget> = ctx.db().get(id).await.unwrap();
+
+    // Metadata-carrying variant.
+    let with_meta: Option<convex_native::DocumentWithMeta<Widget>> =
+        ctx.db().get_with_meta(id).await.unwrap();
+    if let Some(m) = with_meta {
+        let _: &Widget = &m; // Deref
+        let _: common::document::CreationTime = m.creation_time;
+    }
 }
 
 #[allow(dead_code)]

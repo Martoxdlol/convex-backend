@@ -68,6 +68,22 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
+### New — `get_with_meta` exposes document metadata
+
+`QueryDb::get_with_meta(id)` / `MutationDb::get_with_meta(id)` return
+a `DocumentWithMeta<T>` that carries the document's `id`,
+`creation_time`, and typed body:
+
+```rust
+if let Some(m) = ctx.db().get_with_meta(user_id).await? {
+    println!("{} created at {:?}", m.doc.name, m.creation_time);
+    let same_id: Id<User> = m.id;
+}
+```
+
+`DocumentWithMeta<T>` derefs to `T` so existing code that operates on
+the typed body keeps working.
+
 ### New — `#[convex::action(timeout_ms = N)]` per-function timeout
 
 Query/mutation/action attribute macros now accept `timeout_ms = N`

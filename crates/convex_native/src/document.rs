@@ -77,3 +77,21 @@ pub fn document_from_value<D: ConvexDocument>(v: ConvexValue) -> anyhow::Result<
     let obj = ConvexObject::try_from(v)?;
     D::from_convex_object(obj)
 }
+
+/// Document returned from `QueryCtx::get_with_meta` /
+/// `MutationCtx::get_with_meta` — carries the id and creation time alongside
+/// the parsed typed body.
+#[derive(Debug, Clone)]
+pub struct DocumentWithMeta<T: ConvexDocument> {
+    pub id: crate::id::Id<T>,
+    pub creation_time: common::document::CreationTime,
+    pub doc: T,
+}
+
+impl<T: ConvexDocument> std::ops::Deref for DocumentWithMeta<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.doc
+    }
+}

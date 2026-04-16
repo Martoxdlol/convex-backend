@@ -116,6 +116,7 @@ pub use distributed::{
 pub use document::{
     ConvexDocument,
     ConvexPatch,
+    DocumentWithMeta,
     FieldReference,
     IndexReference,
 };

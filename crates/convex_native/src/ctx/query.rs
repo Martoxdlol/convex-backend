@@ -94,6 +94,16 @@ impl<'tx, RT: Runtime> QueryDb<'tx, RT> {
     /// The generic parameter `T` determines both the table and the Rust
     /// type the returned document is parsed into.
     pub async fn get<T: ConvexDocument>(&mut self, id: Id<T>) -> anyhow::Result<Option<T>> {
+        Ok(self.get_with_meta(id).await?.map(|m| m.doc))
+    }
+
+    /// Fetch a document by id along with its metadata (id, creation time).
+    /// Useful when you need to pass the id through further operations
+    /// or sort by creation time.
+    pub async fn get_with_meta<T: ConvexDocument>(
+        &mut self,
+        id: Id<T>,
+    ) -> anyhow::Result<Option<crate::document::DocumentWithMeta<T>>> {
         use database::UserFacingModel;
         let dev_id = id.into_developer_id();
         let maybe_doc = UserFacingModel::new(self.tx, self.namespace)
@@ -102,11 +112,14 @@ impl<'tx, RT: Runtime> QueryDb<'tx, RT> {
         match maybe_doc {
             None => Ok(None),
             Some((doc, _ts)) => {
-                // `.into_value()` returns `PII<ConvexObject>`; unwrap the
-                // `PII` newtype by destructuring its tuple field.
+                let creation_time = doc.creation_time();
                 let value: common::pii::PII<value::ConvexObject> = doc.into_value();
                 let parsed = T::from_convex_object(value.0)?;
-                Ok(Some(parsed))
+                Ok(Some(crate::document::DocumentWithMeta {
+                    id,
+                    creation_time,
+                    doc: parsed,
+                }))
             },
         }
     }
