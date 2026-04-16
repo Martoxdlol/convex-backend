@@ -9,8 +9,8 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 **Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1, 1.5.2,
 1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.5
 mode alias + executor trait stub), **Phase 4 partial** (4.2 metrics
-sink), **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
-validation + 5.4 bulk `get_many`).
+sink + 4.4 timeouts), **Phase 5 partial** (5.1 schema diff + 5.2
+compile-time index validation + 5.4 bulk `get_many`).
 
 Remaining: concrete backend adapter implementing
 `NativeActionCallbacks` and wiring the composite runner into
@@ -59,7 +59,7 @@ pub struct User {
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
 
-### New in Phase 4.2 — metrics hook
+### New in Phase 4.2 / 4.4 — metrics + timeouts
 
 - `NativeMetricsSink` trait — record per-function latency and
   `Ok`/`Err` outcome without pulling a specific metrics backend into
@@ -69,6 +69,9 @@ only; `convex_macro` is re-exported.
 - `NativeFunctionRunner::with_metrics(Arc<dyn NativeMetricsSink>)`
   attaches a sink; every `run_query` / `run_mutation` /
   `run_action_with_callbacks` now records a sample.
+- `NativeFunctionRunner::with_default_timeout(Duration)` wraps every
+  handler invocation in `tokio::time::timeout` — runaway handlers
+  abort with a clear error and record as `Outcome::Err`.
 
 ### New in Phase 3 (partial) — distributed scaffolding
 
@@ -351,10 +354,16 @@ crates/convex_native/
 │       ├── mutation.rs      -- MutationCtx + MutationDb
 │       └── action.rs        -- ActionCtx (Phase 2 skeleton + dispatch)
 └── tests/
+    ├── backend_builder.rs                  -- ConvexBackend end-to-end
+    ├── callbacks_wiring.rs                 -- NativeActionCallbacks sub-calls / scheduler / storage
+    ├── ctx_types.rs                        -- compile-time surface tests for ctx wrappers
     ├── derive_document.rs                  -- integration tests for ConvexDocument
     ├── derive_enums_nested_unions.rs       -- ConvexEnum / ConvexNested / ConvexUnion
     ├── derive_functions.rs                 -- integration tests for fn attribute macros
-    ├── ctx_types.rs                        -- compile-time surface tests for ctx wrappers
+    ├── function_refs.rs                    -- marker types + ConvexQueryFunction / etc.
+    ├── golden_path.rs                      -- full realistic app end-to-end
+    ├── http_actions.rs                     -- HTTP action registration + request/response
+    ├── metrics_wiring.rs                   -- runner metrics + timeout enforcement
     └── runner_dispatch.rs                  -- NativeFunctionRunner lookup & dispatch
 
 crates/convex_macro/

@@ -21,7 +21,10 @@
 
 use std::{
     sync::Arc,
-    time::Instant,
+    time::{
+        Duration,
+        Instant,
+    },
 };
 
 use common::types::UdfType;
@@ -59,16 +62,19 @@ use crate::{
 pub struct NativeFunctionRunner {
     inner: Arc<NativeFunctionRegistry>,
     metrics: Arc<dyn NativeMetricsSink>,
+    default_timeout: Option<Duration>,
 }
 
 impl NativeFunctionRunner {
     /// Collect every `inventory::submit!`ed registration in the binary.
     /// Metrics default to [`NoopMetrics`]; use [`with_metrics`] to
-    /// install a real sink.
+    /// install a real sink. Default timeout is unlimited; use
+    /// [`with_default_timeout`] to cap every handler.
     pub fn from_inventory() -> anyhow::Result<Self> {
         Ok(Self {
             inner: Arc::new(NativeFunctionRegistry::collect()?),
             metrics: Arc::new(NoopMetrics),
+            default_timeout: None,
         })
     }
 
@@ -79,9 +85,35 @@ impl NativeFunctionRunner {
         self
     }
 
+    /// Attach a default per-function timeout. Any handler that takes
+    /// longer than this is aborted with a clear error and recorded as
+    /// `Outcome::Err` in metrics.
+    pub fn with_default_timeout(mut self, timeout: Duration) -> Self {
+        self.default_timeout = Some(timeout);
+        self
+    }
+
     /// Borrow the attached metrics sink.
     pub fn metrics(&self) -> &Arc<dyn NativeMetricsSink> {
         &self.metrics
+    }
+
+    /// Timeout-wrap a handler future. If the runner has no default
+    /// timeout, the future runs unchanged.
+    async fn run_with_timeout<F>(&self, fut: F, name: &str) -> anyhow::Result<ConvexValue>
+    where
+        F: std::future::Future<Output = anyhow::Result<ConvexValue>> + Send,
+    {
+        match self.default_timeout {
+            None => fut.await,
+            Some(t) => match tokio::time::timeout(t, fut).await {
+                Ok(r) => r,
+                Err(_) => Err(anyhow::anyhow!(
+                    "native function {name:?} timed out after {:?}",
+                    t,
+                )),
+            },
+        }
     }
 
     /// Number of registered functions.
@@ -133,7 +165,7 @@ impl NativeFunctionRunner {
         };
         let mut ctx = QueryCtx::new(tx, namespace);
         let started = Instant::now();
-        let result = handler(&mut ctx, args).await;
+        let result = self.run_with_timeout(handler(&mut ctx, args), name).await;
         self.metrics.record(
             name,
             UdfType::Query,
@@ -168,7 +200,7 @@ impl NativeFunctionRunner {
         };
         let mut ctx = MutationCtx::new(tx, namespace);
         let started = Instant::now();
-        let result = handler(&mut ctx, args).await;
+        let result = self.run_with_timeout(handler(&mut ctx, args), name).await;
         self.metrics.record(
             name,
             UdfType::Mutation,
@@ -223,7 +255,7 @@ impl NativeFunctionRunner {
         };
         let mut ctx = ActionCtx::<Rt>::with_callbacks(Some(self.clone()), callbacks, namespace);
         let started = Instant::now();
-        let result = handler(&mut ctx, args).await;
+        let result = self.run_with_timeout(handler(&mut ctx, args), name).await;
         self.metrics.record(
             name,
             UdfType::Action,

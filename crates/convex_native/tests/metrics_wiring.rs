@@ -36,6 +36,31 @@ pub async fn failing_action(_ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> 
     anyhow::bail!("intentional failure")
 }
 
+#[convex::action]
+pub async fn slow_action(_ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
+    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn runner_aborts_handlers_past_default_timeout() {
+    use value::ConvexObject;
+
+    let runner = Arc::new(
+        NativeFunctionRunner::from_inventory()
+            .expect("from_inventory")
+            .with_default_timeout(std::time::Duration::from_millis(50)),
+    );
+    let obj =
+        ConvexObject::try_from(std::collections::BTreeMap::<value::FieldName, ConvexValue>::new())
+            .unwrap();
+    let err = runner
+        .run_action("slow_action", TableNamespace::Global, obj)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("timed out"), "got: {err}");
+}
+
 #[tokio::test]
 async fn runner_records_ok_and_err_outcomes() {
     let metrics = Arc::new(CountingMetrics::new());
