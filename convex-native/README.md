@@ -6,9 +6,10 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 
 ## Current state
 
-**Phase 1 — Layers 0, 1, 2, 3 and function attribute macros + native
-runner (steps 1.0.1 → 1.3.3, 1.2.4 / 1.2.5, and 1.4.1): COMPLETE**
-(composite runner + full backend wiring in Phases 1.4.2–1.5 remain)
+**Phase 1 — Layers 0, 1, 2, 3, function attribute macros, native
+runner stub, and additional derive macros (steps 1.0.1 → 1.3.3, 1.2.4,
+1.2.5, 1.4.1, 1.6.1–1.6.3): COMPLETE** (composite runner + full
+backend wiring in Phases 1.4.2–1.5 remain)
 
 ### What works
 
@@ -50,6 +51,23 @@ pub struct User {
 
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
+
+### New in Phase 1.6 — additional derive macros
+
+- `#[derive(ConvexEnum)]` — string-valued unit-only enums. Each variant
+  becomes its snake_case name on the wire
+  (`Admin` ↔ `"admin"`). `#[convex(rename = "custom")]` overrides per
+  variant.
+- `#[derive(ConvexNested)]` — structs that round-trip through a
+  `ConvexObject` without registering a table. Use for embedded shapes
+  like `Address` inside `User`.
+- `#[derive(ConvexUnion)]` — tagged unions where each variant is a
+  struct-variant with named fields. Configurable discriminant field
+  name (`#[convex(tag = "...")]`, default `"type"`) and per-variant
+  `rename`. Duplicate tags are compile errors.
+
+All three emit only `ToConvex` / `FromConvex` impls — no inventory
+registrations, no schema entries.
 
 ### New in Phase 1.4.1 — `NativeFunctionRunner`
 
@@ -143,10 +161,11 @@ crates/convex_native/
 │       ├── query_builder.rs -- TypedQueryBuilder (typed, unexecuted)
 │       └── mutation.rs      -- MutationCtx + MutationDb
 └── tests/
-    ├── derive_document.rs   -- integration tests for the derive macro
-    ├── derive_functions.rs  -- integration tests for the fn attribute macros
-    ├── ctx_types.rs         -- compile-time surface tests for ctx wrappers
-    └── runner_dispatch.rs   -- NativeFunctionRunner lookup & dispatch tests
+    ├── derive_document.rs                  -- integration tests for ConvexDocument
+    ├── derive_enums_nested_unions.rs       -- ConvexEnum / ConvexNested / ConvexUnion
+    ├── derive_functions.rs                 -- integration tests for fn attribute macros
+    ├── ctx_types.rs                        -- compile-time surface tests for ctx wrappers
+    └── runner_dispatch.rs                  -- NativeFunctionRunner lookup & dispatch
 
 crates/convex_macro/
 ├── src/

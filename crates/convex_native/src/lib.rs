@@ -8,7 +8,12 @@
 //! `use convex_native::prelude::*;`.
 
 // Re-export derive macros so developers only need `convex_native` as a dep.
-pub use convex_macro::ConvexDocument;
+pub use convex_macro::{
+    ConvexDocument,
+    ConvexEnum,
+    ConvexNested,
+    ConvexUnion,
+};
 #[doc(hidden)]
 pub use inventory;
 

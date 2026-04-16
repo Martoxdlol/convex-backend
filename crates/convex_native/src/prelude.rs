@@ -23,3 +23,11 @@ pub use crate::{
     },
     id::Id,
 };
+// Derive macros are re-exported from the crate root; bring them into
+// scope via the prelude too so `use convex_native::prelude::*;` is
+// sufficient for schema & function code alike.
+pub use crate::{
+    ConvexEnum,
+    ConvexNested,
+    ConvexUnion,
+};

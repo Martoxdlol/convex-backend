@@ -13,6 +13,9 @@ use syn::{
 };
 
 mod convex_document;
+mod convex_enum;
+mod convex_nested;
+mod convex_union;
 mod native_function;
 
 /// `#[derive(ConvexDocument)]`
@@ -24,6 +27,39 @@ mod native_function;
 #[proc_macro_derive(ConvexDocument, attributes(convex))]
 pub fn derive_convex_document(input: TokenStream) -> TokenStream {
     convex_document::derive_convex_document(input)
+}
+
+/// `#[derive(ConvexEnum)]` — string-valued Rust enums.
+///
+/// Variants must be unit-like; each maps to its snake_case string form
+/// (`Admin` ↔ `"admin"`), optionally overridden with
+/// `#[convex(rename = "...")]` on a variant.
+#[proc_macro_derive(ConvexEnum, attributes(convex))]
+pub fn derive_convex_enum(input: TokenStream) -> TokenStream {
+    convex_enum::derive_convex_enum(input)
+}
+
+/// `#[derive(ConvexNested)]` — embedded object types.
+///
+/// Generates `ToConvex` / `FromConvex` impls without the
+/// `ConvexDocument` trait or the inventory table registration. Use for
+/// types that appear as fields inside a `ConvexDocument` but aren't
+/// tables of their own.
+#[proc_macro_derive(ConvexNested, attributes(convex))]
+pub fn derive_convex_nested(input: TokenStream) -> TokenStream {
+    convex_nested::derive_convex_nested(input)
+}
+
+/// `#[derive(ConvexUnion)]` — tagged unions.
+///
+/// Generates `ToConvex` / `FromConvex` impls that serialize enum
+/// variants as objects with a discriminant field. The enum attribute
+/// `#[convex(tag = "...")]` picks the discriminant field name (default
+/// `"type"`). Variants may override their wire name with
+/// `#[convex(rename = "...")]`.
+#[proc_macro_derive(ConvexUnion, attributes(convex))]
+pub fn derive_convex_union(input: TokenStream) -> TokenStream {
+    convex_union::derive_convex_union(input)
 }
 
 /// `#[convex::query]` — declare a native Convex query.
