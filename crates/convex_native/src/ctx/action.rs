@@ -82,6 +82,60 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
         )
     }
 
+    /// Typed sub-call: invoke a `#[convex::query]` by marker type.
+    /// Returns the function's typed `Output`. Routes through
+    /// `run_query_raw` — which is currently a stub — so this fails
+    /// cleanly with a "not yet wired" error today, but the API surface
+    /// is the final shape.
+    pub async fn run_query<F: crate::function_ref::ConvexQueryFunction>(
+        &mut self,
+        _marker: F,
+        args: F::Args,
+    ) -> anyhow::Result<F::Output> {
+        let obj = match crate::convert::ToConvex::to_convex(args)? {
+            ConvexValue::Object(o) => o,
+            _ => anyhow::bail!("typed args must serialize to an object"),
+        };
+        let ret = self.run_query_raw(F::name(), obj).await?;
+        <F::Output as crate::convert::FromConvex>::from_convex(ret)
+    }
+
+    /// Typed sub-call: invoke a `#[convex::mutation]` by marker type.
+    pub async fn run_mutation<F: crate::function_ref::ConvexMutationFunction>(
+        &mut self,
+        _marker: F,
+        args: F::Args,
+    ) -> anyhow::Result<F::Output> {
+        let obj = match crate::convert::ToConvex::to_convex(args)? {
+            ConvexValue::Object(o) => o,
+            _ => anyhow::bail!("typed args must serialize to an object"),
+        };
+        let ret = self.run_mutation_raw(F::name(), obj).await?;
+        <F::Output as crate::convert::FromConvex>::from_convex(ret)
+    }
+
+    /// Typed sub-call: invoke a `#[convex::action]` by marker type.
+    /// Unlike queries/mutations, actions run entirely inside the
+    /// native runner (no separate transaction), so this path works
+    /// end-to-end today.
+    pub async fn run_action<F: crate::function_ref::ConvexActionFunction>(
+        &mut self,
+        _marker: F,
+        args: F::Args,
+    ) -> anyhow::Result<F::Output> {
+        let obj = match crate::convert::ToConvex::to_convex(args)? {
+            ConvexValue::Object(o) => o,
+            _ => anyhow::bail!("typed args must serialize to an object"),
+        };
+        let runner = self
+            .runner
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("ActionCtx: no runner attached for sub-call"))?
+            .clone();
+        let ret = runner.run_action(F::name(), self.namespace, obj).await?;
+        <F::Output as crate::convert::FromConvex>::from_convex(ret)
+    }
+
     /// Whether a native function with the given name is available.
     /// Useful for smoke-testing registration wiring without needing the
     /// full execution path.

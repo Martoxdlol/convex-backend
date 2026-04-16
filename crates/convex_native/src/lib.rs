@@ -52,6 +52,7 @@ pub mod __private {
 pub mod convert;
 pub mod ctx;
 pub mod document;
+pub mod function_ref;
 pub mod id;
 pub mod prelude;
 pub mod registry;
@@ -76,6 +77,11 @@ pub use document::{
     ConvexPatch,
     FieldReference,
     IndexReference,
+};
+pub use function_ref::{
+    ConvexActionFunction,
+    ConvexMutationFunction,
+    ConvexQueryFunction,
 };
 pub use id::Id;
 pub use registry::{

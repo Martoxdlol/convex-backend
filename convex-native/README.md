@@ -6,12 +6,11 @@ actions) in native Rust. See `native-rust-functions.md` for the design and
 
 ## Current state
 
-**Phase 1 — Layers 0, 1, 2, 3, function attribute macros (Q/M/A),
-native runner stub with real action dispatch, and additional derive
-macros (steps 1.0.1 → 1.3.3, 1.2.4, 1.2.5, 1.4.1, 1.6.1–1.6.3) plus
-Phase 2 foundations (2.1, 2.2): COMPLETE** — composite runner,
-query/mutation execution with real FunctionOutcome, and full backend
-wiring remain (Phases 1.4.2–1.5, 2.3–2.8, 3+).
+**Phase 1 COMPLETE** (steps 1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1,
+1.6.1–1.6.3) **plus Phase 2 2.1 / 2.2 / 2.3 / 2.4 COMPLETE**. Remaining:
+query/mutation sub-call execution (2.4 raw backend integration), the
+scheduler (2.5), storage (2.6), HTTP actions (2.7), and the composite
+runner end of Phase 1.5.
 
 ### What works
 
@@ -53,6 +52,39 @@ pub struct User {
 
 and get the generated companions for free. They depend on `convex_native`
 only; `convex_macro` is re-exported.
+
+### New in Phase 2.3 / 2.4 — Function markers + typed sub-calls
+
+Every `#[convex::query]` / `#[convex::mutation]` / `#[convex::action]`
+now also emits:
+
+- `XxxArgs` struct (PascalCase + `Args`): one field per non-`ctx`
+  parameter with `ToConvex` / `FromConvex` impls.
+- `Xxx` ZST marker (PascalCase of the fn name). Implements the matching
+  marker trait — `ConvexQueryFunction` / `ConvexMutationFunction` /
+  `ConvexActionFunction` — carrying `type Args`, `type Output`, and
+  `fn name()`.
+
+That lets `ActionCtx` offer typed sub-calls:
+
+```rust
+let result: Option<User> = ctx.run_query(GetUser, GetUserArgs {
+    email: "a@b".into(),
+}).await?;
+
+let id: Id<User> = ctx.run_mutation(CreateUser, CreateUserArgs { .. }).await?;
+
+let sent: bool = ctx.run_action(SendEmail, SendEmailArgs { .. }).await?;
+```
+
+Today `run_query` / `run_mutation` still `bail!` through the raw
+helpers pending backend integration. `run_action` runs end-to-end
+because actions don't require a new transaction.
+
+> **Note on API:** the design doc's example uses the function name
+> (`ctx.run_query(get_user, …)`) but Rust forbids a `fn` and a `struct`
+> with the same name in one scope, so the ZST marker is PascalCase
+> (`GetUser`). The function itself remains callable as `get_user(...)`.
 
 ### New in Phase 2 foundations — Actions
 

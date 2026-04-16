@@ -20,6 +20,7 @@
 //! - An `inventory::submit!` of a `NativeFunctionRegistration` carrying the
 //!   name, argument names, and handler fn pointer.
 
+use heck::ToPascalCase;
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{
@@ -67,6 +68,14 @@ impl FnKind {
             FnKind::Query => "query",
             FnKind::Mutation => "mutation",
             FnKind::Action => "action",
+        }
+    }
+
+    fn marker_trait_path(self) -> TokenStream2 {
+        match self {
+            FnKind::Query => quote! { ::convex_native::ConvexQueryFunction },
+            FnKind::Mutation => quote! { ::convex_native::ConvexMutationFunction },
+            FnKind::Action => quote! { ::convex_native::ConvexActionFunction },
         }
     }
 }
@@ -156,19 +165,15 @@ fn expand(kind: FnKind, input: ItemFn) -> syn::Result<TokenStream2> {
         .collect();
     let _arg_types: Vec<&Type> = args.iter().map(|a| &*a.ty).collect();
 
-    // Return type: must be `anyhow::Result<T>` for some T. We don't
-    // verify the error type strictly — any `Result<T, E>` with
-    // compatible E will compile when the generated code calls `?`.
-    let return_is_ok = matches!(output, ReturnType::Type(_, _));
-    if !return_is_ok {
-        return Err(syn::Error::new(
-            output.span(),
-            "function must return `anyhow::Result<T>`",
-        ));
-    }
+    // Return type: must be `anyhow::Result<T>` for some T. We extract T
+    // from the Result<T, E> wrapper to build the marker trait impl —
+    // developers see a compile error if T isn't `ToConvex + FromConvex`.
+    let output_inner = extract_result_ok_type(output)?;
 
     let handler_ident = format_ident!("__convex_native_{ident}_handler");
     let fn_name_str = ident.to_string();
+    let marker_ident = format_ident!("{}", ident.to_string().to_pascal_case());
+    let args_ident = format_ident!("{}Args", ident.to_string().to_pascal_case());
 
     let arg_deser = args.iter().enumerate().map(|(i, pt)| {
         let ident = if let Pat::Ident(pi) = &*pt.pat {
@@ -267,11 +272,151 @@ fn expand(kind: FnKind, input: ItemFn) -> syn::Result<TokenStream2> {
     };
     let _ = ctx_ty;
 
+    let marker_trait = kind.marker_trait_path();
+    // Build the args struct — one field per parameter (other than ctx).
+    // ToConvex / FromConvex impls mirror what ConvexNested would emit.
+    let args_field_decls = args.iter().map(|pt| {
+        let id = if let Pat::Ident(pi) = &*pt.pat {
+            &pi.ident
+        } else {
+            unreachable!()
+        };
+        let ty = &pt.ty;
+        quote! { pub #id: #ty }
+    });
+    let args_field_to_inserts = args.iter().enumerate().map(|(i, pt)| {
+        let id = if let Pat::Ident(pi) = &*pt.pat {
+            &pi.ident
+        } else {
+            unreachable!()
+        };
+        let name = &arg_name_strs[i];
+        quote! {
+            {
+                let __field: ::convex_native::__private::FieldName = #name
+                    .parse()
+                    .map_err(::anyhow::Error::from)?;
+                __map.insert(
+                    __field,
+                    ::convex_native::ToConvex::to_convex(self.#id)?,
+                );
+            }
+        }
+    });
+    let args_field_from_binds = args.iter().enumerate().map(|(i, pt)| {
+        let id = if let Pat::Ident(pi) = &*pt.pat {
+            &pi.ident
+        } else {
+            unreachable!()
+        };
+        let ty = &pt.ty;
+        let name = &arg_name_strs[i];
+        quote! {
+            let #id: #ty = {
+                let __field: ::convex_native::__private::FieldName = #name
+                    .parse()
+                    .map_err(::anyhow::Error::from)?;
+                let __v = __map
+                    .remove(&__field)
+                    .unwrap_or(::convex_native::__private::ConvexValue::Null);
+                <#ty as ::convex_native::FromConvex>::from_convex(__v)?
+            };
+        }
+    });
+    let args_field_from_idents = args.iter().map(|pt| {
+        if let Pat::Ident(pi) = &*pt.pat {
+            &pi.ident
+        } else {
+            unreachable!()
+        }
+    });
+    let marker_types = quote! {
+        /// Typed args struct — one field per non-ctx parameter.
+        #[derive(Debug, Clone)]
+        #[allow(non_camel_case_types, dead_code)]
+        pub struct #args_ident {
+            #(#args_field_decls,)*
+        }
+
+        impl ::convex_native::ToConvex for #args_ident {
+            fn to_convex(self)
+                -> ::anyhow::Result<::convex_native::__private::ConvexValue>
+            {
+                let mut __map: ::std::collections::BTreeMap<
+                    ::convex_native::__private::FieldName,
+                    ::convex_native::__private::ConvexValue,
+                > = ::std::collections::BTreeMap::new();
+                #(#args_field_to_inserts)*
+                ::std::result::Result::Ok(
+                    ::convex_native::__private::ConvexValue::Object(
+                        ::std::convert::TryFrom::try_from(__map)?,
+                    ),
+                )
+            }
+        }
+
+        impl ::convex_native::FromConvex for #args_ident {
+            fn from_convex(
+                value: ::convex_native::__private::ConvexValue,
+            ) -> ::anyhow::Result<Self> {
+                let obj = ::convex_native::__private::ConvexObject::try_from(value)?;
+                let mut __map: ::std::collections::BTreeMap<
+                    ::convex_native::__private::FieldName,
+                    ::convex_native::__private::ConvexValue,
+                > = obj.into();
+                #(#args_field_from_binds)*
+                ::std::result::Result::Ok(Self { #(#args_field_from_idents,)* })
+            }
+        }
+
+        /// ZST marker implementing the function-reference trait for
+        /// `fn #ident`. Pass to `ctx.run_query` / `run_mutation` /
+        /// `run_action` as the first argument.
+        #[derive(Copy, Clone, Debug)]
+        #[allow(non_camel_case_types, dead_code)]
+        pub struct #marker_ident;
+
+        impl #marker_trait for #marker_ident {
+            type Args = #args_ident;
+            type Output = #output_inner;
+            fn name() -> &'static str { #fn_name_str }
+        }
+    };
+
     Ok(quote! {
         #original
         #handler_fn
+        #marker_types
         #registration
     })
+}
+
+/// Pull the `T` out of a `-> Result<T, E>` return type.
+///
+/// If the user writes `-> anyhow::Result<Foo>`, we recover `Foo`.
+/// Unparseable types (raw generic unsugared, ambiguous) fall back to
+/// `()` — the resulting marker impl will fail to compile with a
+/// reasonable error because `ToConvex for ()` exists but won't match
+/// the expected shape.
+fn extract_result_ok_type(ret: &ReturnType) -> syn::Result<TokenStream2> {
+    let ReturnType::Type(_, ty) = ret else {
+        return Err(syn::Error::new(
+            ret.span(),
+            "function must return `anyhow::Result<T>`",
+        ));
+    };
+    if let Type::Path(p) = ty.as_ref() {
+        if let Some(seg) = p.path.segments.last()
+            && seg.ident == "Result"
+            && let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+            && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+        {
+            return Ok(quote! { #inner });
+        }
+    }
+    // Fall back: use the whole type — generated code will fail with a
+    // proper error if it's not Result<T, _>.
+    Ok(quote! { #ty })
 }
 
 fn validate_ctx_param(first: &FnArg, kind: FnKind) -> syn::Result<()> {
