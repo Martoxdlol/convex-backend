@@ -944,12 +944,62 @@ routing (6.2 default-no-preference already in effect) are the
 in-repo deliverables; the JS worker binary itself (6.3) is
 downstream work.
 
-## Phase 7 — not started
+## Phase 7 — active, decomposed into concrete substeps
 
-See `DISTRIBUTED_PLAN.md` §15 for the full breakdown.
+`DISTRIBUTED_PLAN.md` §15 Phase 7 + §11: operator tooling so a
+human can inspect the pool, trigger rolling-update mechanics,
+and diagnose drift without shelling into the backend. Most
+building blocks already exist (`by_version`, `by_kind`,
+`kind_preferences`, `set_min_registry_version`,
+`request_drain`); Phase 7 turns them into an operator-facing
+surface.
 
-- **Phase 7**: operator tooling — pool introspection, inventory
-  diff, floor-bump admin RPC.
+7.1. ✓ **`PoolSnapshot` type.** Landed. New
+     `pool::PoolSnapshot` + `pool::PoolWorkerSnapshot`
+     structs (`#[derive(serde::Serialize)]`) bundle
+     everything substep 7.2 will expose through HTTP into
+     one JSON-serializable shape:
+
+     - `total` (worker count),
+       `min_registry_version` (floor),
+       `by_version` / `by_kind` groupings,
+       `kind_preferences` (substep 6.2 map),
+       `workers[]` per-worker detail (id, version, kind,
+       advertised function names, live `in_flight`,
+       transport label).
+     - `WorkerPool::snapshot()` computes it atomically under
+       the pool's read lock so operators see a consistent
+       view, not a mid-mutation splice.
+
+     Cargo dep: adds `serde` (direct — already transitive via
+     the workspace).
+
+     Tests: `pool::tests::snapshot_bundles_everything_operators_need`
+     exercises every field + confirms the JSON shape
+     (`total`, `by_version`, `by_kind`, `kind_preferences`,
+     `min_registry_version`, `workers[].{worker_id,
+     registry_version, kind, functions, in_flight, label}`)
+     so a future refactor can't silently drop an operator-
+     visible field.
+
+7.2. **Admin HTTP surface.** Small axum router exposing
+     `GET /admin/pool` (snapshot), `POST /admin/pool/floor`
+     (set `min_registry_version`),
+     `POST /admin/pool/kind_preference`,
+     `POST /admin/pool/drain`. Gated behind the same
+     admin-auth the existing backend admin surface uses.
+
+7.3. **Inventory diff log.** When a new `registry_version`
+     appears in the admission stream, log the
+     added / removed / changed function set against the
+     current active version. Self-documenting deploy log.
+
+Exit criteria: operators can see pool state at a glance, bump
+the floor during a rolling update, preference-pin functions to
+a kind, and diff inventories across registry versions — all
+without restarting the backend. 7.1 ships the read side (done);
+7.2 adds the write side; 7.3 makes rollout progress observable
+in logs.
 
 ---
 

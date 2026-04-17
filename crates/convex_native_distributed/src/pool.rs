@@ -56,6 +56,50 @@ use crate::client::WorkerClient;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WorkerId(pub u64);
 
+/// Substep 7.1 of `convex-native/STATUS.md` — operator-facing
+/// snapshot of the current pool state. JSON-serializable so
+/// substep 7.2's admin HTTP surface can render the shape
+/// directly.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct PoolSnapshot {
+    /// Total admitted workers.
+    pub total: usize,
+    /// Pool-wide floor — workers below this `registry_version`
+    /// aren't considered for dispatch.
+    pub min_registry_version: Option<String>,
+    /// `registry_version → count` grouping.
+    pub by_version: BTreeMap<String, usize>,
+    /// `kind → count` grouping (`native-rust`, `javascript`,
+    /// `unspecified`).
+    pub by_kind: BTreeMap<String, usize>,
+    /// Per-function routing preferences (substep 6.2). Keys
+    /// are dotted function names; values are the preferred
+    /// kind's string form.
+    pub kind_preferences: BTreeMap<String, String>,
+    /// Per-worker detail. Ordered by admission sequence
+    /// because the inner map iteration order is undefined;
+    /// operators read this through a serializer that respects
+    /// the `Vec`'s order, not the caller's iteration.
+    pub workers: Vec<PoolWorkerSnapshot>,
+}
+
+/// Per-worker slice of the pool snapshot.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct PoolWorkerSnapshot {
+    /// Stable monotonically-allocated handle.
+    pub worker_id: u64,
+    pub registry_version: String,
+    /// Runtime kind in its string form (`native-rust`, `javascript`,
+    /// `unspecified`).
+    pub kind: String,
+    /// Dotted function names the worker advertised.
+    pub functions: Vec<String>,
+    /// Live in-flight estimate from the transport client.
+    pub in_flight: u64,
+    /// Transport-level label (typically the execute_endpoint URL).
+    pub label: String,
+}
+
 /// Runtime kind the worker is using. Mirrors
 /// `pb::worker_admission::WorkerKind` but tonic-free so the
 /// pool doesn't leak generated proto types into the dispatch
@@ -325,6 +369,50 @@ impl WorkerPool {
             *out.entry(entry.kind).or_default() += 1;
         }
         out
+    }
+
+    /// Substep 7.1 of `convex-native/STATUS.md` — one-shot
+    /// operator-facing snapshot of pool state. Bundles
+    /// `len()`, `by_version()`, `by_kind()`, `kind_preferences()`,
+    /// and `min_registry_version()` into a single
+    /// JSON-serializable struct so the admin surface
+    /// (substep 7.2) can return everything an operator dashboard
+    /// needs in one RPC.
+    pub fn snapshot(&self) -> PoolSnapshot {
+        let inner = self.inner.read();
+        let workers: Vec<PoolWorkerSnapshot> = inner
+            .workers
+            .iter()
+            .map(|(id, entry)| PoolWorkerSnapshot {
+                worker_id: id.0,
+                registry_version: entry.registry_version.clone(),
+                kind: entry.kind.as_str().to_string(),
+                functions: entry.functions.clone(),
+                in_flight: entry.client.in_flight_estimate(),
+                label: entry.client.label().to_string(),
+            })
+            .collect();
+        let mut by_version: BTreeMap<String, usize> = BTreeMap::new();
+        let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
+        for entry in inner.workers.values() {
+            *by_version
+                .entry(entry.registry_version.clone())
+                .or_default() += 1;
+            *by_kind.entry(entry.kind.as_str().to_string()).or_default() += 1;
+        }
+        let kind_preferences = inner
+            .kind_preferences
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().to_string()))
+            .collect();
+        PoolSnapshot {
+            total: inner.workers.len(),
+            min_registry_version: inner.min_registry_version.clone(),
+            by_version,
+            by_kind,
+            kind_preferences,
+            workers,
+        }
     }
 }
 
@@ -601,6 +689,57 @@ mod tests {
         // kind enum member this binary doesn't know about) maps
         // to `Unspecified` rather than panicking.
         assert_eq!(WorkerKind::from_proto_i32(99), WorkerKind::Unspecified);
+    }
+
+    #[test]
+    fn snapshot_bundles_everything_operators_need() {
+        // Substep 7.1: the operator-facing snapshot must
+        // include total, per-version, per-kind, per-function
+        // preferences, and per-worker detail in one JSON-
+        // serializable shape. Pin each slice so a future
+        // refactor doesn't silently drop one of the fields.
+        let pool = WorkerPool::new();
+        pool.admit(entry("a", "1.0.0", &["get"]));
+        pool.admit(js_entry("b", "1.0.0", &["get", "list"]));
+        pool.set_kind_preference("get", WorkerKind::NativeRust);
+        pool.set_min_registry_version(Some("0.9.0".to_string()));
+
+        let snap = pool.snapshot();
+        assert_eq!(snap.total, 2);
+        assert_eq!(snap.min_registry_version.as_deref(), Some("0.9.0"));
+        assert_eq!(snap.by_version.get("1.0.0"), Some(&2));
+        assert_eq!(snap.by_kind.get("native-rust"), Some(&1));
+        assert_eq!(snap.by_kind.get("javascript"), Some(&1));
+        assert_eq!(
+            snap.kind_preferences.get("get").map(String::as_str),
+            Some("native-rust")
+        );
+        assert_eq!(snap.workers.len(), 2);
+
+        // JSON-serializable — pin the shape so operator
+        // dashboards can count on it.
+        let json = serde_json::to_value(&snap).unwrap();
+        assert!(json.get("total").is_some());
+        assert!(json.get("by_version").is_some());
+        assert!(json.get("by_kind").is_some());
+        assert!(json.get("kind_preferences").is_some());
+        assert!(json.get("min_registry_version").is_some());
+        let workers_array = json.get("workers").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(workers_array.len(), 2);
+        let worker0 = &workers_array[0];
+        for field in &[
+            "worker_id",
+            "registry_version",
+            "kind",
+            "functions",
+            "in_flight",
+            "label",
+        ] {
+            assert!(
+                worker0.get(field).is_some(),
+                "worker snapshot carries `{field}`",
+            );
+        }
     }
 
     #[test]

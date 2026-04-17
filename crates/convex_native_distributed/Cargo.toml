@@ -27,6 +27,7 @@ prost-types = { workspace = true }
 rand = { workspace = true }
 runtime = { workspace = true }
 semver = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 sync_types = { workspace = true }
