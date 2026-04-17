@@ -202,8 +202,7 @@ fn table_definition_emits_bytes_validator_for_vec_u8_fields() {
     use value::IdentifierFieldName;
 
     let def = Blob::table_definition();
-    let DocumentSchema::Union(objs) =
-        def.document_type.as_ref().expect("document_type populated")
+    let DocumentSchema::Union(objs) = def.document_type.as_ref().expect("document_type populated")
     else {
         panic!("expected Union");
     };
@@ -242,8 +241,7 @@ fn table_definition_emits_container_validators_for_vec_and_btreemap_fields() {
     use value::IdentifierFieldName;
 
     let def = Settings::table_definition();
-    let DocumentSchema::Union(objs) =
-        def.document_type.as_ref().expect("document_type populated")
+    let DocumentSchema::Union(objs) = def.document_type.as_ref().expect("document_type populated")
     else {
         panic!("expected Union");
     };

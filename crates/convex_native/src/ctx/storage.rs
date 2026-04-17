@@ -167,6 +167,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn storage_ctx_get_metadata_bails_through_noop_callbacks() {
+        // `NoopCallbacks` inherits the trait default on
+        // `storage_get_metadata` (bails with "not implemented by
+        // this backend adapter"). Pin that the ctx layer forwards
+        // that error through rather than silently returning
+        // `Ok(None)` — tests written against the shape would pass
+        // a silent None and hide a wiring mistake.
+        let ctx = StorageCtx::new_with_callbacks(TableNamespace::Global, Arc::new(NoopCallbacks));
+        let err = ctx
+            .get_metadata(StorageId("any".into()))
+            .await
+            .expect_err("noop callbacks bail");
+        assert!(format!("{err}").contains("storage_get_metadata not implemented"));
+    }
+
+    #[tokio::test]
     async fn storage_ctx_delegates_delete_and_get_url_to_callbacks() {
         // Same delegation-shape check for get_url + delete — the
         // methods are tiny forwarders but "tiny forwarders" are

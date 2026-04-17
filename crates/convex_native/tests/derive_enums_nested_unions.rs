@@ -181,9 +181,9 @@ fn convex_enum_emits_union_of_string_literals() {
     };
     assert_eq!(variants.len(), 3);
     let has_wire = |w: &str| {
-        variants.iter().any(|v| {
-            matches!(v, Validator::Literal(LiteralValidator::String(s)) if s.as_ref() == w)
-        })
+        variants.iter().any(
+            |v| matches!(v, Validator::Literal(LiteralValidator::String(s)) if s.as_ref() == w),
+        )
     };
     assert!(has_wire("admin"));
     assert!(has_wire("member"));
