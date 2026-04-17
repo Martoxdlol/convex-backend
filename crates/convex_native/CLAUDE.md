@@ -14,6 +14,7 @@ src/
 ├── callbacks.rs        -- NativeActionCallbacks trait + NoopCallbacks
 ├── circuit_breaker.rs  -- CircuitBreaker + CircuitBreakerConfig
 ├── convert.rs          -- ToConvex / FromConvex
+├── cron.rs             -- CronRegistration inventory + collect
 ├── ctx/
 │   ├── action.rs       -- ActionCtx
 │   ├── mutation.rs     -- MutationCtx + MutationDb
@@ -21,7 +22,7 @@ src/
 │   ├── query_builder.rs-- TypedQueryBuilder
 │   ├── scheduler.rs    -- Scheduler
 │   └── storage.rs      -- StorageCtx + StorageId
-├── distributed.rs      -- ConvexMode + ExecuteRequest/Response trait stubs
+├── distributed.rs      -- ConvexMode + ExecuteRequest/Response + FunctionExecutor stub
 ├── document.rs         -- ConvexDocument / FieldReference / IndexReference
 ├── errors.rs           -- bad_request / forbidden / ... helpers
 ├── function_ref.rs     -- ConvexQueryFunction / etc. marker traits
@@ -94,12 +95,23 @@ proc macros — keep generated code wrapped at ~100 cols or `rustfmt`
 will fail with `error_on_line_overflow`. If you hit that, hand-wrap
 the offending `quote! { ... }` block.
 
+## Sibling crates
+
+- `crates/convex_native_backend/` — in-process backend adapter
+  (`CompositeFunctionRunner`, `BackendCallbacks`). Wired into
+  `local_backend/src/lib.rs` ahead of `Application::new`. Depends on
+  `isolate` / `function_runner` transitively, so it only builds after
+  `rush install` in `npm-packages/`.
+- `crates/convex_native_distributed/` — split-topology support
+  (worker gRPC server, conductor P2C client, `TonicWorkerClient` real
+  transport, `CONVEX_MODE` env helpers, runnable `examples/worker` +
+  `examples/conductor` binaries). Depends only on `pb` + `tonic` + this
+  crate; doesn't pull in `isolate`.
+
 ## What's actually shipped vs planned
 
-`README.md` tracks this accurately. The crate exposes the complete
-Phase 1/2/5 developer surface plus most of Phase 3 scaffolding and
-Phase 4 operational knobs. The backend adapter crate
-(`crates/convex_native_backend/`) is now in-tree and wired into
-`local_backend::make_app()`. The remaining gaps are: an end-to-end
-smoke test driven from a real client, the distributed gRPC service
-(Phase 3.1–3.6), and rolling-update routing (Phase 4.7).
+`README.md` tracks this authoritatively. One-line summary: Phase
+1/2/4/5 complete; Phase 3 shipped at the crate level (3.1–3.6)
+via `convex_native_distributed`. Outstanding: a unified
+`convex-local-backend` that picks its topology based on
+`CONVEX_MODE` alone (today the operator picks the binary).
