@@ -1,11 +1,17 @@
 # convex_native — agent notes
 
-Short guide for agents iterating on this crate. Read alongside:
+The framework crate: derives, ctx surface, registry, runner,
+introspection. **Load-bearing for every phase of
+`../../convex-native/DISTRIBUTED_PLAN.md`** — this crate is what
+the worker process runs inside. The distributed replan does not
+touch this crate's public API.
 
-- `../../convex-native/README.md` — landing page + architecture diagram.
+Read alongside:
+- `../../convex-native/DISTRIBUTED_PLAN.md` — target architecture.
+- `../../convex-native/STATUS.md` — what survived, what was
+  removed, active phase.
 - `../../convex-native/USAGE.md` — comprehensive feature reference.
-- `../../convex-native/STATUS.md` — shipped-vs-outstanding (update this first when a gap closes).
-- `../../convex-native/QUICKSTART.md` — narrow 10-minute walkthrough.
+- `../../convex-native/README.md` — landing page.
 
 ## Crate layout
 
@@ -64,28 +70,28 @@ native_function.rs      -- #[convex::query/mutation/action(...)]
   (aliased `Rt`). `inventory` can't hold generic fn pointers, so this
   is a hard constraint — don't try to make the registry generic over
   RT.
-- **`convex_native_backend` is in-tree and wired.** The composite
-  runner lives at `crates/convex_native_backend/` and is instantiated
-  in `crates/local_backend/src/lib.rs` ahead of the `Application::new`
-  call. Building it requires the `isolate` crate (needs `rush install`
-  in `npm-packages/`); once those steps have run, `cargo build --bin
-  convex-local-backend` succeeds. The reference notes in
-  `convex-native/COMPOSITE_RUNNER.md` now describe the shipped
-  behaviour, not a plan.
-- **Every significant change gets a commit.** Prefer small, focused
-  commits with a conventional-commits subject (`feat(convex_native):
-  …`) and a body explaining *why*. Doc updates land in the same
-  commit — in priority order: `STATUS.md` (gaps / shipped
-  transitions) → `USAGE.md` (new feature surface) → `README.md` (stays
-  short; only update if the architecture diagram changes or a
-  pointer breaks).
+- **This crate stays isolate-free.** The composite runner and the
+  distributed scaffolding live in sibling crates
+  (`convex_native_backend`, `convex_native_distributed`). Anything
+  that would pull `isolate` / `function_runner` into this crate's
+  dependencies is in the wrong place.
+- **Introspection is the worker's registration payload.**
+  `describe_json` / `describe_pretty` are what Phase 3 of
+  `DISTRIBUTED_PLAN.md` carries in the `WorkerAdmissionService`
+  registration envelope. Keep them stable.
+- **Every significant change gets a commit.** Small focused commits
+  with a conventional-commits subject (`feat(convex_native): …`)
+  and a body explaining *why*. Doc updates land in the same
+  commit — in priority order: `STATUS.md` (plan delta) →
+  `USAGE.md` (new feature surface) → `README.md` (only if the
+  architecture diagram changes).
 
 ## Testing
 
-`cargo test -p convex_native` runs the full suite. Each new feature
-should come with at least one test — if it's a derive-macro change,
-test it through `tests/derive_*.rs`; if it's a runtime feature,
-through `tests/<feature>.rs`. The `tests/golden_path.rs` test
+`cargo test -p convex_native` runs the full suite (242 tests at
+last known count). Each new feature should come with at least one
+test — derive-macro changes go through `tests/derive_*.rs`; runtime
+features through `tests/<feature>.rs`. `tests/golden_path.rs`
 exercises the full developer surface and catches most regressions.
 
 ## Dev workflow
@@ -96,36 +102,27 @@ cargo test  -p convex_native
 cargo +nightly fmt -p convex_native -p convex_macro
 ```
 
-`rustfmt` is strict about line length inside `quote!` blocks in the
-proc macros — keep generated code wrapped at ~100 cols or `rustfmt`
-will fail with `error_on_line_overflow`. If you hit that, hand-wrap
-the offending `quote! { ... }` block.
+`rustfmt` is strict about line length inside `quote!` blocks in
+the proc macros — keep generated code wrapped at ~100 cols or
+`rustfmt` fails with `error_on_line_overflow`. Hand-wrap the
+offending `quote! { ... }` block if you hit that.
 
 ## Sibling crates
 
-- `crates/convex_native_backend/` — in-process backend adapter
-  (`CompositeFunctionRunner`, `BackendCallbacks`). Wired into
-  `local_backend/src/lib.rs` ahead of `Application::new`. Depends on
-  `isolate` / `function_runner` transitively, so it only builds after
-  `rush install` in `npm-packages/`.
-- `crates/convex_native_distributed/` — split-topology support
-  (worker gRPC server, conductor P2C client, `TonicWorkerClient` real
-  transport, `CONVEX_MODE` env helpers, runnable `examples/worker` +
-  `examples/conductor` binaries). Depends only on `pb` + `tonic` + this
-  crate; doesn't pull in `isolate`.
+- `crates/convex_native_backend/` — in-process adapter
+  (`CompositeFunctionRunner`, `BackendCallbacks`) wired into
+  `local_backend/src/lib.rs` for the **monolith** topology
+  (`STANDALONE.md` + `COMPOSITE_RUNNER.md`). Depends on `isolate`
+  / `function_runner` transitively.
+- `crates/convex_native_distributed/` — gRPC transport
+  (worker server, `DistributedFunctionRunner` P2C client,
+  `TonicWorkerClient`). Currently pre-Phase-1; `DISTRIBUTED_PLAN.md`
+  drives it to a correct distributed shape.
 
-## What's actually shipped vs planned
+## What's shipped vs planned
 
 `../../convex-native/STATUS.md` is authoritative. One-line summary:
-Phases 1 / 2 / 4 / 5 complete; Phase 3 shipped at the crate level
-(3.1–3.6) via `convex_native_distributed`, and
-`convex-local-backend` accepts `CONVEX_MODE=standalone` (default) or
-`CONVEX_MODE=worker` (adds a tonic `FunctionExecutionService`
-beside the HTTP server, sharing the same Database, draining
-together on Ctrl-C). `CONVEX_MODE=conductor` stays behind the
-dedicated `convex_native_distributed::examples::conductor` binary.
-
-Outstanding work (see STATUS.md for effort estimates): end-to-end
-client smoke test, document-shape validation in
-`#[derive(ConvexDocument)]`, mutation-scoped scheduler wiring,
-native `ActionCtx` snapshot transaction.
+framework-level pieces (derives, ctx surface, schema reflection,
+registry, introspection) are solid and reused. The distributed
+dispatch layer is being rebuilt; Phase 1 is the `ExecuteResponse`
+proto change and the commit-moves-to-backend flip.

@@ -1,13 +1,23 @@
 # convex_native_distributed — agent notes
 
-Split-topology support for `convex_native`: a conductor dispatches
-function calls over gRPC to a pool of identical worker binaries,
-each running the same native registry.
+**⚠ Under active replan.** The previous topology (a standalone
+"conductor" process that dispatched to workers which committed
+locally) is being replaced by the architecture in
+`../../convex-native/DISTRIBUTED_PLAN.md` — the backend process
+coordinates OCC / subscriptions / committing, and workers only
+execute native handlers and return reads / writes over gRPC.
 
-Read alongside `../../convex-native/README.md` (shipped-vs-planned
-at the project level) and
-`../../convex-native/COMPOSITE_RUNNER.md` (the in-process path
-this crate is the distributed counterpart of).
+This crate holds the gRPC scaffolding used by *both* the old and
+the new path. What it currently does, what's shipping, and what's
+about to change are all tracked in
+`../../convex-native/STATUS.md`.
+
+Read alongside:
+- `../../convex-native/DISTRIBUTED_PLAN.md` — target architecture
+  and phased delivery (source of truth).
+- `../../convex-native/STATUS.md` — what survived the reset, what
+  was removed, what's the active phase.
+- `../../convex-native/README.md` — project landing page.
 
 ## Crate layout
 
@@ -16,79 +26,106 @@ src/
 ├── lib.rs          -- module layout table + re-exports
 ├── conversions.rs  -- pb::function_execution::* ↔ convex_native::distributed::*
 ├── server.rs       -- FunctionExecutionServer (worker-side tonic impl)
-├── client.rs       -- DistributedFunctionRunner (conductor P2C) + WorkerClient trait + MockWorkerClient
+├── client.rs       -- DistributedFunctionRunner (P2C) + WorkerClient trait + MockWorkerClient
 ├── tonic_client.rs -- TonicWorkerClient (real gRPC transport impl of WorkerClient)
-└── mode.rs         -- CONVEX_MODE env-var parsers + build_worker_server / build_conductor_runner / serve_worker_with_{database,shutdown}
+└── mode.rs         -- CONVEX_MODE env-var parsers + build_worker_server / serve_worker_with_{database,shutdown}
 examples/
-├── worker.rs       -- minimal tonic server binary a deployer can crib from
-└── conductor.rs    -- minimal health-probe binary a deployer can crib from
+└── worker.rs       -- minimal tonic server binary a deployer can crib from
 tests/
-├── multi_worker.rs       -- N-worker conductor + failover + version gate tests
-└── examples_smoke.rs     -- subprocess smoke test spawning worker + conductor
+└── multi_worker.rs -- N-worker P2C + failover + version-gate tests
 ```
 
-Proto contract: `../pb/protos/function_execution.proto` (two RPCs,
-`Execute` + `Health`). Generated Rust types live at
-`pb::function_execution::*`.
+Proto contract: `../pb/protos/function_execution.proto`. Generated
+Rust types live at `pb::function_execution::*`. Phase 1 of
+`DISTRIBUTED_PLAN.md` extends this proto with
+`begin_timestamp` / `existing_writes` on `ExecuteRequest` and
+`FunctionFinalTransaction` on `ExecuteResponse`.
+
+## What was removed in the reset
+
+- `src/worker_callbacks.rs` — `WorkerActionCallbacks` committed
+  sub-call mutations on the worker's own `Database`. Wrong under the
+  new plan (sub-calls must route back to the backend's Committer).
+  Replaced in `server.rs` by `NoopCallbacks` with a `TODO(phase-4)`
+  pointer at `BackendCallbackService`.
+- `examples/conductor.rs`, `examples/conductor_dispatch.rs`,
+  `examples/worker_with_functions.rs` — all tied to the
+  worker-commits-end-to-end topology.
+- `tests/examples_smoke.rs`, `tests/client_e2e_smoke.rs` —
+  exercised the removed standalone behaviour.
 
 ## Conventions
 
 - **Handler monomorphism.** The worker side is monomorphic over
-  `convex_native::Rt` (just like the composite runner) — no attempt
-  to support arbitrary RTs. Keep TypeId checks + unsafe casts out
-  of this crate; the worker takes `Database<Rt>` directly via
-  `FunctionExecutionServer::with_database(db)`.
+  `convex_native::Rt` (same as the composite runner). The worker
+  will take `Database<Rt>` directly via
+  `FunctionExecutionServer::with_database(db)` only while the
+  pre-Phase-1 transport shape is in place; Phase 1 moves the
+  commit back to the backend and the worker's DB becomes read-only
+  state (opened at `begin_timestamp` the backend supplies).
 - **Wire format stability.** All proto ↔ native translation goes
-  through `conversions.rs`. Anything on the wire that the rest of
-  the crate needs to read or write should get a `to_proto_*` and
-  `from_proto_*` helper, not bespoke inline encoding. The
-  conversions module is the testable boundary.
+  through `conversions.rs`. Phase 1's `FunctionFinalTransaction`
+  conversions land there too (the `pb::function_runner::*` types
+  already exist for Funrun — reuse).
 - **WorkerClient is the test seam.** Don't hard-code
   `TonicWorkerClient` in new client-side logic —
   `DistributedFunctionRunner` takes `Vec<Arc<dyn WorkerClient>>`,
   so mock clients can exercise everything except the transport.
-- **Every new feature gets a test.** The crate has 46 tests today
-  (38 unit + 7 multi-worker integration + 1 subprocess smoke);
-  new work should keep that ratio.
+- **Every new feature gets a test.** Phase 1 lands with round-trip
+  tests: client encodes a request with mocked `begin_ts` +
+  `existing_writes`; worker handler reads from that ts; backend
+  decodes the returned `final_tx` and asserts its structure.
 
 ## Dev workflow
 
 ```sh
 cargo check -p convex_native_distributed
-cargo test -p convex_native_distributed           # 46 tests last known
+cargo test -p convex_native_distributed
 cargo build --examples -p convex_native_distributed
 cargo +nightly fmt -p convex_native_distributed
-
-# End-to-end smoke:
-CONVEX_MODE=worker CONVEX_WORKER_BIND_ADDR=127.0.0.1:45671 \
-    cargo run -q -p convex_native_distributed --example worker &
-CONVEX_MODE=conductor CONVEX_WORKER_ENDPOINTS=http://127.0.0.1:45671 \
-    cargo run -q -p convex_native_distributed --example conductor
 ```
 
-## What's shipped vs planned
+## Active phase
 
-`convex-native/README.md` is authoritative. Short version:
+**Phase 1 — wire contract.** See `DISTRIBUTED_PLAN.md` §15.
 
-- Phase 3.1–3.6 all shipped as crate features.
-- `FunctionExecutionServer` handles actions via
-  `run_action_with_callbacks`; with `.with_database(db)` also
-  queries and mutations inline (queries drop the tx; mutations
-  commit via `commit_with_write_source`).
-- `DistributedFunctionRunner` does P2C with single-retry failover
-  and a `min_registry_version` floor for Phase 4.7 rolling
-  deploys; `with_failover(bool)` toggles the failover attempt.
+1. Extend `ExecuteRequest` with `begin_timestamp` + `existing_writes`.
+2. Extend `ExecuteResponse` with `final_tx: Option<FunctionFinalTransaction>`.
+3. Proto ↔ native conversions for `FunctionReads` / `FunctionWrites`
+   / `FunctionFinalTransaction`.
+4. `FunctionExecutionServer::run_{query,mutation}_inline` stop
+   committing; return `FunctionFinalTransaction` in the response.
+5. `DistributedFunctionRunner::execute` returns the
+   `FunctionFinalTransaction` alongside the result.
+6. Round-trip test covering the whole path.
 
-Outstanding: only the conductor half of the unified binary. The
-worker half shipped: `convex-local-backend` now accepts
-`CONVEX_MODE=worker` and spawns a tonic `FunctionExecutionService`
-alongside the HTTP server via `serve_worker_with_shutdown(addr,
-native, db, shutdown_future)` — wired to the same `zombify_rx`
-the HTTP server drains on, so Ctrl-C / `/preempt` tears down
-both together. The `serve_worker_with_database` shim is the
-"bind and run forever" variant (forwards to
-`serve_worker_with_shutdown` with a `pending()` future) for
-callers that don't need coordinated drain. Conductor mode stays
-behind the `examples/conductor` binary because
-`convex-local-backend` always boots a local `Database`, which
-defeats the conductor topology.
+Exit criteria: the mechanical plumbing of "worker produces
+reads/writes, returns them over the wire" is verified by a test.
+Backend-side integration (Phase 2) is next.
+
+## Phases 2..7
+
+See `DISTRIBUTED_PLAN.md` §15 for the full breakdown:
+
+- **Phase 2**: `impl FunctionRunner<RT> for DistributedFunctionRunner`;
+  `local_backend` env-var swaps runners. After Phase 2 OCC +
+  subscriptions work against remote workers.
+- **Phase 3**: dynamic pool + `WorkerAdmissionService`; removes
+  `CONVEX_WORKER_ENDPOINTS` in favour of `CONVEX_BACKEND_ENDPOINT`
+  on the worker.
+- **Phase 4**: `BackendCallbackService` — action sub-calls route
+  back to the backend's Committer.
+- **Phase 5**: prebuilt `getconvex/convex-backend` image.
+- **Phase 6**: JS interop (`WorkerKind::JAVASCRIPT`).
+- **Phase 7**: operator tooling.
+
+## Legacy env-var surface (pre-Phase-3)
+
+- `CONVEX_MODE=worker`: worker serves gRPC on
+  `CONVEX_WORKER_BIND_ADDR` (default `0.0.0.0:4567`). This path
+  stays; Phase 3 adds an outbound connection to the backend's
+  `WorkerAdmissionService` for registration.
+- `CONVEX_MODE=conductor` and `CONVEX_WORKER_ENDPOINTS`: **going
+  away in Phase 3.** The backend image replaces the standalone
+  conductor concept; `mode.rs` keeps the parsers for now so the
+  pre-Phase-3 tests stay green.
