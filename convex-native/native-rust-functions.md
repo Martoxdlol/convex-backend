@@ -28,9 +28,16 @@
 
 ## 0. Implementation notes
 
-**Read `QUICKSTART.md` for the current API.** The code in this design
-doc is the original proposal; where the shipped API diverges, the
-quickstart is authoritative. Notable differences:
+**This is the original design proposal. For the shipped API, read
+`USAGE.md` (comprehensive reference) or `QUICKSTART.md` (10-minute
+walkthrough).** The content below is kept for rationale and
+design-decision context; where the shipped API diverges, the other
+docs are authoritative.
+
+For a shipped-vs-outstanding breakdown, see `STATUS.md`. For the
+backend adapter internals, see `COMPOSITE_RUNNER.md`.
+
+Notable differences between this design and what shipped:
 
 - **Typed sub-calls use PascalCase markers.** The design example has
   `ctx.run_query(get_user_by_email, ...)` where
@@ -45,8 +52,8 @@ quickstart is authoritative. Notable differences:
 - **Backend integration is a separate crate.** The surface in this
   design lives in `convex_native`; the adapter that implements the
   full `function_runner::FunctionRunner` trait by wrapping the V8
-  runner + the native dispatcher lives in a planned future
-  `convex_native_backend` crate. See `COMPOSITE_RUNNER.md` for the
+  runner + the native dispatcher lives in a separate in-tree crate
+  `convex_native_backend`. See `COMPOSITE_RUNNER.md` for the
   reference implementation.
 
 ## 1. Overview

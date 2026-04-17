@@ -6,6 +6,12 @@ describes the adapter's responsibilities and the one-to-one mapping
 of `FunctionRunner` trait methods onto either the native path or the
 wrapped JS runner.
 
+Related docs: `README.md` (project landing page), `USAGE.md`
+(developer-facing feature reference — section 18 covers running
+against a real backend, section 20 lists what lives outside this
+crate), `STATUS.md` (outstanding work, including the "native
+`ActionCtx` snapshot transaction" gap that's relevant here).
+
 The adapter depends on `function_runner` (transitively on `isolate`),
 which means the `npm-packages/` rush install + build step must have
 run at least once for the host crate to compile. `convex_native`
