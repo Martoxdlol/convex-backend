@@ -268,7 +268,15 @@ pub async fn make_app(
     // `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md` for the full
     // diagnosis. Idempotent: repeated `make_app` calls in the same
     // process (integration tests) keep the first resolver.
-    convex_native_backend::install_native_resolver((*native_runner).clone());
+    //
+    // Only install when the inventory has entries. A JS-only
+    // deployment gets no resolver installed, so the original
+    // `missing_or_internal_error` hint ("Did you forget to run `npx
+    // convex dev`?") remains accurate — the tailored
+    // native-flavoured hint would be misleading there.
+    if !native_runner.is_empty() {
+        convex_native_backend::install_native_resolver((*native_runner).clone());
+    }
     // Substep 5.2 of `convex-native/DISTRIBUTED_PLAN.md`: when
     // `CONVEX_REFUSE_NATIVE_HANDLERS=1` is set, the backend
     // binary must carry no `#[convex::*]` registrations. The
