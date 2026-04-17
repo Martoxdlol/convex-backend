@@ -441,6 +441,23 @@ shuts down every clone.
   gRPC server on an ephemeral port, bring up a client, exercise
   health + action execute + unimplemented query path, and verify
   `in_flight_estimate` returns to zero after the call drains.
+- **Runnable worker/conductor examples (shipped):**
+  `crates/convex_native_distributed/examples/worker.rs` reads
+  `CONVEX_MODE` + `CONVEX_WORKER_BIND_ADDR` and boots a tonic
+  server serving `FunctionExecutionService`.
+  `crates/convex_native_distributed/examples/conductor.rs` reads
+  `CONVEX_MODE` + `CONVEX_WORKER_ENDPOINTS`, probes health on
+  each worker, prints a per-worker line, and exits non-zero if
+  any probe failed. Running one against the other end-to-end is
+  the lightest available smoke test of the distributed stack:
+  ```sh
+  CONVEX_MODE=worker cargo run -p convex_native_distributed --example worker &
+  CONVEX_MODE=conductor CONVEX_WORKER_ENDPOINTS=http://127.0.0.1:4567 \
+    cargo run -p convex_native_distributed --example conductor
+  ```
+  The conductor prints e.g.
+  `http://127.0.0.1:4567 => v="0.1.0" traffic=true fns=0 in_flight=0`
+  and exits 0.
 - **Phase 4.7 — rolling updates with version-aware routing
   (shipped):** the worker's version gate lands upstream via
   `ExecuteRequest::min_registry_version` (added to both
