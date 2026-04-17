@@ -562,9 +562,11 @@ let ret = built.run_action("send_email", ns, args).await?;
 ```
 
 `BuiltBackend` carries an `Arc<NativeFunctionRunner>`, the collected
-`DatabaseSchema`, the `HttpRouter`, and the callbacks. It's the
-handoff object the future backend adapter consumes when integrating
-with `make_app()`.
+`DatabaseSchema`, the `HttpRouter`, and the callbacks. The
+`convex_native_backend::CompositeFunctionRunner` consumes the
+runner + schema directly from the registry inventory; `BuiltBackend`
+stays useful as an introspection and validation surface (for
+`describe_json`, `validate`, `summary`).
 
 ### New in Phase 2.8 — `NativeActionCallbacks`
 
@@ -594,8 +596,11 @@ sub-queries, sub-mutations, scheduler, and storage through one
 
 - `StorageCtx` — obtained from `ActionCtx::storage()` or
   `HttpActionCtx::storage()`. Exposes `store(bytes, content_type) ->
-  StorageId`, `get_url(id)`, and `delete(id)`. Each method serializes
-  its inputs then `bail!`s pending file_storage backend integration.
+  StorageId`, `get_url(id)`, and `delete(id)`. Each method routes
+  through the attached `NativeActionCallbacks`; the
+  `convex_native_backend::BackendCallbacks` adapter forwards
+  `store` straight into `FileStorage::store_file` when the
+  composite is built with `.with_file_storage(fs)`.
 - `#[convex::http_action(method = "...", path = "...")]` attribute
   macro. Registers HTTP routes via inventory:
 
@@ -626,10 +631,12 @@ sub-queries, sub-mutations, scheduler, and storage through one
 - `run_action_after<F: ConvexActionFunction>(delay, marker, args)` —
   schedule a typed action.
 
-Both serialize the typed args correctly, then `bail!` at the actual
-scheduling step pending `VirtualSchedulerModel` backend integration.
-Developers can already write scheduling code against the final API
-shape.
+Both serialize the typed args correctly and then delegate to the
+attached `NativeActionCallbacks::schedule`.
+`convex_native_backend::BackendCallbacks` forwards the call to
+`udf::ActionCallbacks::schedule_job`, so scheduling from a native
+mutation or action now reaches the real backend scheduler when
+the composite runner is wired.
 
 ### New in Phase 2.3 / 2.4 — Function markers + typed sub-calls
 
@@ -655,9 +662,13 @@ let id: Id<User> = ctx.run_mutation(CreateUser, CreateUserArgs { .. }).await?;
 let sent: bool = ctx.run_action(SendEmail, SendEmailArgs { .. }).await?;
 ```
 
-Today `run_query` / `run_mutation` still `bail!` through the raw
-helpers pending backend integration. `run_action` runs end-to-end
-because actions don't require a new transaction.
+`ctx.run_query` / `run_mutation` / `run_action` all route through
+the attached `NativeActionCallbacks`. The
+`convex_native_backend::BackendCallbacks` adapter short-circuits
+native names (opens a fresh `Transaction<Rt>` on the composite's
+`Database<RT>`, commits for mutations) and falls back to
+`udf::ActionCallbacks::execute_query` / `execute_mutation` for
+JS-side targets.
 
 > **Note on API:** the design doc's example uses the function name
 > (`ctx.run_query(get_user, …)`) but Rust forbids a `fn` and a `struct`
@@ -681,10 +692,11 @@ because actions don't require a new transaction.
   it carries an optional `Arc<NativeFunctionRunner>` for sub-calls and
   a namespace.
 - `NativeFunctionRunner::run_action(name, namespace, args)` dispatches
-  an action end-to-end — **actions with no external I/O or sub-calls
-  actually execute today** (see the `action_dispatch_returns_handler_result`
-  test). Typed / raw sub-calls (`ctx.run_query_raw` etc.) are still
-  stubbed `bail!` pending backend integration (Step 2.4+).
+  an action end-to-end with `NoopCallbacks`; for real deployments the
+  composite runner calls `run_action_with_callbacks` and injects a
+  `convex_native_backend::BackendCallbacks` so sub-queries,
+  sub-mutations, scheduling, and storage all reach the real
+  backend.
 
 ### New in Phase 1.6 — additional derive macros
 
