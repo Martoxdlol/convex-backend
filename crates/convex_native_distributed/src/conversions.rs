@@ -98,7 +98,7 @@ pub fn to_proto_request(
         // composite/in-process path still routes natively so
         // `to_proto_request` just propagates None.
         begin_timestamp_us: None,
-        existing_writes_bytes: None,
+        existing_writes: None,
     })
 }
 
@@ -160,7 +160,7 @@ pub fn to_proto_response(native: &ExecuteResponse) -> proto::ExecuteResponse {
         // doesn't carry a `final_tx` today. `FunctionExecutionServer`
         // populates the proto field directly when it runs a mutation;
         // the native shape stays shallow.
-        final_tx_bytes: None,
+        final_tx: None,
     }
 }
 
@@ -352,7 +352,7 @@ mod tests {
             user_execution_time: None,
             served_by_version: None,
             log_lines: vec![],
-            final_tx_bytes: None,
+            final_tx: None,
         };
         assert!(from_proto_response(&p).is_err());
     }

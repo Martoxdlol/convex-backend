@@ -90,13 +90,29 @@ message ExecuteRequest {
   // that haven't been committed yet. When the backend batches
   // multiple UDFs into one ApplicationFunctionRunner invocation,
   // each UDF after the first needs to see earlier UDFs' writes as
-  // part of its transaction. `existing_writes_bytes` carries these
-  // pending writes as an opaque blob the worker passes to
-  // `Transaction::merge_writes` before dispatch.
+  // part of its transaction. The backend populates this with the
+  // metadata required to replay `Transaction::merge_writes` on
+  // the worker side.
   //
-  // Encoding is set by the backend/worker version pair; today
-  // Phase 1 ships with a postcard-serialized `FunctionWrites`.
-  optional bytes existing_writes_bytes = 10;
+  // Today a Phase-1 placeholder: carries a counter so round-trip
+  // tests can assert the field propagates. Phase 2 extends the
+  // message to carry the full `FunctionWrites` content (either by
+  // adding `serde` derives to `FunctionWrites` / `DocumentUpdateWithPrevTs`
+  // and serializing through a `bytes` field, or by growing this
+  // message with nested sub-messages for every write — the
+  // decision is tracked in convex-native/STATUS.md §"Phase 1
+  // blob-encoding decision").
+  optional ExistingWrites existing_writes = 10;
+}
+
+// Phase 1 placeholder for the writes the backend has staged but not
+// yet committed. The worker merges these into its transaction
+// before dispatching the handler so the handler sees them. Today
+// only `count` is populated — the full wire shape lands in Phase 2.
+message ExistingWrites {
+  // Number of document updates pending. Round-trip tests use this
+  // to assert the field propagates; real semantics land in Phase 2.
+  uint64 count = 1;
 }
 
 message ExecuteResponse {
@@ -131,15 +147,38 @@ message ExecuteResponse {
   //
   // Absent for:
   //   - actions (no enclosing transaction);
-  //   - pre-Phase-1 responses from workers still on the old
-  //     shape (transitional — these workers commit locally, and
-  //     the backend's dispatch path refuses `final_tx == None` on
-  //     mutations once Phase 2 lands);
-  //   - handler errors where the transaction was never closed.
+  //   - handler errors where the transaction was dropped without
+  //     closing;
+  //   - pre-Phase-1 responses from workers still on the old shape
+  //     (transitional — the backend's Phase-2 dispatch path will
+  //     refuse `final_tx == None` on mutations).
   //
-  // Encoding is set by the backend/worker version pair; today
-  // Phase 1 ships with a postcard-serialized `FunctionFinalTransaction`.
-  optional bytes final_tx_bytes = 5;
+  // Today the message carries scalars only (`begin_timestamp_us`,
+  // `writes_count`); Phase 2 extends it with the full `FunctionReads`
+  // + `FunctionWrites` content the Committer needs.
+  optional DistributedFinalTx final_tx = 5;
+}
+
+// Phase 1 shape of `function_runner::FunctionFinalTransaction` on
+// the wire. Only the fields needed to prove the mechanics round-
+// trip end-to-end are populated; Phase 2 grows this with
+// `FunctionReads` + `FunctionWrites` sub-messages so the backend
+// can actually commit through its Committer.
+message DistributedFinalTx {
+  // `Timestamp` the worker opened its read transaction at,
+  // microseconds since the Unix epoch. For Phase 2 the backend
+  // feeds this through `Committer::validate_reads_and_write` to
+  // decide whether OCC passes.
+  uint64 begin_timestamp_us = 1;
+
+  // Number of document updates produced by the handler. Round-trip
+  // tests assert this matches what the handler actually wrote;
+  // real writes land here in Phase 2.
+  uint64 writes_count = 2;
+
+  // Number of documents read by the handler. Backend-side metrics
+  // in Phase 2 derive usage from this.
+  uint64 reads_count = 3;
 }
 
 message HealthRequest {
