@@ -1,8 +1,11 @@
 # Migrating from JS to Rust
 
 A side-by-side reference for porting a JS-based Convex app to
-`convex_native`. Covers the 80% pattern bank. Read `QUICKSTART.md`
-first for the shipped API.
+`convex_native`. Covers the 80% pattern bank.
+
+- For a hands-on walkthrough: read `QUICKSTART.md` first.
+- For the full per-topic feature reference: `USAGE.md`.
+- For what's shipped vs. outstanding: `STATUS.md`.
 
 ## Schema
 

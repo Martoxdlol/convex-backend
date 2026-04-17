@@ -1,8 +1,15 @@
 # convex_native — Quickstart
 
-A condensed tour of the developer-facing surface of the `convex_native`
-crate. For the rationale behind the design, read `native-rust-functions.md`.
-For phase-by-phase progress, read `README.md`.
+A condensed tour of the developer-facing surface of the
+`convex_native` crate. This is the 10-minute walkthrough — it aims
+for "you have a running app" fast and leaves corners uncovered.
+
+- For the full per-topic feature reference, read **`USAGE.md`**.
+- For what's shipped vs. missing, read **`STATUS.md`**.
+- For porting a JS app to Rust, read **`MIGRATION.md`**.
+- For design rationale, read `native-rust-functions.md` (original
+  design doc; `USAGE.md` / `STATUS.md` are authoritative for the
+  shipped API).
 
 ## Adding the dep
 
@@ -403,23 +410,23 @@ match read_mode_from_env() {
 
 ## What's not yet wired
 
-The list in `README.md` tracks this accurately. Short version:
-- Document shape validation is still off (`table_definition()`
-  emits `document_type: None` — every derived type gets an "any"
-  shape today).
-- Native actions don't hold a `FunctionFinalTransaction` snapshot
-  at the outcome level; `dispatch_native_action` returns
-  `final_tx: None`. That said, query sub-calls inside one action
-  _do_ share a pinned read timestamp so `ctx.run_query(...)` twice
-  in a row sees the same world (mutations commit at a fresh ts, so
-  their writes are not visible to later queries in the same
-  action).
-- `CONVEX_MODE=conductor` is still behind the dedicated
-  `examples/conductor` binary — the conductor-only role doesn't
-  fit `convex-local-backend`'s "boots a Database" shape.
+**`STATUS.md` is authoritative** and carries effort estimates. In
+brief:
+
+- Document-shape validation (`table_definition()` currently emits
+  `document_type: None`).
+- Mutation-scoped scheduler — `MutationCtx::scheduler().run_after`
+  bails today; schedule from an action instead.
+- Native `ActionCtx` has no transaction, so `ctx.db().get(...)`
+  isn't available directly on an action — route through
+  `ctx.run_query(...)`. Query sub-calls inside one action already
+  share a pinned read timestamp.
+- `CONVEX_MODE=conductor` stays behind
+  `convex_native_distributed::examples::conductor` (the conductor
+  role doesn't boot a Database).
 
 Non-indexed filters (`.eq(Field, v)` without a preceding
 `.with_index(...)`) **are** supported: they lower to a
 `FullTableScan` + stacked `QueryOperator::Filter(...)` predicates.
-The indexed path is still faster; prefer it when you have a
-matching index.
+Prefer an indexed lookup when one exists — the filter path reads
+every row.

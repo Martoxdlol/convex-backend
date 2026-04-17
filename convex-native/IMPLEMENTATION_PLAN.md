@@ -3,7 +3,7 @@
 ## Status (updated per commit)
 
 The plan below is chronological; for the current shipped-vs-planned
-breakdown, `README.md` is authoritative. One-line summary:
+breakdown, **`STATUS.md`** is authoritative. One-line summary:
 
 - **Phase 1 (schema, types, single-node queries/mutations):** complete.
   Crate surface in `crates/convex_native/`; proc macros in
@@ -41,9 +41,10 @@ modes from `convex-local-backend`, but Conductor mode stays
 behind the dedicated `convex_native_distributed::examples::conductor`
 binary because a conductor-only role doesn't fit a binary that
 always boots a local `Database<Rt>`. That split is documented
-inline in README.md's Phase 3 bullet and is intentional rather
-than outstanding work. Everything else under 3.1–3.6, 4.1–4.7,
-and 5.1–5.4 is in-tree and covered by tests.
+inline in README.md's architecture block and in STATUS.md's
+"non-obvious caveats" section — it's intentional rather than
+outstanding work. Everything else under 3.1–3.6, 4.1–4.7, and
+5.1–5.4 is in-tree and covered by tests.
 
 ## Context
 
