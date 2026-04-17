@@ -441,6 +441,18 @@ shuts down every clone.
   gRPC server on an ephemeral port, bring up a client, exercise
   health + action execute + unimplemented query path, and verify
   `in_flight_estimate` returns to zero after the call drains.
+- **Subprocess smoke test for worker+conductor (shipped):**
+  `crates/convex_native_distributed/tests/examples_smoke.rs`
+  picks an ephemeral port, spawns the `worker` example as a
+  subprocess with matching `CONVEX_WORKER_BIND_ADDR`, waits
+  until its listening socket is up, runs the `conductor`
+  example against it, and asserts on the conductor's stdout
+  + exit code. Catches proto drift / tonic-version mismatch /
+  unused-import regressions that unit tests might miss because
+  they exercise the crate API in-process. Auto-skips when the
+  example binaries aren't built (the CI invocation needs
+  `cargo build --examples -p convex_native_distributed` first;
+  local dev loops pick up the build automatically).
 - **Runnable worker/conductor examples (shipped):**
   `crates/convex_native_distributed/examples/worker.rs` reads
   `CONVEX_MODE` + `CONVEX_WORKER_BIND_ADDR` and boots a tonic
