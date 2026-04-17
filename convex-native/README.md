@@ -18,16 +18,17 @@ actions) in native Rust.
 ## Current state
 
 **Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1–1.4.4, 1.5.1, 1.5.2,
-1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.1
-proto contract + 3.2 crate skeleton/conversions + 3.3 worker server
-full + 3.4 conductor client + P2C + real transport + 3.5 mode
-switching helpers + 3.6 multi-worker integration tests + executor
-trait stub), **Phase 4
-partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3 graceful drain
-+ 4.4 timeouts + 4.5 circuit breaker + 4.6 index-cache warmup plan
-+ 4.7 rolling update routing),
-**Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
-validation + 5.3 text/vector search + 5.4 bulk `get_many`).
+1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 COMPLETE**
+(3.1 proto contract + 3.2 crate skeleton/conversions + 3.3 worker
+server full + 3.4 conductor client + P2C + real transport + 3.5
+binary-level `CONVEX_MODE` switching [standalone + worker both run
+from `convex-local-backend`; conductor stays behind the
+`examples::conductor` binary] + 3.6 multi-worker integration tests
++ executor trait stub), **Phase 4 COMPLETE** (4.1 fastrace spans
++ 4.2 metrics sink + 4.3 graceful drain + 4.4 timeouts + 4.5
+circuit breaker + 4.6 index-cache warmup plan + 4.7 rolling update
+routing), **Phase 5 COMPLETE** (5.1 schema diff + 5.2 compile-time
+index validation + 5.3 text/vector search + 5.4 bulk `get_many`).
 
 Remaining: an end-to-end smoke test against a live backend driven
 from a real client, plus document-shape validation (today every
