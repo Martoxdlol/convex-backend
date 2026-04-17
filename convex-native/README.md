@@ -18,7 +18,8 @@ actions) in native Rust.
 **Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1–1.4.4, 1.5.1, 1.5.2,
 1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.1
 proto contract + 3.2 crate skeleton/conversions + 3.3 worker server
-partial + 3.5 mode alias + executor trait stub), **Phase 4
+partial + 3.4 conductor client + P2C + 3.5 mode alias + executor
+trait stub), **Phase 4
 partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3 graceful drain
 + 4.4 timeouts + 4.5 circuit breaker + 4.6 index-cache warmup plan),
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
@@ -416,6 +417,19 @@ shuts down every clone.
   Health}{Request,Response}` to/from the tonic-free
   `convex_native::distributed` types, plus helpers for
   `TableNamespace`, `ConvexObject` args, and `UdfType` round-trips.
+- **Phase 3.4 — conductor-side client + P2C load balancer (shipped,
+  transport-less):** `DistributedFunctionRunner` holds a
+  `Vec<Arc<dyn WorkerClient>>` and a `Chooser` (default
+  `RandomChooser`). Each `execute(req, udf_type)` picks two worker
+  indices via the chooser, sends to whichever has the lower
+  `in_flight_estimate()`, and retries against the other on
+  `tonic::Code::Unavailable`. Non-transient gRPC errors bubble up
+  without retry. The `WorkerClient` trait is the seam for testing
+  and will be implemented by `TonicWorkerClient` (wraps
+  `FunctionExecutionServiceClient`) in a follow-up. Tests: 7
+  client tests covering happy-path routing, same-index
+  degradation, Unavailable failover, non-retry on other errors,
+  exhaustion of retries, and empty worker set rejection.
 - **Phase 3.3 — worker-side gRPC server (partial, shipped):**
   `FunctionExecutionServer` implements the generated tonic trait.
   `Health` is fully wired: reports `registry_version` (defaults to

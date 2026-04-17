@@ -2364,6 +2364,7 @@ dependencies = [
  "convex_native",
  "pb",
  "prost-types",
+ "rand 0.9.4",
  "serde_json",
  "tokio",
  "tonic",

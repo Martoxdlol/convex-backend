@@ -18,7 +18,12 @@
 //! → native → proto. Landing the conversions independently lets us
 //! test them without pulling in a real gRPC transport.
 
+pub mod client;
 pub mod conversions;
 pub mod server;
 
+pub use client::{
+    DistributedFunctionRunner,
+    WorkerClient,
+};
 pub use server::FunctionExecutionServer;
