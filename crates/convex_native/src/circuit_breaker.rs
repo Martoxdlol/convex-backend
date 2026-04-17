@@ -174,4 +174,84 @@ mod tests {
         assert!(!cb.is_open("bar"));
         cb.before_call("bar").unwrap();
     }
+
+    #[test]
+    fn success_resets_the_consecutive_failure_counter() {
+        // The breaker opens on N consecutive failures. A single
+        // interleaved success must reset the counter — otherwise a
+        // flaky-but-mostly-working function would open the breaker
+        // on its first failure every 6 calls.
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 3,
+            cooldown: Duration::from_secs(1),
+        });
+        // Two failures → counter=2 (not yet open).
+        cb.before_call("foo").unwrap();
+        cb.after_call("foo", false);
+        cb.before_call("foo").unwrap();
+        cb.after_call("foo", false);
+        assert!(!cb.is_open("foo"));
+        // One success resets the counter.
+        cb.before_call("foo").unwrap();
+        cb.after_call("foo", true);
+        // Two more failures → counter=2 again. Still not open.
+        cb.before_call("foo").unwrap();
+        cb.after_call("foo", false);
+        cb.before_call("foo").unwrap();
+        cb.after_call("foo", false);
+        assert!(!cb.is_open("foo"), "success between failures reset counter");
+    }
+
+    #[test]
+    fn breakers_are_isolated_per_function_name() {
+        // One flaky function must not open the breaker for an
+        // unrelated function. The per-name state map is what makes
+        // the breaker deployable in front of the whole registry.
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 2,
+            cooldown: Duration::from_secs(1),
+        });
+        for _ in 0..3 {
+            cb.before_call("flaky").ok();
+            cb.after_call("flaky", false);
+        }
+        assert!(cb.is_open("flaky"));
+        assert!(!cb.is_open("healthy"));
+        cb.before_call("healthy").unwrap();
+        cb.after_call("healthy", true);
+        assert!(!cb.is_open("healthy"));
+    }
+
+    #[test]
+    fn failed_probe_reopens_the_breaker() {
+        // A half-open probe that fails has to reopen immediately —
+        // we don't want to re-arm the cooldown window only to let
+        // another call through right away.
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            cooldown: Duration::from_millis(1),
+        });
+        cb.before_call("x").unwrap();
+        cb.after_call("x", false);
+        assert!(cb.is_open("x"));
+
+        std::thread::sleep(Duration::from_millis(5));
+        // Cooldown elapsed → probe allowed.
+        cb.before_call("x").unwrap();
+        // Probe fails.
+        cb.after_call("x", false);
+        assert!(cb.is_open("x"), "failed probe must reopen the breaker");
+        assert!(cb.before_call("x").is_err());
+    }
+
+    #[test]
+    fn default_config_has_reasonable_values() {
+        // The defaults are part of the public surface (users can
+        // construct the breaker with `Default::default()`); pin
+        // them so a silent tune of these values is a deliberate
+        // doc change.
+        let cfg = CircuitBreakerConfig::default();
+        assert_eq!(cfg.failure_threshold, 5);
+        assert_eq!(cfg.cooldown, Duration::from_secs(30));
+    }
 }
