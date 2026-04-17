@@ -1,18 +1,25 @@
-//! Conductor-side client. Phase 3.4 of
-//! `convex-native/IMPLEMENTATION_PLAN.md`.
+//! Client-side dispatcher. See
+//! `convex-native/DISTRIBUTED_PLAN.md` for the target architecture
+//! (backend coordinates OCC; this client runs inside the backend
+//! to fan out execution to a worker pool).
 //!
 //! `DistributedFunctionRunner` holds a pool of `WorkerClient`s —
 //! one per worker endpoint — and steers each `execute` call to the
 //! one that looks least busy. The load balancer is Power-of-2-Choices
 //! (P2C): pick two workers at random, compare their in-flight
 //! estimates, send to the lower. On an `Unavailable` gRPC error the
-//! conductor retries against the other chosen worker, then gives up.
+//! dispatcher retries against the other chosen worker, then gives up.
 //!
 //! The `WorkerClient` trait is the seam for testing. The real
 //! implementation — [`crate::tonic_client::TonicWorkerClient`] —
 //! wraps a `FunctionExecutionServiceClient<Channel>` and tracks
 //! in-flight locally. Tests use the in-memory `MockWorkerClient`
 //! below.
+//!
+//! Phase 2 of `DISTRIBUTED_PLAN.md` adds
+//! `impl FunctionRunner<RT> for DistributedFunctionRunner` so
+//! `local_backend` can swap this in for the in-process JS runner
+//! via an env var.
 
 use std::{
     sync::{

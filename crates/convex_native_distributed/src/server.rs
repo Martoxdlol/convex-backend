@@ -1,32 +1,32 @@
-//! Worker-side gRPC server. Phase 3.3 of
-//! `convex-native/IMPLEMENTATION_PLAN.md`.
+//! Worker-side gRPC server. See
+//! `convex-native/DISTRIBUTED_PLAN.md` for the target architecture
+//! — this module is what the worker process runs.
 //!
 //! `FunctionExecutionServer` wraps an `Arc<NativeFunctionRunner>`
 //! and implements the generated
 //! `pb::function_execution::function_execution_service_server::FunctionExecutionService`
 //! tonic trait. A worker process instantiates this, binds it to a
-//! `tonic::transport::Server`, and serves conductor traffic.
+//! `tonic::transport::Server`, and serves backend traffic.
 //!
-//! ## What ships here
+//! ## What ships here today (pre-Phase-1)
 //!
 //! - `health`: fully implemented, reports registry version (derived from the
 //!   `convex_native` crate version), `accepts_traffic` (false when the runner
 //!   is draining), `registered_functions`, and `in_flight`.
-//! - `execute` for `UdfType::Action`: fully implemented via
-//!   `NativeFunctionRunner::run_action_with_callbacks`. Until the worker is
-//!   wired to a real `ActionCallbacks`, actions use
-//!   `convex_native::callbacks::NoopCallbacks`, so any sub-call from the action
-//!   body errors at the callback boundary.
-//! - `execute` for `UdfType::Query` / `UdfType::Mutation`: when the server was
-//!   constructed with `.with_database(db)`, dispatches inline against a fresh
-//!   `Transaction<Rt>` (queries drop the tx; mutations commit via
-//!   `commit_with_write_source`). Without the database handle the branch
-//!   returns `Code::Unimplemented` so the conductor learns the worker wasn't
-//!   provisioned for query/mutation traffic. This matches the "pure worker"
-//!   model where the worker owns its own Database and commits locally — the
-//!   wire protocol doesn't carry read/write sets back to the conductor today.
-//! - `execute` for `UdfType::HttpAction`: likewise `Unimplemented`. HTTP
-//!   actions use a different dispatch path anyway (`HttpRouter`).
+//! - `execute` for `UdfType::Action`: dispatches via
+//!   `NativeFunctionRunner::run_action_with_callbacks` with
+//!   `NoopCallbacks`. A real `BackendCallbackService` implementation
+//!   lands in Phase 4 of `DISTRIBUTED_PLAN.md` so action sub-calls
+//!   route back to the backend's Committer.
+//! - `execute` for `UdfType::Query` / `UdfType::Mutation`: when the
+//!   server was constructed with `.with_database(db)`, dispatches
+//!   inline against a fresh `Transaction<Rt>` (queries drop the tx;
+//!   mutations commit via `commit_with_write_source`). **Phase 1
+//!   removes the inline commit** — mutations will produce a
+//!   `FunctionFinalTransaction` in the response and the backend
+//!   will commit through its single Committer.
+//! - `execute` for `UdfType::HttpAction`: `Unimplemented`. HTTP
+//!   actions use a different dispatch path (`HttpRouter`).
 
 use std::sync::Arc;
 

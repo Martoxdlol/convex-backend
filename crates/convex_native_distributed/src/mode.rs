@@ -1,25 +1,33 @@
-//! Binary-level mode switching. Phase 3.5 of
-//! `convex-native/IMPLEMENTATION_PLAN.md`.
+//! Binary-level mode switching.
 //!
-//! A process embedding `convex_native` reads `CONVEX_MODE` on startup
-//! and uses these helpers to parse + validate the deployment topology
-//! before wiring up a runner or starting a gRPC server. The actual
-//! binary glue (spawn a `tonic::transport::Server` in worker mode;
-//! build a `DistributedFunctionRunner` in conductor mode) lives in
-//! `examples/worker.rs` and `examples/conductor.rs` of this crate —
-//! this module just decodes the env vars and assembles the pieces.
-//! `convex-local-backend` also consumes [`read_mode_from_env`] to
-//! refuse boot on any `CONVEX_MODE` other than `Standalone`.
+//! A process embedding `convex_native` reads `CONVEX_MODE` on
+//! startup and uses these helpers to parse + validate the
+//! deployment topology before wiring up a runner or starting a
+//! gRPC server. The actual binary glue (spawn a
+//! `tonic::transport::Server` in worker mode) lives in
+//! `examples/worker.rs`; this module just decodes the env vars and
+//! assembles the pieces. `convex-local-backend` also consumes
+//! [`read_mode_from_env`] to decide whether to expose its own
+//! gRPC face.
 //!
-//! ## Env vars
+//! ## Env vars (current, pre-Phase-3)
 //!
 //! - `CONVEX_MODE`: `standalone` (default) | `conductor` | `worker`.
 //!   Case-insensitive; whitespace stripped; unknown → `Standalone`.
-//! - `CONVEX_WORKER_ENDPOINTS` (conductor mode): comma-separated list
-//!   of gRPC URLs, e.g. `"http://host-a:4567,http://host-b:4567"`.
-//!   Empty list fails validation (conductors need workers).
-//! - `CONVEX_WORKER_BIND_ADDR` (worker mode): the `host:port` the worker should
-//!   bind its gRPC server to. Defaults to `0.0.0.0:4567` when unset.
+//! - `CONVEX_WORKER_ENDPOINTS` (conductor mode): comma-separated
+//!   list of gRPC URLs, e.g. `"http://host-a:4567,http://host-b:4567"`.
+//!   Empty list fails validation.
+//! - `CONVEX_WORKER_BIND_ADDR` (worker mode): the `host:port` the
+//!   worker should bind its gRPC server to. Defaults to
+//!   `0.0.0.0:4567` when unset.
+//!
+//! ## Phase-3 env-var shift (see `convex-native/DISTRIBUTED_PLAN.md`)
+//!
+//! - `CONVEX_MODE=conductor` + `CONVEX_WORKER_ENDPOINTS` go away.
+//!   The backend image replaces the standalone-conductor concept;
+//!   workers discover the backend via `CONVEX_BACKEND_ENDPOINT` and
+//!   register themselves over `WorkerAdmissionService`. The
+//!   helpers here stay for now so pre-Phase-3 tests keep passing.
 
 use std::{
     net::SocketAddr,
