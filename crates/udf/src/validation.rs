@@ -253,36 +253,38 @@ pub async fn validate_schedule_args<RT: Runtime>(
     }
     let udf_args = parse_udf_args(&path.udf_path, udf_args)?;
 
-    // Native-handler short-circuit: a scheduled `#[convex::mutation]`
-    // has no `_modules` row, so `get_metadata_for_function` would
-    // flag it as "nonexistent path". Ask the native resolver first;
-    // on a hit the UDF is known-registered and no further checks are
-    // needed here (arg validators live in the registry, but the
-    // macros don't emit them yet — see ISSUE_NATIVE_HTTP_VALIDATION).
-    if resolve_native_function(path.udf_path.function_name()).is_some() {
-        return Ok((path, udf_args));
-    }
-
     // Even though we might use different version of modules when executing,
     // we do validate that the scheduled function exists at time of scheduling.
     // We do it here instead of within transaction in order to leverage the module
     // cache.
     let canonicalized = path.clone();
-    let module = ModuleModel::new(tx)
+    let module_opt = ModuleModel::new(tx)
         .get_metadata_for_function(canonicalized.clone())
-        .await?
-        .with_context(|| {
+        .await?;
+    let module = match module_opt {
+        Some(module) => module,
+        None => {
+            // Native-handler fallback: a scheduled
+            // `#[convex::mutation]` has no `_modules` row, so the
+            // lookup above naturally misses. When the function name
+            // matches a native registration we accept the schedule —
+            // arg validators aren't checked here (the macros don't
+            // emit them yet; see `ISSUE_NATIVE_HTTP_VALIDATION.md`).
+            if resolve_native_function(path.udf_path.function_name()).is_some() {
+                return Ok((path, udf_args));
+            }
             let p = String::from(path.udf_path.module().clone());
             let component = if path.component.is_root() {
                 "".to_string()
             } else {
                 format!("{} ", String::from(path.clone().component))
             };
-            ErrorMetadata::bad_request(
+            anyhow::bail!(ErrorMetadata::bad_request(
                 "InvalidScheduledFunction",
                 format!("Attempted to schedule function at nonexistent path: {component}{p}",),
-            )
-        })?;
+            ));
+        },
+    };
 
     // We validate the function name if analyzed modules are available. Note
     // that scheduling was added after we started persisting the result
@@ -295,6 +297,15 @@ pub async fn validate_schedule_args<RT: Runtime>(
             .iter()
             .any(|f| &f.name == function_name);
         if !found {
+            // Second native fallback: if the module row exists but
+            // the named function isn't in its analyze result, it
+            // might be a native handler registered via `inventory`
+            // that shares the module path with a JS file. Accept
+            // the schedule in that case for the same reason as the
+            // `module is None` branch above.
+            if resolve_native_function(function_name).is_some() {
+                return Ok((path, udf_args));
+            }
             anyhow::bail!(ErrorMetadata::bad_request(
                 "InvalidScheduledFunction",
                 format!(
