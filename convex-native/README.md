@@ -40,8 +40,14 @@ registered native functions.
 
 ### What works
 
-- The `convex_native` crate compiles, and `cargo test -p convex_native`
-  runs **15 tests** — 6 unit + 9 derive integration — all green.
+- Current test tallies (all green):
+  - `cargo test -p convex_native` — **74 tests** (unit + derive +
+    runtime integration).
+  - `cargo test -p convex_native_backend` — **4 tests** (pure
+    helpers; deeper paths covered by end-to-end convex-local-backend
+    builds).
+  - `cargo test -p convex_native_distributed` — **41 tests** (33
+    unit + 7 multi-worker integration + 1 subprocess smoke).
 - `#[derive(ConvexDocument)]` on a struct generates, for `Foo`:
   - `impl ConvexDocument for Foo` (table name, to_convex_object,
     from_convex_object, table_definition with indexes)
