@@ -365,6 +365,38 @@ impl NativeFunctionRunner {
         args: ConvexObject,
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
     ) -> anyhow::Result<ConvexValue> {
+        self.run_action_inner(name, namespace, args, callbacks, None)
+            .await
+    }
+
+    /// Same as [`run_action_with_callbacks`] but threads an
+    /// externally-owned `LogBuffer` through the ctx so the caller can
+    /// drain `ctx.log()` output after the handler returns. The
+    /// composite backend uses this to populate the `log_lines` field
+    /// on the `UdfOutcome` / `ActionOutcome` — without it, native
+    /// `ctx.log()` output never reaches the backend's log-streaming
+    /// path.
+    #[fastrace::trace]
+    pub async fn run_action_with_callbacks_and_log_buffer(
+        self: &Arc<Self>,
+        name: &str,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
+        log_buffer: crate::logging::LogBuffer,
+    ) -> anyhow::Result<ConvexValue> {
+        self.run_action_inner(name, namespace, args, callbacks, Some(log_buffer))
+            .await
+    }
+
+    async fn run_action_inner(
+        self: &Arc<Self>,
+        name: &str,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
+        log_buffer: Option<crate::logging::LogBuffer>,
+    ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
         self.check_breaker(name)?;
         let _guard = self.enter();
@@ -378,7 +410,15 @@ impl NativeFunctionRunner {
                 registration.udf_type(),
             );
         };
-        let mut ctx = ActionCtx::<Rt>::with_callbacks(Some(self.clone()), callbacks, namespace);
+        let mut ctx = match log_buffer {
+            Some(buf) => ActionCtx::<Rt>::with_callbacks_and_log_buffer(
+                Some(self.clone()),
+                callbacks,
+                namespace,
+                buf,
+            ),
+            None => ActionCtx::<Rt>::with_callbacks(Some(self.clone()), callbacks, namespace),
+        };
         let started = Instant::now();
         let result = self
             .run_with_timeout(handler(&mut ctx, args), name, registration.timeout_ms)

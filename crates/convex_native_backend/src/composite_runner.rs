@@ -57,7 +57,10 @@ use convex_native::{
         query::QueryCtx as NativeQueryCtx,
     },
     HandlerFn,
+    LogBuffer,
+    LogLevel as NativeLogLevel,
     NativeFunctionRunner,
+    NativeLogLine,
     NativeSchema,
     Rt,
 };
@@ -230,6 +233,32 @@ async fn begin_tx_with_writes<RT: Runtime>(
 /// Shared helper: given a query/mutation `UdfType`, a handler, and
 /// the request metadata, drive the handler to completion and return
 /// the (final_tx, outcome, usage) tuple.
+/// Convert a native `LogBuffer` snapshot into the `common`
+/// `LogLine` shape the rest of the backend (log streaming, persistence
+/// of action logs) consumes. Level mapping is 1:1; messages wrap into
+/// a single-element `Vec<String>` since `NativeLogLine` carries one
+/// string, while `LogLineStructured` supports the JS idiom of
+/// `console.log(a, b, c)` with multiple messages.
+fn drain_log_buffer(buffer: &LogBuffer, now: UnixTimestamp) -> common::log_lines::LogLines {
+    let lines = buffer.snapshot();
+    let out: Vec<LogLine> = lines
+        .into_iter()
+        .map(|line| native_line_to_log_line(line, now))
+        .collect();
+    out.into()
+}
+
+fn native_line_to_log_line(line: NativeLogLine, now: UnixTimestamp) -> LogLine {
+    let NativeLogLine { level, message } = line;
+    let mapped = match level {
+        NativeLogLevel::Debug => common::log_lines::LogLevel::Debug,
+        NativeLogLevel::Info => common::log_lines::LogLevel::Info,
+        NativeLogLevel::Warn => common::log_lines::LogLevel::Warn,
+        NativeLogLevel::Error => common::log_lines::LogLevel::Error,
+    };
+    LogLine::new_developer_log_line(mapped, vec![message], now)
+}
+
 async fn dispatch_native<RT: Runtime + 'static>(
     database: &Database<RT>,
     native: &Arc<NativeFunctionRunner>,
@@ -278,13 +307,25 @@ async fn dispatch_native<RT: Runtime + 'static>(
     // Parse args into a ConvexObject the handler will deserialize.
     let args_obj = extract_single_object_arg(&arguments, "native function")?;
 
+    // Share one LogBuffer between the ctx and the post-handler drain
+    // so `ctx.log()` output ends up in the UdfOutcome's log_lines
+    // (and therefore the backend's log-streaming path).
+    let log_buffer = LogBuffer::new();
     let result = match (udf_type, &registration.handler) {
         (UdfType::Query, HandlerFn::Query(handler)) => {
-            let mut ctx = NativeQueryCtx::new(tx_as_rt, TableNamespace::Global);
+            let mut ctx = NativeQueryCtx::with_log_buffer(
+                tx_as_rt,
+                TableNamespace::Global,
+                log_buffer.clone(),
+            );
             handler(&mut ctx, args_obj).await
         },
         (UdfType::Mutation, HandlerFn::Mutation(handler)) => {
-            let mut ctx = NativeMutationCtx::new(tx_as_rt, TableNamespace::Global);
+            let mut ctx = NativeMutationCtx::with_log_buffer(
+                tx_as_rt,
+                TableNamespace::Global,
+                log_buffer.clone(),
+            );
             handler(&mut ctx, args_obj).await
         },
         (got, reg) => {
@@ -318,6 +359,8 @@ async fn dispatch_native<RT: Runtime + 'static>(
 
     let runtime_for_rng = database.runtime();
     let rng_seed: [u8; 32] = runtime_for_rng.rng().random();
+    let now_ts = runtime_for_rng.unix_timestamp();
+    let log_lines = drain_log_buffer(&log_buffer, now_ts);
     let outcome = UdfOutcome {
         path: path.for_logging(),
         arguments,
@@ -325,9 +368,9 @@ async fn dispatch_native<RT: Runtime + 'static>(
         observed_identity: false,
         rng_seed,
         observed_rng: false,
-        unix_timestamp: runtime_for_rng.unix_timestamp(),
+        unix_timestamp: now_ts,
         observed_time: false,
-        log_lines: vec![].into(),
+        log_lines,
         audit_log_lines: vec![].into(),
         journal: QueryJournal::new(),
         result: udf_outcome_result,

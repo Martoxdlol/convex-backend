@@ -144,11 +144,19 @@ on top of `udf::ActionCallbacks`:
   behaviour. Multi-UDF-per-request batching therefore sees earlier
   writes inside one `ApplicationFunctionRunner` call. Empty update
   sets skip the merge to avoid a round-trip through `tx.writes`.
-- **Log lines.** The composite builds a `UdfOutcome` with
-  `log_lines: vec![].into()`. The native `LogBuffer` that
-  `ctx.log()` fills is not yet drained into the outcome. Not a
-  correctness issue; it means `ctx.log()` output does not surface in
-  the backend's log-streaming path yet.
+- **Log lines.** The composite threads a shared `LogBuffer` into
+  the native ctx for queries / mutations, drains it after the
+  handler returns, and maps each `NativeLogLine` to a
+  `common::log_lines::LogLine` stamped with the runtime's current
+  `UnixTimestamp` before populating `UdfOutcome::log_lines`. So
+  `ctx.log()` output does reach the backend's log-streaming path
+  for queries and mutations. **Action log lines are still
+  outstanding**: the JS action path uses an
+  `mpsc::UnboundedSender<LogLine>` passed through `run_function`,
+  and threading that through
+  `run_action_with_callbacks_and_log_buffer` requires more
+  surgery; today native action `ctx.log()` writes land only in
+  the buffer owned by the ctx, which the runner doesn't forward.
 - **Observed flags.** `observed_identity`, `observed_rng`,
   `observed_time` are hard-coded `false`. The JS path tracks whether
   the UDF actually looked at identity/rng/time; native code could do
