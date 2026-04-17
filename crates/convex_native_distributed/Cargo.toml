@@ -36,6 +36,7 @@ tonic = { workspace = true }
 udf = { workspace = true }
 usage_tracking = { workspace = true }
 value = { workspace = true }
+vector = { workspace = true }
 
 [dev-dependencies]
 # Everything in [dependencies] is already visible to tests/examples;

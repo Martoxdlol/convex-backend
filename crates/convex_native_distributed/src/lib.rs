@@ -39,6 +39,7 @@ pub mod admission;
 pub mod admission_client;
 pub mod admission_server;
 pub mod backend_callbacks_client;
+pub mod backend_callbacks_server;
 pub mod client;
 pub mod conversions;
 pub mod function_runner_impl;

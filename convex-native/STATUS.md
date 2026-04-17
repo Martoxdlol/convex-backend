@@ -630,8 +630,41 @@ an action causes indirectly).
      propagate trace chains. Generates
      `pb::backend_callbacks::*`.
 
-4.2. **`BackendCallbackServer`.** Backend-side tonic impl
-     wrapping an `Arc<dyn udf::ActionCallbacks>`.
+4.2. ✓ **`BackendCallbackServer`.** Landed. New module
+     `convex_native_distributed::backend_callbacks_server`
+     wraps an `Arc<dyn udf::ActionCallbacks>` and implements
+     the `BackendCallbackService` tonic trait:
+
+     - `RunQuery` / `RunMutation` / `RunAction` →
+       `ActionCallbacks::execute_{query,mutation,action}`.
+     - `Schedule` / `CancelJob` →
+       `ActionCallbacks::{schedule_job,cancel_job}`.
+     - `StorageGetUrl` / `StorageDelete` →
+       `ActionCallbacks::{storage_get_url,storage_delete}`.
+     - `StorageStore` / `StorageGet` / `VectorSearch` /
+       `LookupFunctionHandle` / `CreateFunctionHandle` return
+       `Unimplemented`. Wiring each is additive as deployer
+       actions hit the path.
+
+     Identity-bytes decoding: an empty byte vec maps to
+     `Identity::system()` (the worker-side client sends empty
+     today). Non-empty bytes fail loudly with `Unimplemented`
+     so a stale client doesn't silently route under the system
+     principal. Full `convex_identity::Identity` decoding
+     lands with substep 4.4's worker-side identity forwarding.
+
+     Component-scoped callbacks also return `Unimplemented`
+     (only root-component routing is wired). The scaffold
+     carries the `component_path` string through the envelope
+     so grow-to-component is a one-line enum match change.
+
+     Cargo dep: adds `vector` (direct — previously transitive)
+     for the `PublicVectorSearchQueryResult` type signature
+     referenced in the `ActionCallbacks` trait impl test.
+
+     Tests: four unit tests pinning the delegation contract
+     for `RunMutation`, `Schedule`, `StorageGetUrl`, plus one
+     that pins the "non-empty identity → Unimplemented" guard.
 
 4.3. ✓ **`BackendCallbackClient`.** Landed. New module
      `convex_native_distributed::backend_callbacks_client`
