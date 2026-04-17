@@ -167,6 +167,21 @@ pub fn describe_pretty(
     serde_json::to_string_pretty(&v).unwrap_or_else(|_| "<serde error>".to_string())
 }
 
+/// Same as [`describe_pretty`] but also surfaces the cron registry.
+/// Mirrors the [`describe_json`] / [`describe_json_full`] split so
+/// standalone callers (i.e. those not going through
+/// [`crate::BuiltBackend::describe_pretty`]) can produce the full
+/// envelope when they're holding a `CronRegistry`.
+pub fn describe_pretty_full(
+    schema: Option<&DatabaseSchema>,
+    functions: Option<&NativeFunctionRegistry>,
+    router: Option<&HttpRouter>,
+    crons: Option<&CronRegistry>,
+) -> String {
+    let v = describe_json_full(schema, functions, router, crons);
+    serde_json::to_string_pretty(&v).unwrap_or_else(|_| "<serde error>".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     //! The `introspect::describe_json` envelope is consumed by dev
@@ -234,6 +249,33 @@ mod tests {
             serde_json::from_str(&pretty).expect("pretty output is valid JSON");
         let obj = parsed.as_object().expect("pretty output is an object");
         assert_eq!(obj.get("version"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn describe_pretty_full_surfaces_crons_block_when_registry_passed() {
+        // `describe_pretty` (3-arg) can't represent crons because its
+        // `describe_json` call passes `None`. The `_full` variant must
+        // surface the `crons` key when a registry is provided.
+        //
+        // The cron registry in this test is the inventory-collected
+        // live one (from every `#[convex::cron]` in the test binary);
+        // we don't care about its contents — only that the block
+        // appears when we pass `Some(&registry)` and is absent when we
+        // pass `None`.
+        let registry = CronRegistry::collect().expect("collect registry");
+        let pretty = describe_pretty_full(None, None, None, Some(&registry));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&pretty).expect("pretty output is valid JSON");
+        assert!(
+            parsed.as_object().unwrap().contains_key("crons"),
+            "crons section surfaces through the _full pretty variant",
+        );
+
+        // Without the registry, `describe_pretty_full(.., None)` must
+        // match the 3-arg variant (no crons key).
+        let pretty_no_crons = describe_pretty_full(None, None, None, None);
+        let parsed2: serde_json::Value = serde_json::from_str(&pretty_no_crons).unwrap();
+        assert!(!parsed2.as_object().unwrap().contains_key("crons"));
     }
 
     #[test]
