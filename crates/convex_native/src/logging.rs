@@ -166,4 +166,69 @@ mod tests {
         assert_eq!(snap[0].level, LogLevel::Warn);
         assert_eq!(snap[1].level, LogLevel::Error);
     }
+
+    #[test]
+    fn new_buffer_starts_empty() {
+        let buffer = LogBuffer::new();
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.len(), 0);
+        assert!(buffer.snapshot().is_empty());
+    }
+
+    #[test]
+    fn len_tracks_push_and_clear_resets() {
+        let buffer = LogBuffer::new();
+        let logger = Logger::new(&buffer);
+        logger.info("1");
+        logger.info("2");
+        logger.info("3");
+        assert_eq!(buffer.len(), 3);
+        assert!(!buffer.is_empty());
+        buffer.clear();
+        assert_eq!(buffer.len(), 0);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn clones_share_underlying_buffer() {
+        // `LogBuffer` wraps the storage in `Arc`, so a clone must see
+        // writes made through the original handle (and vice-versa).
+        // This pins the "cheap clone + shared state" contract the
+        // runner relies on: the ctx wrappers and the runner each hold
+        // a `LogBuffer` and the runner snapshots at the end.
+        let a = LogBuffer::new();
+        let b = a.clone();
+        Logger::new(&a).info("via a");
+        Logger::new(&b).info("via b");
+        assert_eq!(a.len(), 2);
+        assert_eq!(b.len(), 2);
+        let snap = b.snapshot();
+        assert_eq!(snap[0].message, "via a");
+        assert_eq!(snap[1].message, "via b");
+    }
+
+    #[test]
+    fn snapshot_is_a_copy_not_a_live_view() {
+        // Snapshots freeze the current contents; subsequent pushes
+        // must not retroactively appear in an older snapshot.
+        let buffer = LogBuffer::new();
+        Logger::new(&buffer).info("before");
+        let frozen = buffer.snapshot();
+        Logger::new(&buffer).info("after");
+        assert_eq!(frozen.len(), 1);
+        assert_eq!(frozen[0].message, "before");
+        assert_eq!(buffer.len(), 2, "underlying buffer kept growing");
+    }
+
+    #[test]
+    fn min_level_accessor_reports_configured_floor() {
+        // Confirms `with_min_level(...)` actually lands in the field
+        // returned by `min_level()` — a quiet getter can silently
+        // drift from the constructor if someone refactors the
+        // internal field name.
+        let default = LogBuffer::new();
+        assert_eq!(default.min_level(), LogLevel::Debug);
+        let warn_only = LogBuffer::with_min_level(LogLevel::Warn);
+        assert_eq!(warn_only.min_level(), LogLevel::Warn);
+    }
 }
