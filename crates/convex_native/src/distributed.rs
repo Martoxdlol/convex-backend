@@ -107,9 +107,7 @@ pub struct ExecuteRequest {
     pub execution_context: Option<ExecutionContext>,
 }
 
-/// Response a worker sends back. In the proto version this becomes
-/// `FunctionOutcome + FunctionFinalTransaction + usage stats`. Here
-/// it's the minimal shape the existing `ActionCtx`-driven path needs.
+/// Response a worker sends back.
 ///
 /// `log_lines` carries the worker's drained `ctx.log()` output
 /// in the pretty-string form `LogLine::to_pretty_strings` emits —
@@ -117,10 +115,16 @@ pub struct ExecuteRequest {
 /// alongside JS log lines without translation. Empty when the
 /// handler didn't log anything (the common case) or when the
 /// worker isn't configured to drain logs.
+///
+/// `final_tx` is the Phase-1 snapshot of the worker's transaction
+/// (see `FinalTxSummary`). Present for queries + mutations where
+/// the handler closed its transaction cleanly; `None` for actions
+/// and for handler errors.
 #[derive(Debug, Clone)]
 pub struct ExecuteResponse {
     pub result: Result<ConvexValue, String>,
     pub log_lines: Vec<String>,
+    pub final_tx: Option<FinalTxSummary>,
 }
 
 impl ExecuteResponse {
@@ -131,6 +135,7 @@ impl ExecuteResponse {
         Self {
             result,
             log_lines: Vec::new(),
+            final_tx: None,
         }
     }
 
@@ -140,6 +145,38 @@ impl ExecuteResponse {
         self.log_lines = lines;
         self
     }
+
+    /// Builder-style accessor for attaching the transaction
+    /// summary. `FunctionExecutionServer` uses this on the worker
+    /// side; client-side callers consume the summary through the
+    /// parsed response.
+    pub fn with_final_tx(mut self, final_tx: FinalTxSummary) -> Self {
+        self.final_tx = Some(final_tx);
+        self
+    }
+}
+
+/// Phase-1 shape of `function_runner::FunctionFinalTransaction` on
+/// the native side of the gRPC boundary. Mirrors the proto message
+/// `pb::function_execution::DistributedFinalTx` 1:1 so the
+/// conversions layer can move between them without losing fields.
+///
+/// Phase 2 of `convex-native/DISTRIBUTED_PLAN.md` grows this
+/// struct — and the matching proto message — with the full
+/// `FunctionReads` / `FunctionWrites` content the backend's
+/// Committer needs to validate OCC and stage writes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub struct FinalTxSummary {
+    /// Raw u64 representation of the `Timestamp` the worker opened
+    /// its transaction at.
+    pub begin_timestamp: u64,
+    /// Number of coalesced document updates the handler produced.
+    pub writes_count: u64,
+    /// Number of read intervals the handler accumulated. Not
+    /// "rows read" exactly — it's the count of `ReadSet` intervals,
+    /// which the backend uses as a coarse usage signal in Phase 2
+    /// until the full read-set wire format lands.
+    pub reads_count: u64,
 }
 
 /// Trait a worker implements to accept remote calls. The

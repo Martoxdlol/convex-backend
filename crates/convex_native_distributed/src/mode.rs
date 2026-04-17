@@ -17,17 +17,16 @@
 //! - `CONVEX_WORKER_ENDPOINTS` (conductor mode): comma-separated
 //!   list of gRPC URLs, e.g. `"http://host-a:4567,http://host-b:4567"`.
 //!   Empty list fails validation.
-//! - `CONVEX_WORKER_BIND_ADDR` (worker mode): the `host:port` the
-//!   worker should bind its gRPC server to. Defaults to
-//!   `0.0.0.0:4567` when unset.
+//! - `CONVEX_WORKER_BIND_ADDR` (worker mode): the `host:port` the worker should
+//!   bind its gRPC server to. Defaults to `0.0.0.0:4567` when unset.
 //!
 //! ## Phase-3 env-var shift (see `convex-native/DISTRIBUTED_PLAN.md`)
 //!
-//! - `CONVEX_MODE=conductor` + `CONVEX_WORKER_ENDPOINTS` go away.
-//!   The backend image replaces the standalone-conductor concept;
-//!   workers discover the backend via `CONVEX_BACKEND_ENDPOINT` and
-//!   register themselves over `WorkerAdmissionService`. The
-//!   helpers here stay for now so pre-Phase-3 tests keep passing.
+//! - `CONVEX_MODE=conductor` + `CONVEX_WORKER_ENDPOINTS` go away. The backend
+//!   image replaces the standalone-conductor concept; workers discover the
+//!   backend via `CONVEX_BACKEND_ENDPOINT` and register themselves over
+//!   `WorkerAdmissionService`. The helpers here stay for now so pre-Phase-3
+//!   tests keep passing.
 
 use std::{
     net::SocketAddr,
@@ -81,8 +80,8 @@ pub fn parse_worker_endpoints(raw: &str) -> anyhow::Result<Vec<String>> {
 pub fn read_worker_endpoints_from_env() -> anyhow::Result<Vec<String>> {
     let raw = std::env::var("CONVEX_WORKER_ENDPOINTS").map_err(|_| {
         anyhow::anyhow!(
-            "CONVEX_WORKER_ENDPOINTS must be set on the backend/dispatcher side \
-             (comma-separated gRPC URLs)"
+            "CONVEX_WORKER_ENDPOINTS must be set on the backend/dispatcher side (comma-separated \
+             gRPC URLs)"
         )
     })?;
     parse_worker_endpoints(&raw)

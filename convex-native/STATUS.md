@@ -18,9 +18,12 @@ active phase is.
 
 Framework-level pieces (derives, ctx surface, schema reflection,
 registry, introspection) are solid and reused. The distributed
-dispatch layer is being rebuilt per `DISTRIBUTED_PLAN.md` — Phase
-1 starts with a proto contract change (`ExecuteResponse` carries
-`FunctionFinalTransaction`, worker stops committing).
+dispatch layer is being rebuilt per `DISTRIBUTED_PLAN.md` —
+**Phase 1 (wire contract) has shipped**: `ExecuteResponse`
+carries a `DistributedFinalTx`, the worker no longer commits
+locally, and round-trip tests cover the native ↔ proto boundary.
+**Phase 2 (backend-side `FunctionRunner` impl)** is the next
+step.
 
 ---
 
@@ -122,35 +125,53 @@ Dockerfile.worker, worker-deployment.yaml, convex-worker.service are kept — th
 
 ## Active phase
 
-**Phase 1 — wire contract.** See `DISTRIBUTED_PLAN.md` §15.
+**Phase 1 — wire contract.** Shipped. Phase 2 (`FunctionRunner`
+trait impl + backend-side dispatch) is next.
 
-Deliverables (✓ = shipped, ○ = outstanding):
+### Phase 1 deliverables (all ✓ shipped)
 
 1. ✓ Extend `pb::function_execution::ExecuteRequest` with
-   `begin_timestamp_us` + `existing_writes_bytes`.
+   `begin_timestamp` + `existing_writes`.
 2. ✓ Extend `pb::function_execution::ExecuteResponse` with
-   `final_tx_bytes`.
-3. ○ Encoding for the `_bytes` blobs. The Phase 1 commit
-   reserved the fields but deferred the encoding format.
-   `FunctionFinalTransaction` and its transitive types
-   (`FunctionReads`, `ReadSet`, `TransactionReadSize`,
-   `DocumentUpdateWithPrevTs`) don't carry `serde` derives
-   today, so "write a postcard blob" isn't a one-liner. Two
-   ways forward:
-   - Add `serde` derives across the type graph and postcard-
-     encode. Touches `database`, `common`, `value`.
-   - Define dedicated proto messages for the sub-types. More
-     work now but the right shape for Phase 6 (JS interop).
-4. ○ `FunctionExecutionServer::run_query_inline` /
-   `run_mutation_inline` stop committing; return the
-   `FunctionFinalTransaction` in the response.
-5. ○ `DistributedFunctionRunner::execute` returns the
-   `FunctionFinalTransaction` alongside the result.
-6. ○ Round-trip test covering the full path.
+   `final_tx: Option<DistributedFinalTx>`.
+3. ✓ Encoding picked: dedicated proto sub-messages
+   (`DistributedFinalTx`, `ExistingWrites`). Chose this over
+   postcard-through-`bytes` because Phase 6 (JS interop) needs
+   the wire shape to be readable by a non-Rust client, and the
+   sub-messages can grow incrementally in Phase 2 without a
+   breaking change to the field number.
+4. ✓ `FunctionExecutionServer::run_query_inline` /
+   `run_mutation_inline` stop committing; they return a
+   `FinalTxSummary` on the native response, which
+   `conversions::to_proto_response` encodes as
+   `DistributedFinalTx`.
+5. ✓ `DistributedFunctionRunner::execute` returns the
+   `ExecuteResponse` whose `final_tx` field carries the summary
+   back to the dispatcher.
+6. ✓ Round-trip tests:
+   - `conversions::tests::response_final_tx_roundtrips_through_proto`
+     — native → proto → native with scalar assertions.
+   - `conversions::tests::response_without_final_tx_keeps_field_none`
+     — actions + handler errors leave the field absent on both
+     sides.
 
-Exit criteria: the mechanical plumbing of "worker produces
-reads/writes, returns them over the wire" is verified by a
-test. Backend-side integration (Phase 2) is the next step.
+### Phase 1 scope boundaries
+
+- `FinalTxSummary` carries scalars only today (`begin_timestamp`,
+  `writes_count`, `reads_count`). Phase 2 grows both the
+  `DistributedFinalTx` proto message and the
+  `FinalTxSummary` native struct to carry the full
+  `FunctionReads` + `FunctionWrites` content the backend's
+  Committer consumes. The field numbers already reserved in the
+  proto make that additive.
+- The worker's `Database<Rt>` is still *optional* on
+  `FunctionExecutionServer` (`.with_database(...)`). Phase 3 will
+  require it once the admission service knows every worker must
+  be able to open a read transaction.
+- `existing_writes` on the request is a placeholder counter. The
+  dispatcher never populates it today because the in-process path
+  in `local_backend` doesn't batch yet. Phase 2 wires the real
+  `FunctionWrites` content through.
 
 ---
 

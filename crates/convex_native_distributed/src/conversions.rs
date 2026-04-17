@@ -12,6 +12,7 @@ use std::time::Duration;
 use convex_native::distributed::{
     ExecuteRequest,
     ExecuteResponse,
+    FinalTxSummary,
 };
 use pb::function_execution as proto;
 use value::{
@@ -156,11 +157,7 @@ pub fn to_proto_response(native: &ExecuteResponse) -> proto::ExecuteResponse {
         user_execution_time: None,
         served_by_version: None,
         log_lines: native.log_lines.clone(),
-        // Phase 1: the distributed crate's native `ExecuteResponse`
-        // doesn't carry a `final_tx` today. `FunctionExecutionServer`
-        // populates the proto field directly when it runs a mutation;
-        // the native shape stays shallow.
-        final_tx: None,
+        final_tx: native.final_tx.map(final_tx_to_proto),
     }
 }
 
@@ -184,7 +181,31 @@ pub fn from_proto_response(p: &proto::ExecuteResponse) -> anyhow::Result<Execute
     Ok(ExecuteResponse {
         result,
         log_lines: p.log_lines.clone(),
+        final_tx: p.final_tx.as_ref().map(final_tx_from_proto),
     })
+}
+
+/// Encode a native `FinalTxSummary` as the wire message. Today a
+/// thin 1:1 map of the three scalar fields; Phase 2 grows both
+/// sides in lockstep to carry the full `FunctionReads` +
+/// `FunctionWrites` content the backend's Committer consumes.
+pub fn final_tx_to_proto(summary: FinalTxSummary) -> proto::DistributedFinalTx {
+    proto::DistributedFinalTx {
+        begin_timestamp: summary.begin_timestamp,
+        writes_count: summary.writes_count,
+        reads_count: summary.reads_count,
+    }
+}
+
+/// Inverse of `final_tx_to_proto`. Backend-side callers invoke this
+/// on the parsed `ExecuteResponse` so downstream code works off the
+/// tonic-free native shape.
+pub fn final_tx_from_proto(proto: &proto::DistributedFinalTx) -> FinalTxSummary {
+    FinalTxSummary {
+        begin_timestamp: proto.begin_timestamp,
+        writes_count: proto.writes_count,
+        reads_count: proto.reads_count,
+    }
 }
 
 fn duration_to_proto(d: Duration) -> prost_types::Duration {
@@ -343,6 +364,42 @@ mod tests {
         let p = to_proto_response(&native);
         let decoded = from_proto_response(&p).unwrap();
         assert_eq!(decoded.log_lines, vec!["[INFO] one", "[WARN] two"]);
+    }
+
+    #[test]
+    fn response_final_tx_roundtrips_through_proto() {
+        // `FinalTxSummary` is the native side of the wire message the
+        // backend's Phase-2 Committer consumes. Pin the three-field
+        // round-trip so a future proto expansion can't silently drop
+        // a field on the native-decoded side.
+        let summary = FinalTxSummary {
+            begin_timestamp: 42,
+            writes_count: 3,
+            reads_count: 7,
+        };
+        let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary);
+        let p = to_proto_response(&native);
+        let decoded_proto = p
+            .final_tx
+            .as_ref()
+            .expect("native final_tx was set → proto field must be populated");
+        assert_eq!(decoded_proto.begin_timestamp, 42);
+        assert_eq!(decoded_proto.writes_count, 3);
+        assert_eq!(decoded_proto.reads_count, 7);
+        let decoded_native = from_proto_response(&p).unwrap();
+        assert_eq!(decoded_native.final_tx, Some(summary));
+    }
+
+    #[test]
+    fn response_without_final_tx_keeps_field_none() {
+        // Handler errors + actions carry no tx → the proto's final_tx
+        // stays None. Tests downstream (Phase 2 dispatch) rely on this
+        // to decide whether to OCC-validate or just forward the result.
+        let native = ExecuteResponse::new(Err("boom".to_string()));
+        let p = to_proto_response(&native);
+        assert!(p.final_tx.is_none());
+        let decoded = from_proto_response(&p).unwrap();
+        assert_eq!(decoded.final_tx, None);
     }
 
     #[test]

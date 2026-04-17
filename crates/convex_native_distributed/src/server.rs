@@ -8,35 +8,37 @@
 //! tonic trait. A worker process instantiates this, binds it to a
 //! `tonic::transport::Server`, and serves backend traffic.
 //!
-//! ## What ships here today (pre-Phase-1)
+//! ## What ships here today (post Phase-1)
 //!
 //! - `health`: fully implemented, reports registry version (derived from the
 //!   `convex_native` crate version), `accepts_traffic` (false when the runner
 //!   is draining), `registered_functions`, and `in_flight`.
 //! - `execute` for `UdfType::Action`: dispatches via
-//!   `NativeFunctionRunner::run_action_with_callbacks` with
-//!   `NoopCallbacks`. A real `BackendCallbackService` implementation
-//!   lands in Phase 4 of `DISTRIBUTED_PLAN.md` so action sub-calls
-//!   route back to the backend's Committer.
-//! - `execute` for `UdfType::Query` / `UdfType::Mutation`: when the
-//!   server was constructed with `.with_database(db)`, dispatches
-//!   inline against a fresh `Transaction<Rt>` (queries drop the tx;
-//!   mutations commit via `commit_with_write_source`). **Phase 1
-//!   removes the inline commit** — mutations will produce a
-//!   `FunctionFinalTransaction` in the response and the backend
-//!   will commit through its single Committer.
-//! - `execute` for `UdfType::HttpAction`: `Unimplemented`. HTTP
-//!   actions use a different dispatch path (`HttpRouter`).
+//!   `NativeFunctionRunner::run_action_with_callbacks` with `NoopCallbacks`. A
+//!   real `BackendCallbackService` implementation lands in Phase 4 of
+//!   `DISTRIBUTED_PLAN.md` so action sub-calls route back to the backend's
+//!   Committer.
+//! - `execute` for `UdfType::Query` / `UdfType::Mutation`: when the server was
+//!   constructed with `.with_database(db)`, opens a fresh `Transaction<Rt>` at
+//!   the backend-supplied `begin_timestamp` (or `now_ts_for_reads()` when
+//!   pre-Phase-1 callers skip the field), runs the handler, and returns a
+//!   `FinalTxSummary` on the response. **Phase 1 removed the inline commit** —
+//!   the worker never calls `commit_with_write_source`; the backend's Committer
+//!   owns every durable write in Phase 2.
+//! - `execute` for `UdfType::HttpAction`: `Unimplemented`. HTTP actions use a
+//!   different dispatch path (`HttpRouter`).
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use common::types::UdfType;
+use common::types::{
+    Timestamp,
+    UdfType,
+};
 use convex_native::{
     NativeFunctionRunner,
     Rt,
 };
-use common::types::Timestamp;
 use database::Database;
 use keybroker::Identity;
 use pb::function_execution::{
@@ -81,16 +83,17 @@ impl FunctionExecutionServer {
         }
     }
 
-    /// Attach a worker-local database so the server can dispatch
-    /// queries and mutations. Today the worker commits locally
-    /// against this database because the wire protocol doesn't yet
-    /// carry read/write sets back to the backend.
+    /// Attach a worker-local database so the server can open a
+    /// `Transaction<Rt>` at the backend-supplied `begin_timestamp`
+    /// and run the handler against it.
     ///
-    /// Phase 1 of `convex-native/DISTRIBUTED_PLAN.md` changes this:
-    /// the worker produces a `FunctionFinalTransaction` and the
-    /// backend's Committer does the commit. Leaving the database
-    /// unattached keeps the query/mutation branches surfacing
-    /// `Unimplemented` until Phase 1 lands.
+    /// Phase 1 of `convex-native/DISTRIBUTED_PLAN.md` ships the
+    /// worker as read-only — it returns a `FinalTxSummary` on the
+    /// response (see `conversions::final_tx_to_proto`) and the
+    /// backend's Committer does the durable commit in Phase 2.
+    /// Leaving the database unattached keeps the query/mutation
+    /// branches surfacing `Unimplemented` (useful for tests
+    /// that only exercise the action path).
     pub fn with_database(mut self, database: Database<Rt>) -> Self {
         self.database = Some(database);
         self
@@ -186,16 +189,21 @@ impl FunctionExecutionService for FunctionExecutionServer {
                     },
                     _ => unreachable!(),
                 };
-                let native_response = convex_native::distributed::ExecuteResponse::new(
+                // Phase 1: worker reports the reads/writes summary back
+                // to the backend instead of committing locally. See
+                // `convex-native/DISTRIBUTED_PLAN.md` §15 Phase 1. The
+                // summary rides on the native `ExecuteResponse` so the
+                // proto encoding — and any future consumer of the
+                // native shape — picks it up through `to_proto_response`.
+                let mut native_response = convex_native::distributed::ExecuteResponse::new(
                     dispatch.result.map_err(|e| e.to_string()),
                 )
                 .with_log_lines(dispatch.log_lines);
+                if let Some(summary) = dispatch.final_tx {
+                    native_response = native_response.with_final_tx(summary);
+                }
                 let mut proto_resp = conversions::to_proto_response(&native_response);
                 proto_resp.served_by_version = Some(self.registry_version.clone());
-                // Phase 1: worker reports the reads/writes summary back
-                // to the backend instead of committing locally. See
-                // `convex-native/DISTRIBUTED_PLAN.md` §15 Phase 1.
-                proto_resp.final_tx = dispatch.final_tx;
                 Ok(Response::new(proto_resp))
             },
             UdfType::HttpAction => Err(Status::unimplemented(
@@ -222,12 +230,15 @@ impl FunctionExecutionService for FunctionExecutionServer {
 
 /// Bundle returned by the query / mutation dispatch helpers.
 /// Carries the handler result, drained log lines, and — when the
-/// handler closed its transaction cleanly — the `DistributedFinalTx`
-/// the worker reports to the backend.
+/// handler closed its transaction cleanly — the `FinalTxSummary`
+/// the worker reports to the backend. The summary hops through the
+/// native `ExecuteResponse` type on its way to the proto; keeping
+/// the bundle native here means server.rs never touches the
+/// wire-level `DistributedFinalTx` directly.
 struct InlineDispatch {
     result: anyhow::Result<value::ConvexValue>,
     log_lines: Vec<String>,
-    final_tx: Option<proto::DistributedFinalTx>,
+    final_tx: Option<convex_native::distributed::FinalTxSummary>,
 }
 
 /// Open a fresh transaction at `begin_ts` (or `now_ts_for_reads()`
@@ -242,7 +253,7 @@ async fn run_query_inline(
     begin_ts: Option<Timestamp>,
 ) -> InlineDispatch {
     let log_buffer = convex_native::LogBuffer::new();
-    let mut final_tx: Option<proto::DistributedFinalTx> = None;
+    let mut final_tx: Option<convex_native::distributed::FinalTxSummary> = None;
     let result = async {
         let ts = match begin_ts {
             Some(ts) => database.now_ts_for_reads().prior_ts(ts)?,
@@ -289,7 +300,7 @@ async fn run_mutation_inline(
     begin_ts: Option<Timestamp>,
 ) -> InlineDispatch {
     let log_buffer = convex_native::LogBuffer::new();
-    let mut final_tx: Option<proto::DistributedFinalTx> = None;
+    let mut final_tx: Option<convex_native::distributed::FinalTxSummary> = None;
     let result = async {
         let ts = match begin_ts {
             Some(ts) => database.now_ts_for_reads().prior_ts(ts)?,
@@ -322,14 +333,14 @@ async fn run_mutation_inline(
 
 /// Drain a finished transaction into the Phase-1 wire summary.
 /// Today only scalars (begin_ts, writes_count, reads_count); Phase
-/// 2 grows the `DistributedFinalTx` proto message to carry the full
-/// `FunctionReads` + `FunctionWrites` content the backend's
-/// Committer needs. Errors from `into_flat()` (nested transaction
-/// leftover) are swallowed into a zero writes count — for native
-/// handlers the tx is always flat at this point; a future invariant
-/// violation would show up as the backend rejecting the response
-/// at commit time under Phase 2 regardless.
-fn summarise_tx(tx: database::Transaction<Rt>) -> proto::DistributedFinalTx {
+/// 2 grows the `FinalTxSummary` / `DistributedFinalTx` pair to
+/// carry the full `FunctionReads` + `FunctionWrites` content the
+/// backend's Committer needs. Errors from `into_flat()` (nested
+/// transaction leftover) are swallowed into a zero writes count —
+/// for native handlers the tx is always flat at this point; a
+/// future invariant violation would show up as the backend
+/// rejecting the response at commit time under Phase 2 regardless.
+fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::FinalTxSummary {
     let begin_timestamp: u64 = (*tx.begin_timestamp()).into();
     let (reads, writes) = tx.into_reads_and_writes();
     let reads_count = reads.num_intervals() as u64;
@@ -337,7 +348,7 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> proto::DistributedFinalTx {
         .into_flat()
         .map(|flat| flat.into_coalesced_writes().count())
         .unwrap_or(0) as u64;
-    proto::DistributedFinalTx {
+    convex_native::distributed::FinalTxSummary {
         begin_timestamp,
         writes_count,
         reads_count,

@@ -87,21 +87,31 @@ cargo +nightly fmt -p convex_native_distributed
 
 ## Active phase
 
-**Phase 1 — wire contract.** See `DISTRIBUTED_PLAN.md` §15.
+**Phase 1 — wire contract.** Shipped; see
+`../../convex-native/STATUS.md` for the full deliverable list.
 
-1. Extend `ExecuteRequest` with `begin_timestamp` + `existing_writes`.
-2. Extend `ExecuteResponse` with `final_tx: Option<FunctionFinalTransaction>`.
-3. Proto ↔ native conversions for `FunctionReads` / `FunctionWrites`
-   / `FunctionFinalTransaction`.
-4. `FunctionExecutionServer::run_{query,mutation}_inline` stop
-   committing; return `FunctionFinalTransaction` in the response.
-5. `DistributedFunctionRunner::execute` returns the
-   `FunctionFinalTransaction` alongside the result.
-6. Round-trip test covering the whole path.
+Recap of what landed:
 
-Exit criteria: the mechanical plumbing of "worker produces
-reads/writes, returns them over the wire" is verified by a test.
-Backend-side integration (Phase 2) is next.
+1. ✓ `ExecuteRequest.begin_timestamp` + `ExecuteRequest.existing_writes`
+   (sub-message placeholder for Phase 2 to grow).
+2. ✓ `ExecuteResponse.final_tx: Option<DistributedFinalTx>`.
+3. ✓ Conversions: `conversions::final_tx_to_proto` /
+   `final_tx_from_proto` move between proto `DistributedFinalTx`
+   and native `convex_native::distributed::FinalTxSummary`.
+4. ✓ `FunctionExecutionServer::run_{query,mutation}_inline` no
+   longer commit; they return a `FinalTxSummary` on the native
+   response. `summarise_tx` drains the worker's `Transaction<Rt>`
+   into that summary.
+5. ✓ `DistributedFunctionRunner::execute` surfaces the native
+   `ExecuteResponse` (with its `final_tx`) to the dispatcher.
+6. ✓ Round-trip tests:
+   - `conversions::tests::response_final_tx_roundtrips_through_proto`
+   - `conversions::tests::response_without_final_tx_keeps_field_none`
+
+**Phase 2 — `impl FunctionRunner<RT> for DistributedFunctionRunner`.**
+Next step. See `DISTRIBUTED_PLAN.md` §15 Phase 2. The
+`DistributedFinalTx` / `FinalTxSummary` pair grows to carry full
+`FunctionReads`/`FunctionWrites` content in step with the impl.
 
 ## Phases 2..7
 
