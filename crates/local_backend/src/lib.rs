@@ -231,21 +231,23 @@ pub async fn make_app(
     //
     //   - `standalone` (default): HTTP only.
     //   - `worker`: HTTP + a tonic `FunctionExecutionService` bound to
-    //     `CONVEX_WORKER_BIND_ADDR`, so a remote conductor can dispatch native
+    //     `CONVEX_WORKER_BIND_ADDR`, so a remote caller can dispatch native
     //     calls to this process while still using the same Database as the HTTP
-    //     path.
-    //   - `conductor`: rejected — a conductor-only role would still spin up the
-    //     local Database, which defeats the topology. Use the dedicated
-    //     `convex_native_distributed::examples/conductor` binary for that shape.
+    //     path. This is a pre-Phase-1 shape; see
+    //     convex-native/DISTRIBUTED_PLAN.md for the target architecture
+    //     (backend coordinates commits; worker stops committing locally).
+    //   - `conductor`: rejected. The standalone-conductor concept is
+    //     superseded by the prebuilt backend image described in
+    //     DISTRIBUTED_PLAN.md Phase 5.
     let convex_mode = convex_native_distributed::read_mode_from_env();
     tracing::info!("convex-local-backend CONVEX_MODE detected: {convex_mode:?}");
     use convex_native::distributed::ConvexMode;
     match convex_mode {
         ConvexMode::Standalone | ConvexMode::Worker => {},
         ConvexMode::Conductor => anyhow::bail!(
-            "convex-local-backend refuses CONVEX_MODE=conductor: the conductor role doesn't own a \
-             Database, but this binary always boots one. Use the convex_native_distributed \
-             examples/conductor binary for conductor-only deployments."
+            "convex-local-backend refuses CONVEX_MODE=conductor: the standalone-conductor concept \
+             is removed in favour of the backend image described in \
+             convex-native/DISTRIBUTED_PLAN.md. Run in `standalone` or `worker` mode."
         ),
     }
 
@@ -314,8 +316,8 @@ pub async fn make_app(
     // In Worker mode, also expose a tonic `FunctionExecutionService`
     // on `CONVEX_WORKER_BIND_ADDR`. Queries and mutations arriving
     // over gRPC execute inline against the same `Database` the HTTP
-    // path uses, so a conductor and a direct HTTP client see one
-    // consistent read timeline. The server drains on the same
+    // path uses, so a remote caller and a direct HTTP client see
+    // one consistent read timeline. The server drains on the same
     // `zombify_rx` broadcast the HTTP server listens on, so Ctrl-C /
     // `/preempt` stops accepting new RPCs, lets in-flight calls
     // finish, and tears down alongside HTTP.

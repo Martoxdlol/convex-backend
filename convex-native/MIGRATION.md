@@ -421,16 +421,17 @@ it at startup so misconfigured crons crash the binary loudly.
 ## Deploying at scale
 
 JS Convex runs one process per deployment. The native runtime
-supports two topologies:
+targets two topologies:
 
-- **Standalone** (default, `CONVEX_MODE` unset or `standalone`):
-  single all-in-one binary. Same shape as JS.
-- **Worker + conductor** (`CONVEX_MODE=worker` +
-  `CONVEX_WORKER_BIND_ADDR` on workers; `CONVEX_MODE=conductor` +
-  `CONVEX_WORKER_ENDPOINTS` on the conductor): P2C load balancing
-  with single-retry failover and an optional
-  `min_registry_version` floor for rolling deploys. See
-  `QUICKSTART.md` for the shell + Rust snippets.
+- **Monolith** (`STANDALONE.md`): `local_backend` linked as a
+  library with your functions. Same process owns HTTP, the
+  Database, and the native registry. Works today.
+- **Distributed** (`DISTRIBUTED_PLAN.md`): one prebuilt
+  `getconvex/convex-backend` image coordinates OCC and
+  subscriptions; a pool of workers runs your native handlers and
+  returns reads / writes over gRPC. Deploy = roll the worker pool.
+  Under active development — see `STATUS.md` for the current
+  phase.
 
 ## Things that aren't covered here yet
 
@@ -442,13 +443,6 @@ supports two topologies:
 - **Client SDK codegen.** JS generates `_generated/api.d.ts`;
   native exposes marker types (`GetByEmail`, `SendWelcomeArgs`)
   as the typed reference surface. There's no codegen step.
-- **Unified `convex-local-backend` with `CONVEX_MODE` switching
-  (partial).** Standalone and Worker roles both run from
-  `convex-local-backend` now: `CONVEX_MODE=worker` boots the usual
-  HTTP service **and** a tonic `FunctionExecutionService` on
-  `CONVEX_WORKER_BIND_ADDR`, sharing the same `Database<Rt>`.
-  Ctrl-C / `/preempt` drains both together. Conductor mode is still
-  rejected from `convex-local-backend` (a conductor doesn't own a
-  `Database`, but this binary always boots one); use the dedicated
-  `convex_native_distributed::examples::conductor` binary for that
-  shape.
+- **Distributed topology.** Target architecture in
+  `DISTRIBUTED_PLAN.md`; `STATUS.md` tracks what's shipped. The
+  monolith path is what actually runs end-to-end today.

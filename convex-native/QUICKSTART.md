@@ -349,69 +349,28 @@ when the composite is built with `.with_file_storage(fs)`.
 
 ## Deploying in a distributed topology
 
-For production split deployments (a **conductor** process dispatches
-function calls over gRPC to a pool of identical **worker** binaries)
-use `crates/convex_native_distributed/`. The two runnable example
-binaries in that crate are the template:
+The target distributed architecture is described in
+`DISTRIBUTED_PLAN.md` (read that first). In short: one prebuilt
+**backend** image coordinates OCC, subscriptions, committing; a
+pool of **workers** (the image you build from your crate) executes
+your native handlers and returns reads / writes to the backend
+over gRPC.
 
-```sh
-# Worker: serves FunctionExecutionService on a port.
-CONVEX_MODE=worker CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567 \
-    cargo run -p convex_native_distributed --example worker
+**Status (this file is a quickstart, not a status tracker).**
+The phase roadmap in `DISTRIBUTED_PLAN.md` §15 is being delivered
+top-down; see `STATUS.md` for which pieces are actually shipped.
+Until the roadmap lands, the canonical way to run a complete
+native Convex app is **Topology A — monolith** (`local_backend`
+linked as a library with your functions). See `STANDALONE.md`.
 
-# Conductor: probes each worker's health and exits.
-CONVEX_MODE=conductor \
-    CONVEX_WORKER_ENDPOINTS="http://worker-a:4567,http://worker-b:4567" \
-    cargo run -p convex_native_distributed --example conductor
-```
-
-Programmatic usage from your own binary:
-
-```rust
-use convex_native_distributed::{
-    build_conductor_runner,
-    build_worker_server,
-    read_mode_from_env,
-    read_worker_bind_addr_from_env,
-    read_worker_endpoints_from_env,
-};
-
-match read_mode_from_env() {
-    ConvexMode::Worker => {
-        let addr = read_worker_bind_addr_from_env()?;
-        let native = Arc::new(NativeFunctionRunner::from_inventory()?);
-        let (mut builder, service) = build_worker_server(native);
-        // .with_database(db) on the FunctionExecutionServer enables
-        // query/mutation dispatch against a local tx.
-        builder.add_service(service).serve(addr).await?;
-    },
-    ConvexMode::Conductor => {
-        let endpoints = read_worker_endpoints_from_env()?;
-        let runner = build_conductor_runner(&endpoints).await?
-            .with_min_registry_version("1.2.0")  // Phase 4.7 floor
-            .with_failover(true);
-        // ... dispatch via runner.execute(req, udf_type).await ...
-    },
-    ConvexMode::Standalone => {
-        // Same binary you'd run in single-node mode.
-    },
-}
-```
-
-`convex-local-backend` now handles two of the three modes directly:
-- `CONVEX_MODE=standalone` (default): HTTP only.
-- `CONVEX_MODE=worker`: HTTP **plus** a tonic
-  `FunctionExecutionService` on `CONVEX_WORKER_BIND_ADDR` wired to
-  the same `Database<Rt>` the HTTP path uses. Drains gracefully on
-  Ctrl-C / `/preempt` alongside HTTP.
-- `CONVEX_MODE=conductor`: rejected — a conductor doesn't own a
-  Database, but this binary always boots one. Run
-  `convex_native_distributed::examples::conductor` instead.
+For the worker-side binary template (already approximately the
+right shape for the target architecture), see
+`examples/deploy/docker/Dockerfile.worker`.
 
 ## What's not yet wired
 
-**`STATUS.md` is authoritative** and carries effort estimates. In
-brief:
+**`STATUS.md` is authoritative** and tracks the active phase of
+`DISTRIBUTED_PLAN.md`. In brief, at the framework level:
 
 - Document-shape validation (`table_definition()` currently emits
   `document_type: None`).
@@ -421,9 +380,10 @@ brief:
   isn't available directly on an action — route through
   `ctx.run_query(...)`. Query sub-calls inside one action already
   share a pinned read timestamp.
-- `CONVEX_MODE=conductor` stays behind
-  `convex_native_distributed::examples::conductor` (the conductor
-  role doesn't boot a Database).
+
+At the distributed level: Phase 1 of `DISTRIBUTED_PLAN.md` (wire
+contract — worker returns `FunctionFinalTransaction` instead of
+committing) is the active work; Phases 2–7 are not started.
 
 Non-indexed filters (`.eq(Field, v)` without a preceding
 `.with_index(...)`) **are** supported: they lower to a
