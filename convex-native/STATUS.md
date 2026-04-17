@@ -789,12 +789,73 @@ topology working in production — a real deployer registers
 against its real `Database`, and the chain in this repo's
 source code has no other missing links.
 
-## Phases 5..7 — not started
+## Phase 5 — active, decomposed into concrete substeps
+
+`DISTRIBUTED_PLAN.md` §15 Phase 5: publish a prebuilt
+`getconvex/convex-backend` container image so deployers stop
+rebuilding the backend every time their code changes. The
+backend image carries no deployer-specific inventory; workers
+supply everything at admission time.
+
+5.1. ✓ **Backend Dockerfile + empty-registry boot.** Landed.
+     New file `convex-native/examples/deploy/docker/Dockerfile.backend`
+     produces a distributed-topology backend image built on
+     the existing `convex-local-backend` binary. Key shape:
+
+     - Defaults `CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678` so
+       `docker run` without extra env vars already serves
+       the admission port.
+     - Exposes `3210` (public HTTP + WebSocket), `3211`
+       (dashboard/admin), `5678` (WorkerAdmissionService).
+     - Labels the image with
+       `org.opencontainers.image.description` pointing at
+       the Phase-5 topology.
+     - Uses the same cargo-chef dependency-caching pattern as
+       the self-hosted Dockerfile so local iteration stays
+       fast.
+     - Boots cleanly with an empty native registry (the
+       `NativeFunctionRunner::from_inventory()` call on an
+       empty inventory returns an empty registry, already
+       pinned by the Phase-3 churn tests).
+
+     Docs: `DEPLOYMENT.md` — new "Bringing up Topology B
+     locally" section shows the `docker build` + `docker run`
+     flow end-to-end (backend + worker on the same Docker
+     network).
+
+5.2. **`local_backend` strips inventory when present.**
+     Optional safety net. Today `NativeFunctionRunner::from_inventory()`
+     picks up every `#[convex::*]`-decorated handler linked
+     into the backend binary. For the distributed topology
+     the backend binary shouldn't link any, but a deployer
+     might accidentally pull in `convex_native` as a
+     transitive dep. A follow-up substep adds a
+     `CONVEX_REFUSE_NATIVE_HANDLERS=1` opt-in that errors at
+     boot when the backend has non-empty native registry —
+     catches the accidental-link case in CI.
+
+5.3. **CI / release pipeline.** Push tagged images
+     (`getconvex/convex-backend:X.Y.Z`) to GHCR on release
+     tag. Pairs with the existing worker image publish
+     pipeline. Owned by release tooling rather than the Rust
+     source tree.
+
+5.4. **k8s manifest for the backend.** Deployment + Service
+     + PVC spec in
+     `convex-native/examples/deploy/kubernetes/backend-deployment.yaml`.
+     The existing `worker-deployment.yaml` covers the
+     worker-side shape.
+
+Exit criteria: a deployer with zero existing Convex
+infrastructure can `docker pull getconvex/convex-backend:X.Y.Z`,
+build their worker image, and roll the pool — no rebuild of
+the backend. Substep 5.1 proves the shape works; 5.2–5.4 are
+CI + k8s ergonomics.
+
+## Phases 6..7 — not started
 
 See `DISTRIBUTED_PLAN.md` §15 for the full breakdown.
 
-- **Phase 5**: prebuilt `getconvex/convex-backend` container
-  image; deployer ships only worker images.
 - **Phase 6**: JS interop (`WorkerKind::JAVASCRIPT` in the
   admission envelope).
 - **Phase 7**: operator tooling — pool introspection, inventory

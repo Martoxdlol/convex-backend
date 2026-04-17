@@ -36,7 +36,8 @@ requirement the new plan is built around.
 
 ### Topology B — Backend + dynamic worker pool (DISTRIBUTED_PLAN.md)
 
-**In flight.** Phase 1 not yet started.
+**Mostly landed.** Phases 1–4 complete; Phase 5 (prebuilt image
++ release pipeline) is in progress.
 
 Target shape:
 
@@ -169,14 +170,68 @@ Plus new in Phase 3:
   mismatch).
 - Inventory diff log on registry-version changes.
 
+## Bringing up Topology B locally (post Phase 5.1)
+
+The Phase-5 backend image ships at
+`convex-native/examples/deploy/docker/Dockerfile.backend`. Pair
+it with the existing `Dockerfile.worker` to run the distributed
+topology end-to-end on a single host for a smoke-test.
+
+```sh
+# 1. Build the prebuilt backend image once per release.
+docker build \
+  -f convex-native/examples/deploy/docker/Dockerfile.backend \
+  -t getconvex/convex-backend:dev .
+
+# 2. Build your worker image (it links your `#[convex::*]`
+#    registrations).
+docker build \
+  -f convex-native/examples/deploy/docker/Dockerfile.worker \
+  -t myco/my-app-worker:dev .
+
+# 3. Create a user-defined network so the worker can dial the
+#    backend by name.
+docker network create convex-net
+
+# 4. Boot the backend — it exposes the admission port by
+#    default (0.0.0.0:5678).
+docker run -d --name convex-backend --network convex-net \
+  -p 3210:3210 -p 5678:5678 \
+  getconvex/convex-backend:dev
+
+# 5. Boot the worker pointing at the backend.
+docker run -d --name convex-worker-a --network convex-net \
+  -e CONVEX_BACKEND_ENDPOINT=http://convex-backend:5678 \
+  -e CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567 \
+  -p 4568:4567 \
+  myco/my-app-worker:dev
+
+# 6. Verify. Logs on the backend show the worker registering +
+#    its advertised function names.
+docker logs convex-backend | grep 'admitted worker'
+```
+
+Scale out by running additional worker containers — the pool
+admits them dynamically. Drop workers by `docker stop`-ing them;
+the admission stream closes and the pool retires the worker
+automatically.
+
 ## What's not here yet
 
-- A deployer-facing "bring up a minimal stack" tutorial. Coming
-  with Phase 3 when the admission protocol is real.
-- Dockerfile + k8s manifest for the *backend* image (Phase 5
-  deliverable).
+- A deployer-facing "bring up a minimal stack" tutorial with a
+  real-world schema + handlers (this file gives the skeleton;
+  a fuller walkthrough lands with the Phase 5.3 CI/release
+  polish).
+- Published `getconvex/convex-backend:X.Y.Z` tagged image on a
+  public registry. CI/release pipeline is the remaining
+  Phase-5 deliverable.
+- k8s manifest for the backend image. The existing
+  `worker-deployment.yaml` in
+  `convex-native/examples/deploy/kubernetes/` covers the
+  worker-side shape; the backend Deployment + Service + PVC
+  manifest lands with the CI/release push.
 - Migration guide from Topology A to Topology B. Will land when
-  Topology B is stable (after Phase 4).
+  CI publishes the first tagged image.
 
 ## Cross-references
 
