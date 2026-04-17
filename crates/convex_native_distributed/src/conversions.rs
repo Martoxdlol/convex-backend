@@ -93,6 +93,12 @@ pub fn to_proto_request(
         timeout: native.timeout.map(duration_to_proto),
         execution_context: native.execution_context.clone().map(Into::into),
         min_registry_version: native.min_registry_version.clone(),
+        // Phase 1: backend will populate these when it dispatches
+        // through `impl FunctionRunner` (Phase 2). Today the
+        // composite/in-process path still routes natively so
+        // `to_proto_request` just propagates None.
+        begin_timestamp_us: None,
+        existing_writes_bytes: None,
     })
 }
 
@@ -150,6 +156,11 @@ pub fn to_proto_response(native: &ExecuteResponse) -> proto::ExecuteResponse {
         user_execution_time: None,
         served_by_version: None,
         log_lines: native.log_lines.clone(),
+        // Phase 1: the distributed crate's native `ExecuteResponse`
+        // doesn't carry a `final_tx` today. `FunctionExecutionServer`
+        // populates the proto field directly when it runs a mutation;
+        // the native shape stays shallow.
+        final_tx_bytes: None,
     }
 }
 
@@ -341,6 +352,7 @@ mod tests {
             user_execution_time: None,
             served_by_version: None,
             log_lines: vec![],
+            final_tx_bytes: None,
         };
         assert!(from_proto_response(&p).is_err());
     }

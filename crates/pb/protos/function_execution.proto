@@ -73,6 +73,30 @@ message ExecuteRequest {
   // a rolling update; if the worker is older than
   // `min_registry_version`, it should reject with VERSION_MISMATCH.
   optional string min_registry_version = 8;
+
+  // Phase 1 of DISTRIBUTED_PLAN.md: the timestamp the backend picked
+  // for this function's read snapshot. The worker opens its read
+  // transaction at this ts rather than inferring one locally, so
+  // the backend's Committer can validate reads / writes against a
+  // known snapshot point at commit time. Unit: microseconds since
+  // the Unix epoch; matches `Timestamp`'s on-disk representation.
+  //
+  // Absent for action calls (actions don't take a read snapshot) and
+  // for pre-Phase-1 callers that haven't been upgraded yet — the
+  // worker falls back to `database.now_ts_for_reads()` in that case.
+  optional uint64 begin_timestamp_us = 9;
+
+  // Phase 1: writes from earlier UDFs in the same backend request
+  // that haven't been committed yet. When the backend batches
+  // multiple UDFs into one ApplicationFunctionRunner invocation,
+  // each UDF after the first needs to see earlier UDFs' writes as
+  // part of its transaction. `existing_writes_bytes` carries these
+  // pending writes as an opaque blob the worker passes to
+  // `Transaction::merge_writes` before dispatch.
+  //
+  // Encoding is set by the backend/worker version pair; today
+  // Phase 1 ships with a postcard-serialized `FunctionWrites`.
+  optional bytes existing_writes_bytes = 10;
 }
 
 message ExecuteResponse {
@@ -98,6 +122,24 @@ message ExecuteResponse {
   // like outcome.LogLine so the backend can emit them alongside
   // JS log lines without translation.
   repeated string log_lines = 4;
+
+  // Phase 1 of DISTRIBUTED_PLAN.md: reads + writes the worker
+  // observed during this query or mutation. Carries the information
+  // the backend's Committer needs to validate OCC and stage the
+  // writes against its Database — the worker no longer commits
+  // locally.
+  //
+  // Absent for:
+  //   - actions (no enclosing transaction);
+  //   - pre-Phase-1 responses from workers still on the old
+  //     shape (transitional — these workers commit locally, and
+  //     the backend's dispatch path refuses `final_tx == None` on
+  //     mutations once Phase 2 lands);
+  //   - handler errors where the transaction was never closed.
+  //
+  // Encoding is set by the backend/worker version pair; today
+  // Phase 1 ships with a postcard-serialized `FunctionFinalTransaction`.
+  optional bytes final_tx_bytes = 5;
 }
 
 message HealthRequest {
