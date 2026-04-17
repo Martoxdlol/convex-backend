@@ -2341,6 +2341,7 @@ dependencies = [
  "rand 0.9.4",
  "serde_json",
  "tokio",
+ "tracing",
  "udf",
  "usage_tracking",
  "value",

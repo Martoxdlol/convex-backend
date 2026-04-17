@@ -35,6 +35,7 @@
 mod callbacks_adapter;
 mod composite_runner;
 mod native_resolver;
+mod native_schema;
 
 pub use callbacks_adapter::BackendCallbacks;
 pub use composite_runner::CompositeFunctionRunner;
@@ -42,3 +43,4 @@ pub use native_resolver::{
     install_native_resolver,
     NativeRegistryResolver,
 };
+pub use native_schema::publish_native_schema;

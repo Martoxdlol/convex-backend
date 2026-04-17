@@ -277,6 +277,11 @@ pub async fn make_app(
     if !native_runner.is_empty() {
         convex_native_backend::install_native_resolver((*native_runner).clone());
     }
+    // Note: native schema publication happens AFTER
+    // `Application::new` below, because the `SchemaWorker` that
+    // validates the pending schema is only started inside
+    // `Application::new`. See the block after `Application::new` for
+    // the actual call and rationale.
     // Substep 5.2 of `convex-native/DISTRIBUTED_PLAN.md`: when
     // `CONVEX_REFUSE_NATIVE_HANDLERS=1` is set, the backend
     // binary must carry no `#[convex::*]` registrations. The
@@ -394,6 +399,35 @@ pub async fn make_app(
         oidc_http_client,
     )
     .await?;
+
+    // Publish the inventory-declared `NativeSchema` into the root
+    // component's `_schemas` table and block until the schema is
+    // Active + every index has finished backfilling. Idempotent —
+    // second boots that see an identical active schema are no-ops.
+    //
+    // The call blocks on purpose: a native worker that starts
+    // answering traffic before its indexes are enabled returns
+    // "index X is currently backfilling and not available to query
+    // yet" to clients, which looks like a broken deployment.
+    // Worker readiness must not lead schema readiness. In Kubernetes
+    // and similar, the deployment's readiness probe polls the HTTP
+    // server; gating HTTP behind `publish_native_schema` is how we
+    // keep the probe from flipping to Ready before indexes are live.
+    // For a fresh sqlite DB this costs milliseconds; for larger
+    // datasets the wait scales with backfill time.
+    //
+    // Placement: after `Application::new` (which starts the
+    // `SchemaWorker` that validates our pending schema) and before
+    // the HTTP server starts accepting connections (main.rs does
+    // that *after* `make_app` returns).
+    //
+    // Without this, native queries that rely on
+    // `#[convex(index(...))]` indexes fail with "Index
+    // <table>.<name> not found" because the `_indexes` rows are
+    // only ever written through `apply_config`, which a pure-native
+    // deployment never calls. See
+    // `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md` follow-ups.
+    convex_native_backend::publish_native_schema(&database).await?;
 
     let origin = config.convex_origin_url()?;
     let instance_name = config.name();
