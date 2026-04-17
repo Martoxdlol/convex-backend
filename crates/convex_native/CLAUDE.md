@@ -112,6 +112,11 @@ the offending `quote! { ... }` block.
 
 `README.md` tracks this authoritatively. One-line summary: Phase
 1/2/4/5 complete; Phase 3 shipped at the crate level (3.1–3.6)
-via `convex_native_distributed`. Outstanding: a unified
-`convex-local-backend` that picks its topology based on
-`CONVEX_MODE` alone (today the operator picks the binary).
+via `convex_native_distributed`, and `convex-local-backend` now
+accepts `CONVEX_MODE=standalone` (default) or
+`CONVEX_MODE=worker` (adds a tonic `FunctionExecutionService`
+beside the HTTP server, sharing the same Database, draining on
+Ctrl-C together). Outstanding: `CONVEX_MODE=conductor` still
+requires the dedicated `convex_native_distributed::examples::conductor`
+binary — a conductor-only role doesn't fit a binary that always
+boots a local `Database`.
