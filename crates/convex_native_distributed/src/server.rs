@@ -240,7 +240,7 @@ async fn run_mutation_inline(
 /// set is visible); the worker is just checking its own tag.
 fn version_at_least(have: &str, want: &str) -> bool {
     fn parts(s: &str) -> Vec<u64> {
-        s.split(|c| c == '.' || c == '-' || c == '+')
+        s.split(['.', '-', '+'])
             .filter_map(|p| p.parse::<u64>().ok())
             .collect()
     }
