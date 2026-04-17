@@ -93,6 +93,7 @@ use model::{
 use parking_lot::RwLock;
 use rand::Rng;
 use sync_types::{
+    types::SerializedArgs,
     CanonicalizedModulePath,
     Timestamp,
 };
@@ -111,6 +112,9 @@ use usage_tracking::{
 };
 use value::{
     identifier::Identifier,
+    serialized_args_ext::SerializedArgsExt,
+    ConvexObject,
+    ConvexValue,
     JsonPackedValue,
     TableNamespace,
 };
@@ -176,6 +180,30 @@ impl<RT: Runtime> CompositeFunctionRunner<RT> {
             .read()
             .as_ref()
             .and_then(Weak::upgrade)
+    }
+}
+
+/// Decode the first entry of `SerializedArgs` into a `ConvexObject`.
+///
+/// Native handlers accept exactly one positional argument — a single
+/// object — whereas `SerializedArgs` carries a JSON-encoded array.
+/// We pull out the first element, convert it to a `ConvexValue`, and
+/// require it to be an object. Used by both the query/mutation and
+/// action dispatch paths; `label` is baked into the error message so
+/// callers can say "native function" vs "native action".
+fn extract_single_object_arg(
+    arguments: &SerializedArgs,
+    label: &str,
+) -> anyhow::Result<ConvexObject> {
+    let raw_args = arguments.clone().into_args()?;
+    let first = raw_args
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("{label}: missing args object"))?;
+    let cv: ConvexValue = first.try_into()?;
+    match cv {
+        ConvexValue::Object(obj) => Ok(obj),
+        _ => anyhow::bail!("{label} args must be a single object"),
     }
 }
 
@@ -248,22 +276,7 @@ async fn dispatch_native<RT: Runtime + 'static>(
         .ok_or_else(|| anyhow::anyhow!("native function disappeared from registry"))?;
 
     // Parse args into a ConvexObject the handler will deserialize.
-    let args_obj = {
-        use value::{
-            serialized_args_ext::SerializedArgsExt,
-            ConvexValue,
-        };
-        let raw_args = arguments.clone().into_args()?;
-        let first = raw_args
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("native function: missing args object"))?;
-        let cv: ConvexValue = first.try_into()?;
-        match cv {
-            ConvexValue::Object(obj) => obj,
-            _ => anyhow::bail!("native function args must be a single object"),
-        }
-    };
+    let args_obj = extract_single_object_arg(&arguments, "native function")?;
 
     let result = match (udf_type, &registration.handler) {
         (UdfType::Query, HandlerFn::Query(handler)) => {
@@ -359,22 +372,7 @@ async fn dispatch_native_action<RT: Runtime>(
     let inert_identity = identity.clone().into();
     let usage_tracker = FunctionUsageTracker::new();
 
-    let args_obj = {
-        use value::{
-            serialized_args_ext::SerializedArgsExt,
-            ConvexValue,
-        };
-        let raw_args = arguments.clone().into_args()?;
-        let first = raw_args
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("native action: missing args object"))?;
-        let cv: ConvexValue = first.try_into()?;
-        match cv {
-            ConvexValue::Object(obj) => obj,
-            _ => anyhow::bail!("native action args must be a single object"),
-        }
-    };
+    let args_obj = extract_single_object_arg(&arguments, "native action")?;
 
     let mut callbacks_builder = BackendCallbacks::<RT>::with_native(
         action_callbacks,
@@ -602,3 +600,83 @@ where
 // Silence unused imports in non-dispatch paths.
 #[allow(dead_code)]
 fn _unused(_: FunctionReads, _: DocumentUpdateWithPrevTs) {}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde_json::json;
+    use value::FieldName;
+
+    use super::*;
+
+    fn serialized_args_from_json(values: Vec<serde_json::Value>) -> SerializedArgs {
+        SerializedArgs::from_args(values).expect("encode args")
+    }
+
+    fn sample_object_json() -> serde_json::Value {
+        // ConvexValue::Object round-trips through the JSON schema used
+        // by SerializedArgs; an empty object is the simplest case.
+        json!({})
+    }
+
+    #[test]
+    fn extract_single_object_arg_accepts_one_object() {
+        let args = serialized_args_from_json(vec![sample_object_json()]);
+        let obj = extract_single_object_arg(&args, "native function").expect("extract");
+        let fields: BTreeMap<FieldName, ConvexValue> = obj.into();
+        assert!(fields.is_empty(), "round-tripped object keeps its shape");
+    }
+
+    #[test]
+    fn extract_single_object_arg_preserves_object_fields() {
+        let args = serialized_args_from_json(vec![json!({"name": "alice", "count": 7.0})]);
+        let obj = extract_single_object_arg(&args, "native function").expect("extract");
+        let fields: BTreeMap<FieldName, ConvexValue> = obj.into();
+        assert!(fields.contains_key(&"name".parse::<FieldName>().unwrap()));
+        assert!(fields.contains_key(&"count".parse::<FieldName>().unwrap()));
+    }
+
+    #[test]
+    fn extract_single_object_arg_rejects_empty_args() {
+        let args = serialized_args_from_json(vec![]);
+        let err =
+            extract_single_object_arg(&args, "native function").expect_err("empty args must fail");
+        assert!(
+            format!("{err}").contains("native function: missing args object"),
+            "label is baked into the error: {err}",
+        );
+    }
+
+    #[test]
+    fn extract_single_object_arg_rejects_non_object() {
+        // First positional arg is a string — the handler contract
+        // requires a single object.
+        let args = serialized_args_from_json(vec![json!("not-an-object")]);
+        let err = extract_single_object_arg(&args, "native action")
+            .expect_err("non-object first arg must fail");
+        assert!(
+            format!("{err}").contains("native action args must be a single object"),
+            "error identifies the required shape: {err}",
+        );
+    }
+
+    #[test]
+    fn extract_single_object_arg_rejects_array_first_arg() {
+        let args = serialized_args_from_json(vec![json!([1, 2, 3])]);
+        assert!(extract_single_object_arg(&args, "native function").is_err());
+    }
+
+    #[test]
+    fn extract_single_object_arg_takes_first_of_many() {
+        // Native handlers only ever see the first arg; extras are
+        // silently dropped. This is the same shape dispatch_native
+        // passes to the handler, and matches the JS convention of
+        // one positional object.
+        let args = serialized_args_from_json(vec![json!({"keep": true}), json!({"ignored": true})]);
+        let obj = extract_single_object_arg(&args, "native function").expect("extract");
+        let fields: BTreeMap<FieldName, ConvexValue> = obj.into();
+        assert!(fields.contains_key(&"keep".parse::<FieldName>().unwrap()));
+        assert!(!fields.contains_key(&"ignored".parse::<FieldName>().unwrap()));
+    }
+}

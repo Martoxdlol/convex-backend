@@ -6,19 +6,18 @@
 //! runner (typically `InProcessFunctionRunner`) and intercepting
 //! calls whose function names are in the native registry:
 //!
-//! - Queries and mutations dispatch inline against a
-//!   `Transaction<Rt>` opened on the owned `Database<RT>`.
-//!   `existing_writes` is threaded through `tx.merge_writes` to
-//!   preserve JS-style multi-UDF batching.
+//! - Queries and mutations dispatch inline against a `Transaction<Rt>` opened
+//!   on the owned `Database<RT>`. `existing_writes` is threaded through
+//!   `tx.merge_writes` to preserve JS-style multi-UDF batching.
 //! - Actions dispatch through
 //!   `NativeFunctionRunner::run_action_with_callbacks`, with a
-//!   [`BackendCallbacks`] wrapping the JS-side
-//!   `Arc<dyn ActionCallbacks>` (cached via `set_action_callbacks`
-//!   as a `Weak` to avoid a reference cycle).
-//! - HTTP actions and non-native requests delegate to the wrapped
-//!   JS runner unchanged.
-//! - `evaluate_schema` merges `NativeSchema::collect()` with the
-//!   JS-side schema; a table declared in both is a hard error.
+//!   [`BackendCallbacks`] wrapping the JS-side `Arc<dyn ActionCallbacks>`
+//!   (cached via `set_action_callbacks` as a `Weak` to avoid a reference
+//!   cycle).
+//! - HTTP actions and non-native requests delegate to the wrapped JS runner
+//!   unchanged.
+//! - `evaluate_schema` merges `NativeSchema::collect()` with the JS-side
+//!   schema; a table declared in both is a hard error.
 //!
 //! The adapter is wired into `convex-local-backend` in
 //! `crates/local_backend/src/lib.rs`, ahead of `Application::new`,

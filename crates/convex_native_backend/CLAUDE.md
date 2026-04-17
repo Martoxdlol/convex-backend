@@ -47,7 +47,7 @@ src/
 
 ```sh
 cargo check -p convex_native_backend
-cargo test -p convex_native_backend     # 4 tests last known
+cargo test -p convex_native_backend     # 10 tests last known
 cargo +nightly fmt -p convex_native_backend
 
 # Full backend build (validates the local_backend wire-up):

@@ -2346,7 +2346,6 @@ dependencies = [
  "model",
  "parking_lot",
  "rand 0.9.4",
- "semver",
  "serde_json",
  "tokio",
  "udf",
