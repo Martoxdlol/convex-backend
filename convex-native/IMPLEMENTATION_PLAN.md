@@ -21,8 +21,11 @@ breakdown, `README.md` is authoritative. One-line summary:
   queries/mutations + conductor P2C client + `TonicWorkerClient`
   real gRPC transport + `CONVEX_MODE` env helpers + multi-worker
   integration tests + runnable `examples/worker` / `examples/conductor`
-  + subprocess smoke test). Not yet shipped: convex-local-backend
-  binary-level switching on `CONVEX_MODE`.
+  + subprocess smoke test). `convex-local-backend` now also accepts
+  `CONVEX_MODE=worker` directly — it boots the full HTTP Application
+  and additionally spawns a tonic `FunctionExecutionService` on
+  `CONVEX_WORKER_BIND_ADDR`, sharing its `Database<Rt>` with the HTTP
+  path and draining alongside HTTP on Ctrl-C / `/preempt`.
 - **Phase 4 (operational hardening):** 4.1–4.7 shipped (fastrace
   spans, per-function metrics sink, graceful drain, per-function
   timeouts, circuit breaker, index-cache warmup plan, rolling
@@ -33,16 +36,16 @@ breakdown, `README.md` is authoritative. One-line summary:
   text/vector search indexes, bulk `get_many`).
 
 Outstanding items relative to this plan: Phase 3.5 binary-level
-`CONVEX_MODE` switch inside `convex-local-backend` itself is
-**half-done**: the binary now *detects* `CONVEX_MODE` at startup,
-logs the detected mode, and refuses to boot when it's not
-`Standalone` — pointing the operator at the
-`convex_native_distributed::examples/worker` + `examples/conductor`
-binaries for split-topology deployments. A single `convex-local-backend`
-binary that actually switches into Worker or Conductor mode is
-still not wired; the two example binaries are the deployment path
-for split topologies today. Phase 5 doesn't have a concrete
-"fully complete" state — the plan lists four items, all shipped.
+`CONVEX_MODE` switch inside `convex-local-backend` is now
+**two-thirds shipped**. Standalone and Worker modes both run
+directly from `convex-local-backend` (the Worker half adds a tonic
+`FunctionExecutionService` on `CONVEX_WORKER_BIND_ADDR`, wired to
+the same `Database<Rt>` the HTTP path uses and draining alongside
+it). Conductor mode is still rejected from `convex-local-backend`
+and routed to `convex_native_distributed::examples::conductor` —
+the conductor-only role doesn't fit a binary that always boots a
+local `Database`. Phase 5 doesn't have a concrete "fully complete"
+state — the plan lists four items, all shipped.
 
 ## Context
 
