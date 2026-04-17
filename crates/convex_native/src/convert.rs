@@ -239,7 +239,7 @@ mod tests {
     fn roundtrip_primitives() {
         roundtrip(String::from("hello"));
         roundtrip(42_i64);
-        roundtrip(3.14_f64);
+        roundtrip(2.5_f64);
         roundtrip(true);
         roundtrip(false);
         roundtrip(Vec::<u8>::from(b"bytes".as_slice()));

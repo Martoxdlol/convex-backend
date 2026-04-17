@@ -93,6 +93,9 @@ fn patch_serializes_only_set_fields() {
 #[test]
 fn with_id_derefs_to_document() {
     // Compile-time check that the UserWithId type exists and derefs to User.
+    // `&*wi` is the explicit form — auto-deref would pick the same impl,
+    // but we want the test to call out what's being exercised.
+    #[allow(clippy::explicit_auto_deref)]
     fn _compile_check(wi: UserWithId) -> &'static str {
         let _: &User = &*wi;
         "ok"

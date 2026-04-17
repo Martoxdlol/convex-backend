@@ -690,7 +690,7 @@ fn build_patch(patch_ident: &Ident, struct_ident: &Ident, fields: &[FieldSpec]) 
                     ::convex_native::__private::ConvexValue,
                 > = ::std::collections::BTreeMap::new();
                 #(#set_statements)*
-                ::std::result::Result::Ok(::std::convert::TryFrom::try_from(__map)?)
+                ::std::convert::TryFrom::try_from(__map).map_err(::std::convert::Into::into)
             }
         }
     }
@@ -702,11 +702,8 @@ fn build_convert_impls(struct_ident: &Ident) -> TokenStream2 {
             fn to_convex(self)
                 -> ::anyhow::Result<::convex_native::__private::ConvexValue>
             {
-                ::std::result::Result::Ok(
-                    ::convex_native::__private::ConvexValue::Object(
-                        <Self as ::convex_native::ConvexDocument>::to_convex_object(&self)?,
-                    ),
-                )
+                <Self as ::convex_native::ConvexDocument>::to_convex_object(&self)
+                    .map(::convex_native::__private::ConvexValue::Object)
             }
         }
 
@@ -923,7 +920,7 @@ fn build_trait_impl(
                     ::convex_native::__private::ConvexValue,
                 > = ::std::collections::BTreeMap::new();
                 #(#field_to_object)*
-                ::std::result::Result::Ok(::std::convert::TryFrom::try_from(__map)?)
+                ::std::convert::TryFrom::try_from(__map).map_err(::std::convert::Into::into)
             }
 
             fn from_convex_object(obj: ::convex_native::__private::ConvexObject)

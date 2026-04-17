@@ -102,11 +102,10 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 let s: &'static str = match self {
                     #(#to_arms,)*
                 };
-                ::std::result::Result::Ok(
-                    ::convex_native::__private::ConvexValue::try_from(
-                        ::std::string::String::from(s),
-                    )?,
+                ::convex_native::__private::ConvexValue::try_from(
+                    ::std::string::String::from(s),
                 )
+                .map_err(::std::convert::Into::into)
             }
         }
 
