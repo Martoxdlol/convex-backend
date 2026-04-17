@@ -17,7 +17,8 @@ actions) in native Rust.
 
 **Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1–1.4.4, 1.5.1, 1.5.2,
 1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.1
-proto contract + 3.5 mode alias + executor trait stub), **Phase 4
+proto contract + 3.2 crate skeleton/conversions + 3.5 mode alias +
+executor trait stub), **Phase 4
 partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3 graceful drain
 + 4.4 timeouts + 4.5 circuit breaker + 4.6 index-cache warmup plan),
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
@@ -409,8 +410,16 @@ shuts down every clone.
   (used for circuit-breaking + rolling-deploy version detection).
   Both messages pull from `common.proto` so the conductor can feed
   responses straight into the existing `UdfOutcome` envelope.
-  Remaining Phase 3 work (crate skeleton, worker server, conductor
-  client, mode switching, integration tests) is captured as task 52.
+- **Phase 3.2 — crate skeleton + proto↔native conversions (shipped):**
+  new `crates/convex_native_distributed/` crate now owns the wire
+  boundary. `conversions.rs` maps `pb::function_execution::{Execute,
+  Health}{Request,Response}` to/from the tonic-free
+  `convex_native::distributed` types, plus helpers for
+  `TableNamespace`, `ConvexObject` args, and `UdfType` round-trips.
+  Tests: 8 unit tests covering happy-path round-trips and protocol
+  errors (non-object args, missing result, malformed namespace).
+  Remaining Phase 3 work (worker server, conductor client, mode
+  switching, integration tests) stays on task 52.
 
 ### New in Phase 5 (partial) — index validation + schema diff + get_many
 

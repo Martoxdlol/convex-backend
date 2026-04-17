@@ -1,0 +1,24 @@
+[package]
+name = "convex_native_distributed"
+description = "Distributed execution for convex_native: worker gRPC server + conductor client."
+version = "0.1.0"
+authors = ["Convex, Inc. <no-reply@convex.dev>"]
+edition = "2024"
+license = "LicenseRef-FSL-1.1-Apache-2.0"
+
+[lib]
+doctest = false
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+common = { workspace = true }
+convex_native = { workspace = true }
+pb = { workspace = true }
+prost-types = { workspace = true }
+serde_json = { workspace = true }
+tonic = { workspace = true }
+value = { workspace = true }
+
+[lints]
+workspace = true
