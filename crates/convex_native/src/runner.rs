@@ -1,15 +1,16 @@
 //! Native function dispatch.
 //!
-//! `NativeFunctionRunner` is the entry point the backend calls to execute
-//! a native query or mutation. It does **not** yet implement the full
-//! `function_runner::FunctionRunner` trait — that trait has six
-//! JS-specific methods (`analyze`, `evaluate_app_definitions`,
-//! `evaluate_component_initializer`, `evaluate_schema`,
-//! `evaluate_auth_config`, plus HTTP-action dispatch inside
-//! `run_function`) whose full implementation requires V8 integration.
-//! Phase 1.5 wraps this runner behind a "composite" trait impl that
-//! delegates those methods to the existing V8 runner and intercepts
-//! only the native names.
+//! `NativeFunctionRunner` is the narrow entry point downstream code calls
+//! to execute a native query, mutation, or action. It deliberately
+//! does **not** implement the full `function_runner::FunctionRunner`
+//! trait — that trait has six JS-specific methods (`analyze`,
+//! `evaluate_app_definitions`, `evaluate_component_initializer`,
+//! `evaluate_schema`, `evaluate_auth_config`, plus HTTP-action dispatch
+//! inside `run_function`) whose implementation requires V8 integration.
+//! The `CompositeFunctionRunner` in `crates/convex_native_backend/`
+//! implements the full trait by wrapping a JS runner and delegating
+//! those methods through, intercepting only the native names on
+//! `run_function`.
 //!
 //! What this module does provide:
 //!
