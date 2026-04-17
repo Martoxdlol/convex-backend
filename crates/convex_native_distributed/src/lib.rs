@@ -64,6 +64,7 @@ pub use client::{
 pub use mode::{
     build_conductor_runner,
     build_worker_server,
+    read_admin_bind_addr_from_env,
     read_admission_bind_addr_from_env,
     read_backend_endpoint_from_env,
     read_mode_from_env,

@@ -301,8 +301,23 @@ pub async fn make_app(
             "CONVEX_ADMISSION_BIND_ADDR={bind_addr:?} — spawning WorkerAdmissionService; native \
              Query/Mutation dispatch will route through the dynamic pool",
         );
-        let pool =
-            convex_native_distributed::admission_server::spawn_admission_server(bind_addr).await?;
+        let (pool, admission_handle) =
+            convex_native_distributed::admission_server::spawn_admission_server_with_handle(
+                bind_addr,
+            )
+            .await?;
+        // Substep 7.4 of `convex-native/DISTRIBUTED_PLAN.md`:
+        // when `CONVEX_ADMIN_BIND_ADDR` is also set, mount the
+        // admin HTTP router (pool introspection + floor bumps +
+        // kind preferences + drain triggers) on the operator-
+        // facing port. Loopback-only bind is the expected
+        // production shape.
+        if let Some(admin_addr) = convex_native_distributed::read_admin_bind_addr_from_env()? {
+            tracing::info!("CONVEX_ADMIN_BIND_ADDR={admin_addr:?} — mounting admin HTTP surface",);
+            let state = convex_native_distributed::admin_http::AdminState::new(pool.clone())
+                .with_admission(admission_handle);
+            convex_native_distributed::admin_http::spawn_admin_server(admin_addr, state).await?;
+        }
         Some(Arc::new(
             convex_native_distributed::pool_runner::PoolFunctionRunner::new(pool),
         ))

@@ -1047,6 +1047,35 @@ surface.
      names, and "active is most-populated". 129 tests green
      total.
 
+7.4. ✓ **Wire admin HTTP surface into `local_backend`.** Landed.
+     New `CONVEX_ADMIN_BIND_ADDR=host:port` env var. When
+     set alongside `CONVEX_ADMISSION_BIND_ADDR`,
+     `make_app` mounts the substep-7.2 admin router on the
+     configured port.
+
+     - `admission_server::spawn_admission_server_with_handle`
+       returns both the `Arc<WorkerPool>` and the
+       `WorkerAdmissionServer` so the admin surface can wire
+       `.with_admission(server)` for
+       operator-triggered drains.
+     - `admin_http::spawn_admin_server(bind_addr, state)`
+       spins up the router as a background task; transport
+       failures log to stderr in the same style as the
+       admission-server spawn.
+     - `local_backend::make_app` consults
+       `read_admin_bind_addr_from_env()`; when set, builds
+       the `AdminState` and mounts the router.
+
+     Expected production shape: bind to `127.0.0.1:9090` (or
+     similar loopback) so external traffic can't hit the
+     floor/drain routes; operator tooling reaches it through
+     an SSH tunnel or kubectl port-forward.
+
+     Tests: three new env-var parser unit tests
+     (`mode::tests::read_admin_bind_addr_*`) covering
+     unset / valid-socket / rejected-garbage. 132 tests
+     total green.
+
 Exit criteria: operators can see pool state at a glance, bump
 the floor during a rolling update, preference-pin functions to
 a kind, and diff inventories across registry versions — all

@@ -90,6 +90,33 @@ pub fn router(state: AdminState) -> Router {
         .with_state(state)
 }
 
+/// Substep 7.4 of `convex-native/STATUS.md` — spawn the admin
+/// router on `bind_addr` as a background task. `local_backend`
+/// calls this when `CONVEX_ADMIN_BIND_ADDR` is set.
+///
+/// Runs forever until the tokio runtime shuts down; transport
+/// failures are logged to stderr (same pattern as
+/// `spawn_admission_server`).
+pub async fn spawn_admin_server(
+    bind_addr: std::net::SocketAddr,
+    state: AdminState,
+) -> anyhow::Result<()> {
+    let app = router(state);
+    tokio::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind(bind_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("AdminHttpServer: bind {bind_addr} failed: {e}");
+                return;
+            },
+        };
+        if let Err(e) = axum::serve(listener, app).await {
+            eprintln!("AdminHttpServer exited: {e}");
+        }
+    });
+    Ok(())
+}
+
 async fn get_pool(State(state): State<AdminState>) -> Json<PoolSnapshot> {
     Json(state.pool.snapshot())
 }

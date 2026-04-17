@@ -113,6 +113,35 @@ pub fn read_native_workers_from_env() -> anyhow::Result<Option<Vec<String>>> {
     }
 }
 
+/// Substep 7.4 env-var: `CONVEX_ADMIN_BIND_ADDR`. When set and
+/// the backend is running in admission-service mode
+/// (`CONVEX_ADMISSION_BIND_ADDR` set), `local_backend` mounts
+/// the Phase-7.2 admin router on this address. Typical value:
+/// `127.0.0.1:9090` — loopback only so external traffic can't
+/// hit the floor/drain routes without cluster-internal network
+/// policy.
+///
+/// Returns `Ok(None)` when unset (admin surface not exposed;
+/// operators can still manage the pool via direct Rust API
+/// calls if they embed the crate). `Err` on garbage values.
+pub fn read_admin_bind_addr_from_env() -> anyhow::Result<Option<SocketAddr>> {
+    match std::env::var("CONVEX_ADMIN_BIND_ADDR") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_ADMIN_BIND_ADDR set but empty — unset or set a valid host:port",
+                )
+            }
+            let addr: SocketAddr = trimmed
+                .parse()
+                .map_err(|e| anyhow::anyhow!("CONVEX_ADMIN_BIND_ADDR={trimmed:?}: {e}"))?;
+            Ok(Some(addr))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
 /// Substep 3.7 env-var: `CONVEX_ADMISSION_BIND_ADDR`. When set,
 /// `local_backend` binds a tonic `WorkerAdmissionService` on
 /// this address and uses a dynamic `WorkerPool` for native
@@ -354,6 +383,45 @@ mod tests {
         // SAFETY: Serialized via env_guard so no concurrent writer.
         unsafe {
             std::env::remove_var("CONVEX_NATIVE_WORKERS");
+        }
+    }
+
+    #[test]
+    fn read_admin_bind_addr_unset_returns_none() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMIN_BIND_ADDR");
+        }
+        assert!(read_admin_bind_addr_from_env().unwrap().is_none());
+    }
+
+    #[test]
+    fn read_admin_bind_addr_parses_valid_socket() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_ADMIN_BIND_ADDR", " 127.0.0.1:9090 ");
+        }
+        let addr = read_admin_bind_addr_from_env().unwrap().expect("set");
+        assert_eq!(addr.to_string(), "127.0.0.1:9090");
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMIN_BIND_ADDR");
+        }
+    }
+
+    #[test]
+    fn read_admin_bind_addr_rejects_garbage() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_ADMIN_BIND_ADDR", "not-a-socket");
+        }
+        assert!(read_admin_bind_addr_from_env().is_err());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMIN_BIND_ADDR");
         }
     }
 

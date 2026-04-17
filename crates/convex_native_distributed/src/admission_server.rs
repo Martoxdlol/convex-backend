@@ -63,14 +63,27 @@ use crate::{
 pub async fn spawn_admission_server(
     bind_addr: std::net::SocketAddr,
 ) -> anyhow::Result<Arc<WorkerPool>> {
+    let (pool, _server) = spawn_admission_server_with_handle(bind_addr).await?;
+    Ok(pool)
+}
+
+/// Substep 7.4 variant of `spawn_admission_server` that also
+/// returns the `WorkerAdmissionServer` handle so callers can
+/// wire it into the substep-7.2 admin HTTP surface
+/// (`AdminState::with_admission(server)`) for
+/// operator-triggered drains.
+pub async fn spawn_admission_server_with_handle(
+    bind_addr: std::net::SocketAddr,
+) -> anyhow::Result<(Arc<WorkerPool>, WorkerAdmissionServer)> {
     use pb::worker_admission::worker_admission_service_server::WorkerAdmissionServiceServer;
     use tonic::transport::Server;
     let pool = Arc::new(WorkerPool::new());
     let service = WorkerAdmissionServer::new(pool.clone());
+    let service_for_spawn = service.clone();
     let pool_for_return = pool.clone();
     tokio::spawn(async move {
         if let Err(e) = Server::builder()
-            .add_service(WorkerAdmissionServiceServer::new(service))
+            .add_service(WorkerAdmissionServiceServer::new(service_for_spawn))
             .serve(bind_addr)
             .await
         {
@@ -81,7 +94,7 @@ pub async fn spawn_admission_server(
             eprintln!("WorkerAdmissionService exited: {e}");
         }
     });
-    Ok(pool_for_return)
+    Ok((pool_for_return, service))
 }
 
 #[derive(Clone)]
