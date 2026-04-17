@@ -162,35 +162,121 @@ mod tests {
         // "gone" only in old, "fresh" only in new.
         let gone: TableName = "gone".parse().unwrap();
         let fresh: TableName = "fresh".parse().unwrap();
-        old.tables.insert(
-            gone.clone(),
-            TableDefinition {
-                table_name: gone.clone(),
-                indexes: BTreeMap::new(),
-                staged_db_indexes: BTreeMap::new(),
-                text_indexes: BTreeMap::new(),
-                staged_text_indexes: BTreeMap::new(),
-                vector_indexes: BTreeMap::new(),
-                staged_vector_indexes: BTreeMap::new(),
-                document_type: None,
-            },
-        );
-        new.tables.insert(
-            fresh.clone(),
-            TableDefinition {
-                table_name: fresh.clone(),
-                indexes: BTreeMap::new(),
-                staged_db_indexes: BTreeMap::new(),
-                text_indexes: BTreeMap::new(),
-                staged_text_indexes: BTreeMap::new(),
-                vector_indexes: BTreeMap::new(),
-                staged_vector_indexes: BTreeMap::new(),
-                document_type: None,
-            },
-        );
+        old.tables.insert(gone.clone(), empty_table(gone.clone()));
+        new.tables.insert(fresh.clone(), empty_table(fresh.clone()));
         let changes = diff(&old, &new);
         assert!(changes.contains(&SchemaChange::TableAdded(fresh)));
         assert!(changes.contains(&SchemaChange::TableRemoved(gone)));
         assert!(changes.iter().any(|c| c.is_destructive()));
+    }
+
+    fn empty_table(name: TableName) -> TableDefinition {
+        TableDefinition {
+            table_name: name,
+            indexes: BTreeMap::new(),
+            staged_db_indexes: BTreeMap::new(),
+            text_indexes: BTreeMap::new(),
+            staged_text_indexes: BTreeMap::new(),
+            vector_indexes: BTreeMap::new(),
+            staged_vector_indexes: BTreeMap::new(),
+            document_type: None,
+        }
+    }
+
+    fn td(s: &str) -> TableName {
+        s.parse().unwrap()
+    }
+
+    fn idx(s: &str) -> IndexDescriptor {
+        IndexDescriptor::new(s.to_string()).unwrap()
+    }
+
+    #[test]
+    fn is_destructive_classifies_every_variant() {
+        // TableAdded + IndexAdded are additive. TableRemoved,
+        // IndexRemoved, IndexFieldsChanged are destructive (drop
+        // data or break existing queries). CI can gate on this
+        // predicate — a silent reclassification (e.g. marking
+        // IndexFieldsChanged as non-destructive) would let
+        // data-losing migrations sneak through.
+        assert!(!SchemaChange::TableAdded(td("users")).is_destructive());
+        assert!(!SchemaChange::IndexAdded {
+            table: td("users"),
+            index: idx("by_email"),
+        }
+        .is_destructive());
+        assert!(SchemaChange::TableRemoved(td("users")).is_destructive());
+        assert!(SchemaChange::IndexRemoved {
+            table: td("users"),
+            index: idx("by_email"),
+        }
+        .is_destructive());
+        assert!(SchemaChange::IndexFieldsChanged {
+            table: td("users"),
+            index: idx("by_email"),
+            old_fields: vec!["email".into()],
+            new_fields: vec!["normalized_email".into()],
+        }
+        .is_destructive());
+    }
+
+    #[test]
+    fn diff_is_empty_when_schemas_are_identical() {
+        // Two schemas with the same single table + no indexes should
+        // produce no changes. Rules out spurious table-touch events
+        // for a refactor that changes nothing.
+        let mut a = empty_schema();
+        let mut b = empty_schema();
+        let users = td("users");
+        a.tables.insert(users.clone(), empty_table(users.clone()));
+        b.tables.insert(users.clone(), empty_table(users));
+        assert!(diff(&a, &b).is_empty());
+    }
+
+    #[test]
+    fn diff_ignores_tables_that_exist_in_both_with_same_indexes() {
+        // Presence-in-both should only emit index-level changes, not
+        // any table-level event. If `diff()` ever regressed to
+        // emitting a synthetic `TableAdded` for matched tables, this
+        // test flips.
+        let mut a = empty_schema();
+        let mut b = empty_schema();
+        let t = td("posts");
+        a.tables.insert(t.clone(), empty_table(t.clone()));
+        b.tables.insert(t.clone(), empty_table(t.clone()));
+        let changes = diff(&a, &b);
+        for change in &changes {
+            assert!(
+                !matches!(
+                    change,
+                    SchemaChange::TableAdded(_) | SchemaChange::TableRemoved(_),
+                ),
+                "no table-level event for identical tables: {change:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn diff_emits_stable_ordering_via_btreemap_iteration() {
+        // The docstring promises stable ordering via BTreeMap
+        // iteration. Two runs of `diff()` on the same inputs must
+        // produce the same sequence — if the implementation ever
+        // switches to a HashMap-backed pass, iteration order would
+        // drift across compilations and this test would catch it.
+        let mut old = empty_schema();
+        let mut new = empty_schema();
+        for t in ["alpha", "beta", "gamma"] {
+            old.tables.insert(td(t), empty_table(td(t)));
+        }
+        for t in ["beta", "gamma", "delta"] {
+            new.tables.insert(td(t), empty_table(td(t)));
+        }
+        let first = diff(&old, &new);
+        let second = diff(&old, &new);
+        assert_eq!(first, second, "diff ordering is deterministic");
+        // And both snapshots should agree on which tables are added
+        // / removed — specifically "alpha" gone, "delta" fresh.
+        assert!(first.contains(&SchemaChange::TableRemoved(td("alpha"))));
+        assert!(first.contains(&SchemaChange::TableAdded(td("delta"))));
     }
 }
