@@ -368,9 +368,13 @@ supports two topologies:
 - **Client SDK codegen.** JS generates `_generated/api.d.ts`;
   native exposes marker types (`GetByEmail`, `SendWelcomeArgs`)
   as the typed reference surface. There's no codegen step.
-- **Unified `convex-local-backend` with `CONVEX_MODE` switching.**
-  The binary runs only in Standalone today; the worker +
-  conductor topology uses separate binaries
-  (`convex_native_distributed::examples/worker` +
-  `examples/conductor`). A single binary that picks its role
-  based on `CONVEX_MODE` alone isn't shipped.
+- **Unified `convex-local-backend` with `CONVEX_MODE` switching
+  (partial).** Standalone and Worker roles both run from
+  `convex-local-backend` now: `CONVEX_MODE=worker` boots the usual
+  HTTP service **and** a tonic `FunctionExecutionService` on
+  `CONVEX_WORKER_BIND_ADDR`, sharing the same `Database<Rt>`.
+  Ctrl-C / `/preempt` drains both together. Conductor mode is still
+  rejected from `convex-local-backend` (a conductor doesn't own a
+  `Database`, but this binary always boots one); use the dedicated
+  `convex_native_distributed::examples::conductor` binary for that
+  shape.

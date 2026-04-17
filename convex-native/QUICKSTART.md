@@ -342,16 +342,35 @@ match read_mode_from_env() {
 }
 ```
 
-`convex-local-backend` itself runs only in Standalone mode — it
-detects `CONVEX_MODE` at startup and refuses to boot under any
-other value, pointing at the example binaries.
+`convex-local-backend` now handles two of the three modes directly:
+- `CONVEX_MODE=standalone` (default): HTTP only.
+- `CONVEX_MODE=worker`: HTTP **plus** a tonic
+  `FunctionExecutionService` on `CONVEX_WORKER_BIND_ADDR` wired to
+  the same `Database<Rt>` the HTTP path uses. Drains gracefully on
+  Ctrl-C / `/preempt` alongside HTTP.
+- `CONVEX_MODE=conductor`: rejected — a conductor doesn't own a
+  Database, but this binary always boots one. Run
+  `convex_native_distributed::examples::conductor` instead.
 
 ## What's not yet wired
 
 The list in `README.md` tracks this accurately. Short version:
-non-indexed filters still require `.with_index(...)`; native
-actions don't hold a snapshot transaction (each sub-call opens
-its own); and a unified `convex-local-backend` binary that
-internally switches between standalone / worker / conductor
-modes isn't shipped — today the operator picks the topology by
-picking which binary to run.
+- Document shape validation is still off (`table_definition()`
+  emits `document_type: None` — every derived type gets an "any"
+  shape today).
+- Native actions don't hold a `FunctionFinalTransaction` snapshot
+  at the outcome level; `dispatch_native_action` returns
+  `final_tx: None`. That said, query sub-calls inside one action
+  _do_ share a pinned read timestamp so `ctx.run_query(...)` twice
+  in a row sees the same world (mutations commit at a fresh ts, so
+  their writes are not visible to later queries in the same
+  action).
+- `CONVEX_MODE=conductor` is still behind the dedicated
+  `examples/conductor` binary — the conductor-only role doesn't
+  fit `convex-local-backend`'s "boots a Database" shape.
+
+Non-indexed filters (`.eq(Field, v)` without a preceding
+`.with_index(...)`) **are** supported: they lower to a
+`FullTableScan` + stacked `QueryOperator::Filter(...)` predicates.
+The indexed path is still faster; prefer it when you have a
+matching index.
