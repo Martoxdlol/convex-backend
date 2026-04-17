@@ -190,3 +190,96 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
         self.runner.as_ref().is_some_and(|r| r.has_function(name))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use value::FieldName;
+
+    use super::*;
+    use crate::{
+        logging::{
+            LogBuffer,
+            LogLevel,
+        },
+        registry::Rt,
+    };
+
+    fn empty_obj() -> ConvexObject {
+        ConvexObject::try_from(BTreeMap::<FieldName, ConvexValue>::new()).unwrap()
+    }
+
+    #[test]
+    fn new_defaults_to_noop_callbacks_and_carries_namespace() {
+        // `ActionCtx::new(None, ns)` must be usable without a backend —
+        // that's the "unit-test-friendly" contract the module docs
+        // promise. We can't read the callbacks field directly (it's
+        // `pub(crate)`) but we can probe it behaviourally by invoking
+        // a method that forwards to `callbacks` and confirm the
+        // NoopCallbacks error surfaces.
+        let ctx: ActionCtx<'_, Rt> = ActionCtx::new(None, TableNamespace::Global);
+        assert_eq!(ctx.namespace(), TableNamespace::Global);
+        assert!(
+            !ctx.has_function("missing"),
+            "no runner means no function known",
+        );
+    }
+
+    #[tokio::test]
+    async fn run_query_raw_through_noop_ctx_surfaces_a_clear_error() {
+        // End-to-end verification that `ActionCtx::new(None, ns)`
+        // actually wires NoopCallbacks: invoking any callback-backed
+        // method must error with a clear "no callbacks attached"
+        // message rather than panicking or returning a bogus result.
+        let mut ctx: ActionCtx<'_, Rt> = ActionCtx::new(None, TableNamespace::Global);
+        let err = ctx
+            .run_query_raw("anything", empty_obj())
+            .await
+            .expect_err("noop callbacks bail");
+        assert!(format!("{err}").contains("cannot run query"));
+    }
+
+    #[test]
+    fn log_writes_into_the_internal_buffer() {
+        // `ctx.log()` borrows the ActionCtx's own LogBuffer. Writes
+        // through the returned Logger must show up when the same ctx
+        // is inspected afterwards (the runner uses exactly this
+        // pattern to drain log lines into the streaming path).
+        let ctx: ActionCtx<'_, Rt> = ActionCtx::new(None, TableNamespace::Global);
+        ctx.log().info("hello from action");
+        ctx.log().warn("something worth noting");
+        let lines = ctx.log_buffer.snapshot();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].level, LogLevel::Info);
+        assert_eq!(lines[0].message, "hello from action");
+        assert_eq!(lines[1].level, LogLevel::Warn);
+    }
+
+    #[test]
+    fn with_callbacks_and_log_buffer_uses_the_supplied_buffer() {
+        // Passing an external `LogBuffer` into the constructor wires
+        // `ctx.log()` to that buffer — same contract the runner uses
+        // to capture lines into a caller-owned sink.
+        let external = LogBuffer::new();
+        let ctx: ActionCtx<'_, Rt> = ActionCtx::with_callbacks_and_log_buffer(
+            None,
+            Arc::new(NoopCallbacks),
+            TableNamespace::Global,
+            external.clone(),
+        );
+        ctx.log().error("boom");
+        // External buffer sees the write because it's Arc-shared with
+        // the ctx's internal handle.
+        let snap = external.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].level, LogLevel::Error);
+        assert_eq!(snap[0].message, "boom");
+    }
+
+    #[test]
+    fn has_function_is_false_when_no_runner_is_attached() {
+        let ctx: ActionCtx<'_, Rt> = ActionCtx::new(None, TableNamespace::Global);
+        assert!(!ctx.has_function("any_name"));
+    }
+}
