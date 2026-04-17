@@ -25,14 +25,10 @@ usage_tracking = { workspace = true }
 value = { workspace = true }
 
 [dev-dependencies]
-async-trait = { workspace = true }
-common = { workspace = true }
-convex_native = { workspace = true }
-pb = { workspace = true }
+# Everything in [dependencies] is already visible to tests/examples;
+# only list here what's strictly test-only.
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread"] }
 tokio-stream = { workspace = true, features = ["net"] }
-tonic = { workspace = true }
-value = { workspace = true }
 
 [lints]
 workspace = true
