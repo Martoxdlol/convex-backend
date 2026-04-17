@@ -70,7 +70,9 @@ version:
     in a synthetic `UdfOutcome`.
   - Action: routes to `NativeFunctionRunner::run_action_with_callbacks`
     with a `BackendCallbacks` built from the cached
-    `Weak<dyn ActionCallbacks>`.
+    `Weak<dyn ActionCallbacks>` and pinned to `database.now_ts_for_reads()`
+    via `.with_snapshot_ts(ts)`, so every query sub-call inside
+    the action sees one consistent read snapshot.
   - HttpAction + non-native requests: delegate to the wrapped JS
     runner unchanged.
 - `BackendCallbacks::run_query_by_name` / `run_mutation_by_name`
