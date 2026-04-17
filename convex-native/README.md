@@ -41,7 +41,7 @@ registered native functions.
 ### What works
 
 - Current test tallies (all green):
-  - `cargo test -p convex_native` — **172 tests** (unit + derive +
+  - `cargo test -p convex_native` — **178 tests** (unit + derive +
     runtime integration).
   - `cargo test -p convex_native_backend` — **10 tests** (pure
     helpers; deeper paths covered by end-to-end convex-local-backend

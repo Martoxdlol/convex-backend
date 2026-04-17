@@ -428,4 +428,97 @@ mod tests {
         assert!(runner.is_empty());
         assert!(!runner.has_function("anything"));
     }
+
+    #[test]
+    fn fresh_runner_is_not_draining_and_has_no_in_flight() {
+        let runner = NativeFunctionRunner::from_inventory().unwrap();
+        assert!(!runner.is_draining(), "drain must start false");
+        assert_eq!(runner.in_flight(), 0, "no calls yet");
+    }
+
+    #[test]
+    fn begin_drain_flips_is_draining_and_is_shared_across_clones() {
+        // `begin_drain` uses shared `Arc<DrainState>`, so clones of
+        // one runner must all observe the drain flag. This is the
+        // contract that lets the backend adapter share a single
+        // runner across its HTTP handlers and the worker server
+        // and drain them in lockstep.
+        let runner = NativeFunctionRunner::from_inventory().unwrap();
+        let clone = runner.clone();
+        assert!(!runner.is_draining());
+        assert!(!clone.is_draining());
+        clone.begin_drain();
+        assert!(runner.is_draining(), "drain propagates via shared Arc");
+        assert!(clone.is_draining());
+    }
+
+    #[tokio::test]
+    async fn await_drain_returns_true_immediately_when_idle() {
+        // No in-flight work => drained already; await_drain should
+        // return true on the first poll without sleeping out the
+        // timeout.
+        let runner = NativeFunctionRunner::from_inventory().unwrap();
+        let drained = runner.await_drain(Duration::from_millis(100)).await;
+        assert!(drained, "an idle runner is already drained");
+    }
+
+    #[tokio::test]
+    async fn run_action_on_empty_runner_errors_with_name() {
+        // `run_action` on a runner that has no function registered
+        // must bail with a message that names the requested
+        // function — user-facing error clarity matters here.
+        let runner = Arc::new(NativeFunctionRunner::from_inventory().unwrap());
+        let empty_obj = value::ConvexObject::try_from(std::collections::BTreeMap::<
+            value::FieldName,
+            ConvexValue,
+        >::new())
+        .unwrap();
+        let err = runner
+            .run_action("missing", TableNamespace::Global, empty_obj)
+            .await
+            .expect_err("missing action");
+        assert!(
+            format!("{err}").contains("no native function registered"),
+            "error names the missing registration: {err}",
+        );
+        assert!(
+            format!("{err}").contains("missing"),
+            "error mentions the requested name: {err}",
+        );
+    }
+
+    #[tokio::test]
+    async fn draining_runner_rejects_calls_with_a_drain_specific_message() {
+        // After `begin_drain()`, every dispatch path must refuse with
+        // a message mentioning "draining" so the caller can distinguish
+        // "wrong name" from "server shutting down". Tests via
+        // `run_action` because it doesn't need a Transaction<Rt>.
+        let runner = Arc::new(NativeFunctionRunner::from_inventory().unwrap());
+        runner.begin_drain();
+        assert!(runner.is_draining());
+        let empty_obj = value::ConvexObject::try_from(std::collections::BTreeMap::<
+            value::FieldName,
+            ConvexValue,
+        >::new())
+        .unwrap();
+        let err = runner
+            .run_action("anything", TableNamespace::Global, empty_obj)
+            .await
+            .expect_err("draining");
+        assert!(
+            format!("{err}").contains("draining"),
+            "error mentions drain: {err}",
+        );
+    }
+
+    #[test]
+    fn with_default_timeout_stores_the_value() {
+        // The builder chains must actually persist the value they
+        // take — accidental `let _ = self.default_timeout = ...`
+        // refactors would drop the setting without a type error.
+        let runner = NativeFunctionRunner::from_inventory()
+            .unwrap()
+            .with_default_timeout(Duration::from_millis(250));
+        assert_eq!(runner.default_timeout, Some(Duration::from_millis(250)));
+    }
 }
