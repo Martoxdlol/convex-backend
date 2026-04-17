@@ -538,10 +538,32 @@ each substep ships as its own commit.
      failure on missing function name (the substep 3.7 exit
      criterion), and P2C failover across two workers.
 
-3.7. **No-workers 503 + worker-leaves handling.** Backend
-     surfaces a clear error when no worker currently serves a
-     requested function. `WorkerPool` removes a worker cleanly
-     when its stream closes.
+3.7. ✓ **No-workers 503 + worker-leaves handling.** Landed.
+     Substep 3.6's `PoolFunctionRunner::dispatch` already
+     surfaces `Status::unavailable` with the dotted function
+     name + pool size when the eligible set is empty; this
+     substep adds the end-to-end coverage + the env-var hook
+     for exposing the admission service.
+
+     - New integration test
+       `crates/convex_native_distributed/tests/admission_churn.rs`
+       pins four user-visible behaviours: empty-pool →
+       `Unavailable` with the pool-size context, mid-lifetime
+       admission unblocks dispatch, mid-lifetime stream close
+       retires the worker, and restart yields a fresh
+       `WorkerId` (no stale-client-reuse risk).
+     - New env-var parser `read_admission_bind_addr_from_env()`
+       for `CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678`. Returns
+       `Some(SocketAddr)` when set, `None` when unset (fall
+       back to the Phase-2 fixed-pool shape), `Err` on garbage.
+       Wiring this into `local_backend` so it swaps the
+       composite runner's native branch to `PoolFunctionRunner`
+       lands with substep 3.8's retirement / drain flow; the
+       env-var + parser sits ready.
+
+     Tests: four top-level integration tests
+     (`admission_churn.rs`) + three env-var parser unit tests
+     (`mode::tests::read_admission_bind_addr_*`).
 
 3.8. **Drain + retire flow.** `DrainNotice` plumbing; the
      operator-facing "retire this worker" path triggers a

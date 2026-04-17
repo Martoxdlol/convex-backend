@@ -113,6 +113,39 @@ pub fn read_native_workers_from_env() -> anyhow::Result<Option<Vec<String>>> {
     }
 }
 
+/// Substep 3.7 env-var: `CONVEX_ADMISSION_BIND_ADDR`. When set,
+/// `local_backend` binds a tonic `WorkerAdmissionService` on
+/// this address and uses a dynamic `WorkerPool` for native
+/// dispatch instead of the fixed `CONVEX_NATIVE_WORKERS` list.
+///
+/// Typical value: `0.0.0.0:5678`. Workers dial this address
+/// from their `CONVEX_BACKEND_ENDPOINT` — see
+/// [`read_backend_endpoint_from_env`].
+///
+/// Returns `Ok(None)` when the variable is unset (fall back to
+/// the Phase-2 fixed-pool shape). Returns `Ok(Some(addr))`
+/// when set to a parseable socket address. Returns `Err` on a
+/// garbage value.
+pub fn read_admission_bind_addr_from_env() -> anyhow::Result<Option<SocketAddr>> {
+    match std::env::var("CONVEX_ADMISSION_BIND_ADDR") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_ADMISSION_BIND_ADDR set but empty — unset it or set a valid host:port",
+                )
+            }
+            let addr: SocketAddr = trimmed.parse().map_err(|e| {
+                anyhow::anyhow!(
+                    "CONVEX_ADMISSION_BIND_ADDR={trimmed:?}: invalid socket address: {e}",
+                )
+            })?;
+            Ok(Some(addr))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
 /// Substep 3.5 env-var: `CONVEX_BACKEND_ENDPOINT`. When the
 /// worker binary starts it dials this URL, opens the
 /// `WorkerAdmissionService::Register` stream, and stays
@@ -301,6 +334,45 @@ mod tests {
         // SAFETY: Serialized via env_guard so no concurrent writer.
         unsafe {
             std::env::remove_var("CONVEX_NATIVE_WORKERS");
+        }
+    }
+
+    #[test]
+    fn read_admission_bind_addr_unset_returns_none() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMISSION_BIND_ADDR");
+        }
+        assert!(read_admission_bind_addr_from_env().unwrap().is_none());
+    }
+
+    #[test]
+    fn read_admission_bind_addr_parses_valid_socket() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_ADMISSION_BIND_ADDR", " 127.0.0.1:5678 ");
+        }
+        let addr = read_admission_bind_addr_from_env().unwrap().expect("set");
+        assert_eq!(addr.to_string(), "127.0.0.1:5678");
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMISSION_BIND_ADDR");
+        }
+    }
+
+    #[test]
+    fn read_admission_bind_addr_rejects_garbage() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_ADMISSION_BIND_ADDR", "not-an-addr");
+        }
+        assert!(read_admission_bind_addr_from_env().is_err());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMISSION_BIND_ADDR");
         }
     }
 
