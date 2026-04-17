@@ -840,11 +840,29 @@ supply everything at admission time.
      pipeline. Owned by release tooling rather than the Rust
      source tree.
 
-5.4. **k8s manifest for the backend.** Deployment + Service
-     + PVC spec in
-     `convex-native/examples/deploy/kubernetes/backend-deployment.yaml`.
-     The existing `worker-deployment.yaml` covers the
-     worker-side shape.
+5.4. ✓ **k8s manifest for the backend.** Landed. New file
+     `convex-native/examples/deploy/kubernetes/backend-deployment.yaml`
+     ships:
+
+     - `Namespace convex`, `PersistentVolumeClaim
+       convex-backend-data` (10 Gi), `Deployment
+       convex-backend` (1 replica, Recreate strategy — the
+       backend is the coordination centre, single-writer).
+     - Two Services:
+       - `convex-backend` (public) exposes 3210 (HTTP +
+         WebSocket) + 3211 (admin/dashboard).
+       - `convex-backend-admission` (internal) exposes 5678
+         (gRPC, `appProtocol: grpc`). Separate Service so
+         NetworkPolicy can lock it down to the worker pod
+         selector.
+     - Resource requests/limits + HTTP readiness/liveness
+       probes against `/version`.
+
+     `worker-deployment.yaml` updated: the pre-Phase-3 note
+     about `CONVEX_WORKER_ENDPOINTS` is removed; the pod
+     template now sets `CONVEX_BACKEND_ENDPOINT=http://convex-backend-admission:5678`
+     so workers auto-register against the admission Service
+     from `backend-deployment.yaml`.
 
 Exit criteria: a deployer with zero existing Convex
 infrastructure can `docker pull getconvex/convex-backend:X.Y.Z`,

@@ -10,12 +10,13 @@
 # P2C routing + `min_registry_version` floor handle the
 # version-skew gap that opens during the roll.
 #
-# NOTE (pre-Phase-3): today the backend knows the worker set via
-# `CONVEX_WORKER_ENDPOINTS` on the backend side. After Phase 3 of
-# convex-native/DISTRIBUTED_PLAN.md, workers discover the backend
-# via `CONVEX_BACKEND_ENDPOINT` and register themselves through
-# `WorkerAdmissionService`; this manifest will need that env var
-# added and the headless Service will become optional.
+# Post-Phase-3: workers discover the backend via
+# `CONVEX_BACKEND_ENDPOINT` and register themselves through
+# `WorkerAdmissionService`. The headless Service below stays
+# for backend → worker dispatch (the backend dials each
+# worker's `CONVEX_WORKER_BIND_ADDR` after admission), but
+# operators don't need to enumerate worker endpoints on the
+# backend side any more — the pool is dynamic.
 
 apiVersion: v1
 kind: Namespace
@@ -61,6 +62,12 @@ spec:
               value: worker
             - name: CONVEX_WORKER_BIND_ADDR
               value: 0.0.0.0:4567
+            # Post-Phase-3: dial the backend admission Service.
+            # `convex-backend-admission` is the name from
+            # `backend-deployment.yaml`; cross-namespace
+            # deployments append `.<namespace>.svc.cluster.local`.
+            - name: CONVEX_BACKEND_ENDPOINT
+              value: http://convex-backend-admission:5678
             - name: RUST_LOG
               value: info,convex_native=debug
           resources:
