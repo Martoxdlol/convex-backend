@@ -56,6 +56,47 @@ use crate::client::WorkerClient;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WorkerId(pub u64);
 
+/// Runtime kind the worker is using. Mirrors
+/// `pb::worker_admission::WorkerKind` but tonic-free so the
+/// pool doesn't leak generated proto types into the dispatch
+/// surface. Substep 6.1 of `convex-native/STATUS.md`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub enum WorkerKind {
+    /// The default for Phase 3..5 native workers — no explicit
+    /// kind was set in the envelope (treated as native Rust for
+    /// backward compatibility).
+    Unspecified,
+    /// Worker is built on `convex_native_distributed`'s native
+    /// Rust runner.
+    NativeRust,
+    /// Worker is built on the V8 isolate farm. Phase 6.
+    Javascript,
+}
+
+impl WorkerKind {
+    /// Decode a proto enum-int into the native variant. Unknown
+    /// integers fall back to `Unspecified` — the wire contract
+    /// pins the known values, but a forward-compatible
+    /// admission handler tolerates unknowns rather than bailing.
+    pub fn from_proto_i32(v: i32) -> Self {
+        // Match the proto values without importing `pb` here —
+        // keeps this module free of the generated types.
+        match v {
+            1 => Self::NativeRust,
+            2 => Self::Javascript,
+            _ => Self::Unspecified,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::NativeRust => "native-rust",
+            Self::Javascript => "javascript",
+        }
+    }
+}
+
 /// One entry in the pool. Carries the transport client + the
 /// worker's advertised registration metadata. Substep 3.4 grows
 /// this with status-update fields (`in_flight`, `cpu_percent`,
@@ -71,6 +112,14 @@ pub struct WorkerEntry {
     /// retirement can remove the worker from the `by_function`
     /// index without re-parsing the envelope.
     pub functions: Vec<String>,
+    /// Runtime kind the worker advertised. Populated from the
+    /// admission envelope's `WorkerKind` field — defaults to
+    /// `Unspecified` for workers that didn't set it. Substep
+    /// 6.1 of `convex-native/STATUS.md`; dispatch routing
+    /// currently treats all kinds as interchangeable from
+    /// `eligible_for`'s perspective, but operator dashboards
+    /// use this to show the NativeRust vs JS mix.
+    pub kind: WorkerKind,
 }
 
 /// Dynamic pool of workers. Thread-safe via a single `RwLock`
@@ -200,6 +249,19 @@ impl WorkerPool {
         }
         out
     }
+
+    /// Substep 6.1 of `convex-native/STATUS.md` — snapshot
+    /// worker counts grouped by `WorkerKind`. Shape matches
+    /// `by_version()` so operator tooling can render either
+    /// grouping through a single helper.
+    pub fn by_kind(&self) -> BTreeMap<WorkerKind, usize> {
+        let inner = self.inner.read();
+        let mut out = BTreeMap::new();
+        for entry in inner.workers.values() {
+            *out.entry(entry.kind).or_default() += 1;
+        }
+        out
+    }
 }
 
 /// Lexicographic parts comparison — same shape as the version
@@ -272,6 +334,7 @@ mod tests {
             client: stub(label),
             registry_version: version.to_string(),
             functions: functions.iter().map(|s| s.to_string()).collect(),
+            kind: WorkerKind::NativeRust,
         }
     }
 
@@ -355,6 +418,47 @@ mod tests {
         // Clearing the floor → both back.
         pool.set_min_registry_version(None);
         assert_eq!(pool.eligible_for("get").len(), 2);
+    }
+
+    #[test]
+    fn by_kind_groups_native_and_js_workers() {
+        // Substep 6.1: operator dashboards need to see the
+        // Rust vs JS worker mix at a glance.
+        // `by_kind()` produces a `kind → count` snapshot
+        // directly from the pool's entries.
+        let pool = WorkerPool::new();
+        pool.admit(WorkerEntry {
+            client: stub("a"),
+            registry_version: "1.0".to_string(),
+            functions: vec!["get".to_string()],
+            kind: WorkerKind::NativeRust,
+        });
+        pool.admit(WorkerEntry {
+            client: stub("b"),
+            registry_version: "1.0".to_string(),
+            functions: vec!["list".to_string()],
+            kind: WorkerKind::Javascript,
+        });
+        pool.admit(WorkerEntry {
+            client: stub("c"),
+            registry_version: "1.0".to_string(),
+            functions: vec!["crunch".to_string()],
+            kind: WorkerKind::NativeRust,
+        });
+        let mix = pool.by_kind();
+        assert_eq!(mix.get(&WorkerKind::NativeRust), Some(&2));
+        assert_eq!(mix.get(&WorkerKind::Javascript), Some(&1));
+    }
+
+    #[test]
+    fn worker_kind_from_proto_i32_handles_known_and_unknown() {
+        assert_eq!(WorkerKind::from_proto_i32(0), WorkerKind::Unspecified);
+        assert_eq!(WorkerKind::from_proto_i32(1), WorkerKind::NativeRust);
+        assert_eq!(WorkerKind::from_proto_i32(2), WorkerKind::Javascript);
+        // Forward-compat: an unknown proto value (e.g. a future
+        // kind enum member this binary doesn't know about) maps
+        // to `Unspecified` rather than panicking.
+        assert_eq!(WorkerKind::from_proto_i32(99), WorkerKind::Unspecified);
     }
 
     #[test]

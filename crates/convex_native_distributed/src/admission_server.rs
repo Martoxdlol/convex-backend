@@ -38,6 +38,7 @@ use crate::{
     pool::{
         WorkerEntry,
         WorkerId,
+        WorkerKind,
         WorkerPool,
     },
     tonic_client::TonicWorkerClient,
@@ -198,6 +199,12 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
             client,
             registry_version: envelope.registry_version.clone(),
             functions,
+            // Substep 6.1 of `convex-native/STATUS.md` — record
+            // the worker's advertised runtime kind so operator
+            // tooling can surface the Rust vs JS mix. Unknown
+            // proto values fall back to `Unspecified`
+            // (forward-compat for a future kind variant).
+            kind: WorkerKind::from_proto_i32(envelope.kind),
         };
         let worker_id = self.pool.admit(entry);
 

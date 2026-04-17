@@ -883,12 +883,56 @@ build their worker image, and roll the pool — no rebuild of
 the backend. Substep 5.1 proves the shape works; 5.2–5.4 are
 CI + k8s ergonomics.
 
-## Phases 6..7 — not started
+## Phase 6 — active, decomposed into concrete substeps
+
+`DISTRIBUTED_PLAN.md` §10 + §15 Phase 6: let JavaScript workers
+(built on the existing V8 isolate stack) join the same pool as
+native Rust workers, advertising themselves with
+`WorkerKind::JAVASCRIPT` in the admission envelope. From the
+backend's dispatch perspective both kinds answer
+`FunctionExecutionService::Execute` the same way; routing picks
+a worker by function name regardless of runtime.
+
+6.1. ✓ **Capture `WorkerKind` on admission.** Landed. The
+     `WorkerEntry` now carries a `WorkerKind` enum
+     (`Unspecified` / `NativeRust` / `Javascript`) populated
+     from `envelope.kind`. Unknown proto values fall back to
+     `Unspecified` so a future kind variant doesn't hard-fail
+     admission. New `WorkerPool::by_kind()` snapshot mirrors
+     `by_version()` for Phase-7 dashboards.
+
+     Tests: `pool::tests::by_kind_groups_native_and_js_workers`
+     + `worker_kind_from_proto_i32_handles_known_and_unknown`.
+
+6.2. **Dispatch-path kind-awareness.** The pool already
+     treats all kinds as interchangeable for routing — a
+     worker that advertises `"set_user"` serves the name
+     regardless of kind. This substep adds an optional
+     per-function kind preference (e.g. route
+     `"compute_heavy"` to `NativeRust` workers when both
+     kinds advertise it) via a composite-runner-owned policy.
+     Default: no preference; backward-compatible.
+
+6.3. **Reference JS worker binary.** Out of scope for this
+     repo. A separate crate / repo implements
+     `FunctionExecutionService` on top of the existing V8
+     isolate farm, sends `WorkerKind::JAVASCRIPT` in its
+     envelope, and admission flows through the same
+     `WorkerAdmissionService`. When that lands, add a
+     mixed-kind integration test here that stands up one
+     NativeRust worker + one Javascript worker against a
+     shared backend and asserts dispatch lands on either.
+
+Exit criteria: a deployer can run mixed-kind worker pools
+against a single backend. The wire contract (6.1) + the pool
+routing (6.2 default-no-preference already in effect) are the
+in-repo deliverables; the JS worker binary itself (6.3) is
+downstream work.
+
+## Phase 7 — not started
 
 See `DISTRIBUTED_PLAN.md` §15 for the full breakdown.
 
-- **Phase 6**: JS interop (`WorkerKind::JAVASCRIPT` in the
-  admission envelope).
 - **Phase 7**: operator tooling — pool introspection, inventory
   diff, floor-bump admin RPC.
 
