@@ -23,7 +23,12 @@
 //!   of `WorkerClient`.
 //! - [`mode`] — env-var parsers (`CONVEX_MODE`, `CONVEX_WORKER_ENDPOINTS`,
 //!   `CONVEX_WORKER_BIND_ADDR`) and builder helpers ([`build_worker_server`],
-//!   [`build_conductor_runner`]) for Phase 3.5 binary-level wiring.
+//!   [`build_conductor_runner`]) for Phase 3.5 binary-level wiring. Also
+//!   exposes the "consumer" worker helpers: [`serve_worker_with_database`]
+//!   (bind + run forever) and [`serve_worker_with_shutdown`] (bind + drain on a
+//!   caller-supplied future — the variant `convex-local-backend` uses under
+//!   `CONVEX_MODE=worker` so the tonic server drains together with HTTP on
+//!   Ctrl-C).
 //! - `examples/worker.rs` + `examples/conductor.rs` are runnable binaries a
 //!   deployer can crib from; `tests/examples_smoke.rs` spawns both and asserts
 //!   they talk over real gRPC.
