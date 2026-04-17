@@ -145,6 +145,16 @@ struct PoolInner {
     /// `registry_version` doesn't meet the floor are skipped in
     /// `eligible_for`. `None` means no floor.
     min_registry_version: Option<String>,
+    /// Substep 6.2 of `convex-native/STATUS.md` — per-function
+    /// routing preference by runtime kind. When set for a
+    /// function name, `eligible_for(name)` returns only
+    /// workers of the preferred kind **unless** the preferred
+    /// set is empty, in which case it falls back to the
+    /// unfiltered set (so a preference is a soft routing hint,
+    /// not a hard requirement — the dispatcher never 503s on a
+    /// preference mismatch when a fallback exists). Default
+    /// empty map ⇒ kind-agnostic routing.
+    kind_preferences: HashMap<String, WorkerKind>,
 }
 
 impl Default for WorkerPool {
@@ -160,6 +170,7 @@ impl WorkerPool {
                 workers: HashMap::new(),
                 by_function: HashMap::new(),
                 min_registry_version: None,
+                kind_preferences: HashMap::new(),
             }),
             next_id: AtomicU64::new(0),
         }
@@ -219,13 +230,24 @@ impl WorkerPool {
     /// the pool-wide floor. Returns each eligible worker's
     /// `(WorkerId, Arc<dyn WorkerClient>)` so the caller can
     /// run P2C / failover without re-entering the pool.
+    ///
+    /// Substep 6.2 layers an optional per-function kind
+    /// preference on top: when
+    /// `kind_preferences[function_name]` is set and at least
+    /// one worker of that kind serves the name, the result is
+    /// restricted to that kind. If no worker of the preferred
+    /// kind is present the dispatcher falls back to the full
+    /// floor-filtered set — a preference is a soft hint, not
+    /// a hard filter (avoids turning a preference mis-config
+    /// into a 503).
     pub fn eligible_for(&self, function_name: &str) -> Vec<(WorkerId, Arc<dyn WorkerClient>)> {
         let inner = self.inner.read();
         let Some(ids) = inner.by_function.get(function_name) else {
             return Vec::new();
         };
         let floor = inner.min_registry_version.as_deref();
-        ids.iter()
+        let base: Vec<(WorkerId, Arc<dyn WorkerClient>, WorkerKind)> = ids
+            .iter()
             .filter_map(|id| {
                 let entry = inner.workers.get(id)?;
                 if let Some(f) = floor
@@ -233,8 +255,50 @@ impl WorkerPool {
                 {
                     return None;
                 }
-                Some((*id, entry.client.clone()))
+                Some((*id, entry.client.clone(), entry.kind))
             })
+            .collect();
+        // Apply the per-function kind preference if one is set,
+        // soft-falling-back to the full set when the preferred
+        // slice is empty.
+        if let Some(&pref) = inner.kind_preferences.get(function_name) {
+            let preferred: Vec<(WorkerId, Arc<dyn WorkerClient>)> = base
+                .iter()
+                .filter(|(_, _, k)| *k == pref)
+                .map(|(id, c, _)| (*id, c.clone()))
+                .collect();
+            if !preferred.is_empty() {
+                return preferred;
+            }
+        }
+        base.into_iter().map(|(id, c, _)| (id, c)).collect()
+    }
+
+    /// Substep 6.2: pin a routing preference for `function_name`
+    /// so dispatches for that name prefer workers of `kind`
+    /// when at least one is available. Passing the same name
+    /// again overwrites the prior setting.
+    pub fn set_kind_preference(&self, function_name: impl Into<String>, kind: WorkerKind) {
+        self.inner
+            .write()
+            .kind_preferences
+            .insert(function_name.into(), kind);
+    }
+
+    /// Clear a per-function kind preference.
+    pub fn clear_kind_preference(&self, function_name: &str) {
+        self.inner.write().kind_preferences.remove(function_name);
+    }
+
+    /// Snapshot the current per-function kind preferences for
+    /// operator dashboards (and tests). Ordered by function
+    /// name via `BTreeMap` so the output is deterministic.
+    pub fn kind_preferences(&self) -> BTreeMap<String, WorkerKind> {
+        self.inner
+            .read()
+            .kind_preferences
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
             .collect()
     }
 
@@ -418,6 +482,84 @@ mod tests {
         // Clearing the floor → both back.
         pool.set_min_registry_version(None);
         assert_eq!(pool.eligible_for("get").len(), 2);
+    }
+
+    fn js_entry(label: &str, version: &str, functions: &[&str]) -> WorkerEntry {
+        WorkerEntry {
+            client: stub(label),
+            registry_version: version.to_string(),
+            functions: functions.iter().map(|s| s.to_string()).collect(),
+            kind: WorkerKind::Javascript,
+        }
+    }
+
+    #[test]
+    fn kind_preference_routes_to_preferred_kind_when_available() {
+        // Substep 6.2: a preference for `compute_heavy = NativeRust`
+        // filters dispatch to the native-Rust worker even
+        // though a JS worker also serves the name.
+        let pool = WorkerPool::new();
+        pool.admit(entry("rust-1", "1.0.0", &["compute_heavy"]));
+        pool.admit(js_entry("js-1", "1.0.0", &["compute_heavy"]));
+        pool.set_kind_preference("compute_heavy", WorkerKind::NativeRust);
+        let eligible: Vec<_> = pool
+            .eligible_for("compute_heavy")
+            .into_iter()
+            .map(|(_, c)| c.label().to_string())
+            .collect();
+        assert_eq!(eligible, vec!["rust-1".to_string()]);
+    }
+
+    #[test]
+    fn kind_preference_falls_back_to_full_set_when_preferred_absent() {
+        // Substep 6.2: preference is a soft hint — if the
+        // preferred kind isn't available, fall back to any
+        // worker serving the name so we don't 503 on a
+        // preference mis-config.
+        let pool = WorkerPool::new();
+        pool.admit(js_entry("js-only", "1.0.0", &["transform"]));
+        pool.set_kind_preference("transform", WorkerKind::NativeRust);
+        let eligible: Vec<_> = pool
+            .eligible_for("transform")
+            .into_iter()
+            .map(|(_, c)| c.label().to_string())
+            .collect();
+        assert_eq!(
+            eligible,
+            vec!["js-only".to_string()],
+            "no NativeRust worker ⇒ fall back to the JS one; preference is a soft hint",
+        );
+    }
+
+    #[test]
+    fn kind_preference_ignored_for_unlisted_function() {
+        // A preference for one function name doesn't leak into
+        // routing for other names.
+        let pool = WorkerPool::new();
+        pool.admit(entry("rust-1", "1.0.0", &["compute_heavy", "cheap"]));
+        pool.admit(js_entry("js-1", "1.0.0", &["cheap"]));
+        pool.set_kind_preference("compute_heavy", WorkerKind::NativeRust);
+        let eligible: Vec<_> = pool
+            .eligible_for("cheap")
+            .into_iter()
+            .map(|(_, c)| c.label().to_string())
+            .collect();
+        assert_eq!(
+            eligible.len(),
+            2,
+            "no preference set for \"cheap\" ⇒ both kinds are eligible: {eligible:?}",
+        );
+    }
+
+    #[test]
+    fn kind_preference_clearable() {
+        let pool = WorkerPool::new();
+        pool.admit(entry("rust", "1.0.0", &["x"]));
+        pool.admit(js_entry("js", "1.0.0", &["x"]));
+        pool.set_kind_preference("x", WorkerKind::NativeRust);
+        assert_eq!(pool.eligible_for("x").len(), 1);
+        pool.clear_kind_preference("x");
+        assert_eq!(pool.eligible_for("x").len(), 2);
     }
 
     #[test]

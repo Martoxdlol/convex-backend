@@ -904,14 +904,29 @@ a worker by function name regardless of runtime.
      Tests: `pool::tests::by_kind_groups_native_and_js_workers`
      + `worker_kind_from_proto_i32_handles_known_and_unknown`.
 
-6.2. **Dispatch-path kind-awareness.** The pool already
-     treats all kinds as interchangeable for routing — a
-     worker that advertises `"set_user"` serves the name
-     regardless of kind. This substep adds an optional
-     per-function kind preference (e.g. route
-     `"compute_heavy"` to `NativeRust` workers when both
-     kinds advertise it) via a composite-runner-owned policy.
-     Default: no preference; backward-compatible.
+6.2. ✓ **Dispatch-path kind-awareness.** Landed. New
+     `WorkerPool::set_kind_preference(name, kind)` /
+     `clear_kind_preference(name)` pair lets the deployer
+     pin a routing preference for specific function names
+     (e.g. route `"compute_heavy"` to `NativeRust` workers
+     when both kinds advertise it). The
+     `kind_preferences()` snapshot reads the current map out
+     for operator dashboards.
+
+     Semantics: a preference is a **soft hint**.
+     `eligible_for(name)` first tries the preferred-kind
+     subset; if that set is empty (e.g. the preferred
+     kind's workers are all retired mid-rolling-deploy) it
+     falls back to the full floor-filtered set. Misconfiguring
+     a preference can't wedge dispatch into 503s.
+
+     Tests: four new unit tests on `pool::tests` cover
+     "preference filters when kind is available", "falls
+     back when preferred kind absent", "preference is
+     function-scoped not global", and "clearable back to
+     default".
+
+     100 lib tests + 18 integration = 118 total green.
 
 6.3. **Reference JS worker binary.** Out of scope for this
      repo. A separate crate / repo implements
