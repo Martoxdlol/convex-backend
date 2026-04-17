@@ -348,4 +348,79 @@ mod tests {
         assert!(!version_at_least("1.2.3", "1.2.4"));
         assert!(!version_at_least("0.1.0", "9.9.9"));
     }
+
+    #[test]
+    fn version_compare_handles_prerelease_and_build_suffixes() {
+        // The parser splits on `.`, `-`, and `+` and keeps only the
+        // numeric fields. `1.2.3-rc.1` therefore compares as
+        // `[1, 2, 3, 1]`, and `1.2.3+build.7` as `[1, 2, 3, 7]`.
+        // That's intentional — the worker only checks its own tag
+        // against a floor; full semver lives on the conductor side.
+        assert!(version_at_least("1.2.3-rc.1", "1.2.3"));
+        assert!(version_at_least("1.2.3+build.7", "1.2.3"));
+        assert!(!version_at_least("1.2.3", "1.2.3-rc.1"));
+    }
+
+    #[test]
+    fn version_compare_treats_empty_as_minimum() {
+        // Completely empty / non-numeric strings parse to [], which
+        // the `Vec::cmp` lands below every concrete version. Pin
+        // that behaviour so a worker that booted with an
+        // unreadable version tag loses every floor check.
+        assert!(!version_at_least("", "1.0.0"));
+        assert!(version_at_least("1.0.0", ""));
+        assert!(version_at_least("", ""), "two empties are equal");
+    }
+
+    #[tokio::test]
+    async fn health_flips_accepts_traffic_when_runner_drains() {
+        // `accepts_traffic` is how the conductor learns a worker is
+        // draining so it can steer new RPCs elsewhere. Pin the flip:
+        // before draining → true, after `begin_drain()` → false.
+        let runner = empty_runner();
+        let server = FunctionExecutionServer::new(runner.clone());
+
+        let resp = server
+            .health(Request::new(proto::HealthRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(resp.accepts_traffic, "healthy runner accepts traffic");
+
+        runner.begin_drain();
+
+        let resp = server
+            .health(Request::new(proto::HealthRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            !resp.accepts_traffic,
+            "draining runner stops accepting traffic",
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_http_action_kind_is_unimplemented() {
+        // The tonic server doesn't dispatch HTTP actions — those go
+        // through the HttpRouter path, not FunctionExecutionService.
+        // A conductor that mistakenly forwards an HttpAction UdfType
+        // must see `Unimplemented`, not a generic error.
+        let server = FunctionExecutionServer::new(empty_runner());
+        let native = NativeExecuteRequest {
+            name: "http_handler".to_string(),
+            namespace: TableNamespace::Global,
+            args: empty_object(),
+            timeout: None,
+            min_registry_version: None,
+        };
+        let proto_req = conversions::to_proto_request(&native, UdfType::HttpAction).unwrap();
+        let status = server.execute(Request::new(proto_req)).await.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::Unimplemented);
+        assert!(
+            status.message().contains("HttpRouter"),
+            "error points at the right dispatch path: {}",
+            status.message(),
+        );
+    }
 }
