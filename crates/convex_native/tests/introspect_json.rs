@@ -82,3 +82,32 @@ fn describe_json_lists_schema_functions_and_routes() {
     let s = built.describe_pretty();
     assert!(s.contains("intro_users"));
 }
+
+#[test]
+fn describe_json_surfaces_document_type_validator() {
+    // Since `#[derive(ConvexDocument)]` now emits
+    // `document_type: Some(DocumentSchema::Union(...))` by default,
+    // introspection should surface it. Tooling that compares the
+    // deployed schema against the binary's declared shape relies
+    // on this being non-null.
+    let built = ConvexBackend::new()
+        .with_native_schema()
+        .with_callbacks(Arc::new(NoopCallbacks))
+        .build()
+        .unwrap();
+    let v = built.describe_json();
+    let tables = v["schema"]["tables"].as_array().unwrap();
+    let users = tables
+        .iter()
+        .find(|t| t["name"] == "intro_users")
+        .expect("intro_users table present");
+    let doc_type = &users["document_type"];
+    assert_eq!(doc_type["kind"], "union");
+    let variants = doc_type["variants"].as_array().unwrap();
+    assert_eq!(variants.len(), 1, "single-shape struct -> one variant");
+    let rendered = variants[0].as_str().unwrap();
+    assert!(
+        rendered.contains("name") && rendered.contains("v.string()"),
+        "variant renders the object validator: {rendered}",
+    );
+}

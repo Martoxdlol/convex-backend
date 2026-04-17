@@ -113,15 +113,43 @@ fn describe_schema(schema: &DatabaseSchema) -> serde_json::Value {
                     })
                 })
                 .collect();
+            let document_type = describe_document_type(def.document_type.as_ref());
             json!({
                 "name": name.to_string(),
                 "indexes": db_indexes,
                 "text_indexes": text_indexes,
                 "vector_indexes": vector_indexes,
+                "document_type": document_type,
             })
         })
         .collect();
     json!({ "tables": tables, "schema_validation": schema.schema_validation })
+}
+
+/// Render the `DocumentSchema` on a table into a JSON shape matching
+/// the validator DSL (`v.object({...})`, `v.union(...)`, `v.optional(...)`
+/// etc. — `Display for Validator` is the canonical pretty form).
+/// `None` means the table had no schema attached.
+fn describe_document_type(schema: Option<&common::schemas::DocumentSchema>) -> serde_json::Value {
+    use common::schemas::DocumentSchema;
+    match schema {
+        None => serde_json::Value::Null,
+        Some(DocumentSchema::Any) => json!({ "kind": "any" }),
+        Some(DocumentSchema::Union(objects)) => {
+            let variants: Vec<_> = objects
+                .iter()
+                .map(|obj_validator| {
+                    // Use the Display impl on `ObjectValidator`. It
+                    // emits the familiar `v.object({...})` string
+                    // JS developers already recognise from
+                    // schema.ts, so introspection tooling can
+                    // round-trip it without a custom parser.
+                    json!(format!("{obj_validator}"))
+                })
+                .collect();
+            json!({ "kind": "union", "variants": variants })
+        },
+    }
 }
 
 fn describe_functions(functions: &NativeFunctionRegistry) -> serde_json::Value {
