@@ -175,6 +175,22 @@ impl<'a, RT: Runtime> HttpActionCtx<'a, RT> {
         }
     }
 
+    /// Attach the enclosing request's `ExecutionContext` — mirrors
+    /// `ActionCtx::with_execution_context`.
+    pub fn with_execution_context(
+        mut self,
+        execution_context: common::execution_context::ExecutionContext,
+    ) -> Self {
+        self.inner = self.inner.with_execution_context(execution_context);
+        self
+    }
+
+    /// Delegate — borrow the enclosing request's `ExecutionContext`,
+    /// if any.
+    pub fn execution_context(&self) -> Option<&common::execution_context::ExecutionContext> {
+        self.inner.execution_context()
+    }
+
     /// Delegate — logger.
     pub fn log(&self) -> crate::logging::Logger<'_> {
         self.inner.log()
