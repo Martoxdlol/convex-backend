@@ -29,6 +29,7 @@ pub struct MutationCtx<'tx, RT: Runtime> {
     pub(crate) tx: &'tx mut Transaction<RT>,
     pub(crate) namespace: TableNamespace,
     pub(crate) log_buffer: crate::logging::LogBuffer,
+    pub(crate) observed: std::sync::Arc<super::query::Observed>,
 }
 
 impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
@@ -38,6 +39,7 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
             tx,
             namespace,
             log_buffer: crate::logging::LogBuffer::new(),
+            observed: std::sync::Arc::new(super::query::Observed::new()),
         }
     }
 
@@ -51,7 +53,29 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
             tx,
             namespace,
             log_buffer,
+            observed: std::sync::Arc::new(super::query::Observed::new()),
         }
+    }
+
+    /// Construct with the log buffer AND a caller-owned `Observed`
+    /// handle. Runner-only.
+    pub fn with_log_buffer_and_observed(
+        tx: &'tx mut Transaction<RT>,
+        namespace: TableNamespace,
+        log_buffer: crate::logging::LogBuffer,
+        observed: std::sync::Arc<super::query::Observed>,
+    ) -> Self {
+        Self {
+            tx,
+            namespace,
+            log_buffer,
+            observed,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn observed(&self) -> &std::sync::Arc<super::query::Observed> {
+        &self.observed
     }
 
     /// Borrow a logger that writes into the ctx's log buffer.
@@ -76,13 +100,18 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
         self.tx
     }
 
-    /// Identity of the caller that initiated the request.
+    /// Identity of the caller that initiated the request. Records
+    /// the observation so the runner can populate
+    /// `UdfOutcome::observed_identity`.
     pub fn auth(&self) -> crate::auth::AuthInfo<'_> {
+        self.observed.note_identity();
         crate::auth::AuthInfo::new(self.tx.identity())
     }
 
     /// Current wall-clock time — mirrors `QueryCtx::unix_timestamp`.
+    /// Records the observation for `observed_time` drain.
     pub fn unix_timestamp(&self) -> common::runtime::UnixTimestamp {
+        self.observed.note_unix_timestamp();
         self.tx.runtime().unix_timestamp()
     }
 

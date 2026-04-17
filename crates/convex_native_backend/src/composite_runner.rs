@@ -54,7 +54,10 @@ use common::{
 use convex_native::{
     ctx::{
         mutation::MutationCtx as NativeMutationCtx,
-        query::QueryCtx as NativeQueryCtx,
+        query::{
+            Observed,
+            QueryCtx as NativeQueryCtx,
+        },
     },
     HandlerFn,
     LogBuffer,
@@ -307,24 +310,28 @@ async fn dispatch_native<RT: Runtime + 'static>(
     // Parse args into a ConvexObject the handler will deserialize.
     let args_obj = extract_single_object_arg(&arguments, "native function")?;
 
-    // Share one LogBuffer between the ctx and the post-handler drain
-    // so `ctx.log()` output ends up in the UdfOutcome's log_lines
-    // (and therefore the backend's log-streaming path).
+    // Share one LogBuffer + Observed-flags handle between the ctx
+    // and the post-handler drain so `ctx.log()` output ends up in
+    // the UdfOutcome's log_lines and `ctx.auth()` / `ctx.unix_timestamp()`
+    // observations land on `observed_identity` / `observed_time`.
     let log_buffer = LogBuffer::new();
+    let observed: Arc<Observed> = Arc::new(Observed::new());
     let result = match (udf_type, &registration.handler) {
         (UdfType::Query, HandlerFn::Query(handler)) => {
-            let mut ctx = NativeQueryCtx::with_log_buffer(
+            let mut ctx = NativeQueryCtx::with_log_buffer_and_observed(
                 tx_as_rt,
                 TableNamespace::Global,
                 log_buffer.clone(),
+                observed.clone(),
             );
             handler(&mut ctx, args_obj).await
         },
         (UdfType::Mutation, HandlerFn::Mutation(handler)) => {
-            let mut ctx = NativeMutationCtx::with_log_buffer(
+            let mut ctx = NativeMutationCtx::with_log_buffer_and_observed(
                 tx_as_rt,
                 TableNamespace::Global,
                 log_buffer.clone(),
+                observed.clone(),
             );
             handler(&mut ctx, args_obj).await
         },
@@ -365,11 +372,11 @@ async fn dispatch_native<RT: Runtime + 'static>(
         path: path.for_logging(),
         arguments,
         identity: inert_identity,
-        observed_identity: false,
+        observed_identity: observed.identity(),
         rng_seed,
         observed_rng: false,
         unix_timestamp: now_ts,
-        observed_time: false,
+        observed_time: observed.unix_timestamp(),
         log_lines,
         audit_log_lines: vec![].into(),
         journal: QueryJournal::new(),
