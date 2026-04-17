@@ -1,5 +1,5 @@
 [workspace]
-members = [ "crates/*", "crates/convex/sync_types" ]
+members = [ "crates/*", "crates/convex/sync_types", "convex-native/examples/standalone_todo_app" ]
 resolver = "2"
 exclude = [ "crates/py_client", "crates/python_client_tests" ]
 
@@ -55,6 +55,7 @@ const_format = { version = "0.2.34", features = [ "fmt" ] }
 convex = { path = "crates/convex" }
 convex_macro = { path = "crates/convex_macro" }
 convex_native = { path = "crates/convex_native" }
+convex_native_core = { path = "crates/convex_native_core" }
 convex_native_backend = { path = "crates/convex_native_backend" }
 convex_native_distributed = { path = "crates/convex_native_distributed" }
 convex_sync_types = { path = "crates/convex/sync_types" }

@@ -260,7 +260,7 @@ mod tests {
         use pb::function_execution::function_execution_service_server as fes;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let native = Arc::new(convex_native::NativeFunctionRunner::from_inventory().unwrap());
+        let native = Arc::new(convex_native_core::NativeFunctionRunner::from_inventory().unwrap());
         let server = crate::server::FunctionExecutionServer::new(native);
         tokio::spawn(async move {
             Server::builder()

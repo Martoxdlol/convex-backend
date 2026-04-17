@@ -37,7 +37,7 @@ use std::{
 
 use async_trait::async_trait;
 use common::types::UdfType;
-use convex_native::distributed::{
+use convex_native_core::distributed::{
     ExecuteRequest,
     ExecuteResponse,
 };

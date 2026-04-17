@@ -1,5 +1,5 @@
 //! Conversions between `pb::function_execution::*` (wire format)
-//! and the tonic-free types in `convex_native::distributed`.
+//! and the tonic-free types in `convex_native_core::distributed`.
 //!
 //! The goal is a small, testable boundary: anything that needs to
 //! read the proto goes through a `from_proto_*` function here;
@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use convex_native::distributed::{
+use convex_native_core::distributed::{
     ExecuteRequest,
     ExecuteResponse,
     FinalTxSummary,
@@ -831,7 +831,7 @@ mod tests {
                 TabletIndexName,
             },
         };
-        use convex_native::distributed::IndexReadsSummary;
+        use convex_native_core::distributed::IndexReadsSummary;
         let tablet_id = value::TabletId::MIN;
         let descriptor = IndexDescriptor::new("by_email").unwrap();
         let index_name = TabletIndexName::new(tablet_id, descriptor).unwrap();
@@ -895,7 +895,7 @@ mod tests {
                 TabletIndexName,
             },
         };
-        use convex_native::distributed::IndexReadsSummary;
+        use convex_native_core::distributed::IndexReadsSummary;
         use sync_types::Timestamp;
         let tablet_id = value::TabletId::MIN;
         let mut rows = std::collections::BTreeMap::new();

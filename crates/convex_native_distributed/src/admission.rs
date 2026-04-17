@@ -3,7 +3,7 @@
 //! Substep 3.2 of `convex-native/STATUS.md`. This module builds a
 //! `pb::worker_admission::FunctionInventory` from the
 //! `inventory::submit!`-collected native registries in
-//! `convex_native` (functions, schema, HTTP routes, crons) and
+//! `convex_native_core` (functions, schema, HTTP routes, crons) and
 //! computes the canonical SHA-256 the registration envelope
 //! carries so workers on the same `registry_version` can be
 //! enforced identical.
@@ -19,7 +19,7 @@ use common::{
     },
     types::UdfType,
 };
-use convex_native::{
+use convex_native_core::{
     cron::CronRegistry,
     http::HttpRouter,
     registry::NativeFunctionRegistry,
@@ -34,7 +34,7 @@ use sha2::{
     Sha256,
 };
 
-/// Collect every native registry exposed by the `convex_native`
+/// Collect every native registry exposed by the `convex_native_core`
 /// framework and assemble the worker's `FunctionInventory` proto
 /// plus a SHA-256 canonicalisation hash.
 ///

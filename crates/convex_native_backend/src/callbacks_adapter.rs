@@ -1,4 +1,4 @@
-//! Bridge `convex_native::NativeActionCallbacks` onto the real
+//! Bridge `convex_native_core::NativeActionCallbacks` onto the real
 //! `udf::ActionCallbacks` trait the backend hands to the function
 //! runner.
 //!
@@ -25,7 +25,7 @@ use common::{
     },
     types::RepeatableTimestamp,
 };
-use convex_native::{
+use convex_native_core::{
     FileMetadata,
     NativeActionCallbacks,
     NativeFunctionRunner,
@@ -216,7 +216,7 @@ async fn try_run_native_mutation<RT: Runtime + 'static>(
         native.run_mutation(name, tx_as_rt, namespace, args).await?
     };
     database
-        .commit_with_write_source(tx, WriteSource::system("convex_native"))
+        .commit_with_write_source(tx, WriteSource::system("convex_native_core"))
         .await?;
     Ok(Some(result))
 }

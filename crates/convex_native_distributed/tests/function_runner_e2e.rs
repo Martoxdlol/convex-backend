@@ -31,7 +31,7 @@ use std::{
 };
 
 use common::types::UdfType;
-use convex_native::{
+use convex_native_core::{
     distributed::ExecuteRequest,
     NativeFunctionRunner,
 };

@@ -51,7 +51,7 @@ use common::{
         UdfType,
     },
 };
-use convex_native::{
+use convex_native_core::{
     ctx::{
         mutation::MutationCtx as NativeMutationCtx,
         query::{
@@ -133,7 +133,7 @@ use crate::callbacks_adapter::BackendCallbacks;
 /// Today the native branch is only used when `RT = Rt = ProdRuntime`.
 /// Other runtimes fall through to JS because the native handler
 /// registry is monomorphic over `Rt` (see
-/// `convex_native::registry` module docs for the rationale).
+/// `convex_native_core::registry` module docs for the rationale).
 pub struct CompositeFunctionRunner<RT: Runtime> {
     pub native: Arc<NativeFunctionRunner>,
     pub js: Arc<dyn FunctionRunner<RT>>,
@@ -303,7 +303,7 @@ async fn dispatch_native_inner<RT: Runtime + 'static>(
     if std::any::TypeId::of::<RT>() != std::any::TypeId::of::<Rt>() {
         anyhow::bail!(
             "CompositeFunctionRunner native dispatch only supports the ProdRuntime \
-             (convex_native::Rt). Runtime mismatch."
+             (convex_native_core::Rt). Runtime mismatch."
         );
     }
 

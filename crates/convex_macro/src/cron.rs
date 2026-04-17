@@ -131,8 +131,8 @@ pub fn attr(attr: TokenStream, item: TokenStream) -> TokenStream {
     } = args;
 
     let registration = quote! {
-        ::convex_native::inventory::submit! {
-            ::convex_native::CronRegistration {
+        ::convex_native_core::inventory::submit! {
+            ::convex_native_core::CronRegistration {
                 name: #name,
                 schedule: #schedule,
                 target: #target,

@@ -2307,6 +2307,50 @@ name = "convex_native"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-broadcast",
+ "clap",
+ "cmd_util",
+ "common",
+ "convex_native_core",
+ "db_connection",
+ "futures",
+ "local_backend",
+ "runtime",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "convex_native_backend"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "common",
+ "convex_native_core",
+ "convex_sync_types",
+ "database",
+ "file_storage",
+ "function_runner",
+ "futures",
+ "headers",
+ "keybroker",
+ "model",
+ "parking_lot",
+ "rand 0.9.4",
+ "serde_json",
+ "tokio",
+ "udf",
+ "usage_tracking",
+ "value",
+]
+
+[[package]]
+name = "convex_native_core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "common",
@@ -2331,32 +2375,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "convex_native_backend"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "common",
- "convex_native",
- "convex_sync_types",
- "database",
- "file_storage",
- "function_runner",
- "futures",
- "headers",
- "keybroker",
- "model",
- "parking_lot",
- "rand 0.9.4",
- "serde_json",
- "tokio",
- "udf",
- "usage_tracking",
- "value",
-]
-
-[[package]]
 name = "convex_native_distributed"
 version = "0.1.0"
 dependencies = [
@@ -2365,7 +2383,7 @@ dependencies = [
  "axum",
  "bytes",
  "common",
- "convex_native",
+ "convex_native_core",
  "convex_sync_types",
  "database",
  "errors",
@@ -5685,8 +5703,8 @@ dependencies = [
  "cmd_util",
  "common",
  "convex_macro",
- "convex_native",
  "convex_native_backend",
+ "convex_native_core",
  "convex_native_distributed",
  "convex_sync_types",
  "database",
@@ -9209,6 +9227,16 @@ name = "stable_deref_trait"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
+
+[[package]]
+name = "standalone_todo_app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "convex_native",
+ "convex_native_core",
+ "tokio",
+]
 
 [[package]]
 name = "static_assertions"

@@ -1,6 +1,6 @@
 //! Binary-level mode switching.
 //!
-//! A process embedding `convex_native` reads `CONVEX_MODE` on
+//! A process embedding `convex_native_core` reads `CONVEX_MODE` on
 //! startup and uses these helpers to parse + validate the
 //! deployment topology before wiring up a runner or starting a
 //! gRPC server. The actual binary glue (spawn a
@@ -33,7 +33,7 @@ use std::{
     sync::Arc,
 };
 
-use convex_native::{
+use convex_native_core::{
     distributed::ConvexMode,
     NativeFunctionRunner,
     Rt,

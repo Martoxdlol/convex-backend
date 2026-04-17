@@ -2,13 +2,13 @@
 //! struct as a Convex table row.
 //!
 //! Emitted for a struct `Foo { .. }` with `#[convex(table = "foos")]`:
-//! - `impl ::convex_native::ConvexDocument for Foo`
+//! - `impl ::convex_native_core::ConvexDocument for Foo`
 //! - `pub enum FooField` (one variant per struct field, `impl FieldReference`)
 //! - `pub enum FooIndex` (one variant per `#[convex(index(...))]`; `Never` if
 //!   none — still `impl IndexReference`)
 //! - `pub struct FooPatch` (every field wrapped in `Option`, `Default`)
 //! - `pub struct FooWithId { pub id: Id<Foo>, pub doc: Foo }`
-//! - `inventory::submit!(::convex_native::TableRegistration { .. })`
+//! - `inventory::submit!(::convex_native_core::TableRegistration { .. })`
 
 use heck::{
     ToPascalCase,
@@ -589,7 +589,7 @@ fn build_field_enum(enum_ident: &Ident, fields: &[FieldSpec]) -> TokenStream2 {
             #(#variants,)*
         }
 
-        impl ::convex_native::FieldReference for #enum_ident {
+        impl ::convex_native_core::FieldReference for #enum_ident {
             fn as_str(&self) -> &'static str {
                 match self {
                     #(#match_arms,)*
@@ -609,7 +609,7 @@ fn build_index_enum(enum_ident: &Ident, indexes: &[IndexSpec]) -> TokenStream2 {
             #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
             pub enum #enum_ident {}
 
-            impl ::convex_native::IndexReference for #enum_ident {
+            impl ::convex_native_core::IndexReference for #enum_ident {
                 fn as_str(&self) -> &'static str {
                     match *self {}
                 }
@@ -637,7 +637,7 @@ fn build_index_enum(enum_ident: &Ident, indexes: &[IndexSpec]) -> TokenStream2 {
             #(#variants,)*
         }
 
-        impl ::convex_native::IndexReference for #enum_ident {
+        impl ::convex_native_core::IndexReference for #enum_ident {
             fn as_str(&self) -> &'static str {
                 match self {
                     #(#name_arms,)*
@@ -663,11 +663,11 @@ fn build_patch(patch_ident: &Ident, struct_ident: &Ident, fields: &[FieldSpec]) 
         let name = &f.name;
         quote! {
             if let ::std::option::Option::Some(v) = ::std::clone::Clone::clone(&self.#id) {
-                let __field: ::convex_native::__private::FieldName = #name.parse()
+                let __field: ::convex_native_core::__private::FieldName = #name.parse()
                     .map_err(::anyhow::Error::from)?;
                 __map.insert(
                     __field,
-                    ::convex_native::ToConvex::to_convex(v)?,
+                    ::convex_native_core::ToConvex::to_convex(v)?,
                 );
             }
         }
@@ -679,15 +679,15 @@ fn build_patch(patch_ident: &Ident, struct_ident: &Ident, fields: &[FieldSpec]) 
             #(#patch_fields,)*
         }
 
-        impl ::convex_native::ConvexPatch for #patch_ident {
+        impl ::convex_native_core::ConvexPatch for #patch_ident {
             type Document = #struct_ident;
 
             fn to_convex_object(&self)
-                -> ::anyhow::Result<::convex_native::__private::ConvexObject>
+                -> ::anyhow::Result<::convex_native_core::__private::ConvexObject>
             {
                 let mut __map: ::std::collections::BTreeMap<
-                    ::convex_native::__private::FieldName,
-                    ::convex_native::__private::ConvexValue,
+                    ::convex_native_core::__private::FieldName,
+                    ::convex_native_core::__private::ConvexValue,
                 > = ::std::collections::BTreeMap::new();
                 #(#set_statements)*
                 ::std::convert::TryFrom::try_from(__map).map_err(::std::convert::Into::into)
@@ -698,21 +698,21 @@ fn build_patch(patch_ident: &Ident, struct_ident: &Ident, fields: &[FieldSpec]) 
 
 fn build_convert_impls(struct_ident: &Ident) -> TokenStream2 {
     quote! {
-        impl ::convex_native::ToConvex for #struct_ident {
+        impl ::convex_native_core::ToConvex for #struct_ident {
             fn to_convex(self)
-                -> ::anyhow::Result<::convex_native::__private::ConvexValue>
+                -> ::anyhow::Result<::convex_native_core::__private::ConvexValue>
             {
-                <Self as ::convex_native::ConvexDocument>::to_convex_object(&self)
-                    .map(::convex_native::__private::ConvexValue::Object)
+                <Self as ::convex_native_core::ConvexDocument>::to_convex_object(&self)
+                    .map(::convex_native_core::__private::ConvexValue::Object)
             }
         }
 
-        impl ::convex_native::FromConvex for #struct_ident {
+        impl ::convex_native_core::FromConvex for #struct_ident {
             fn from_convex(
-                value: ::convex_native::__private::ConvexValue,
+                value: ::convex_native_core::__private::ConvexValue,
             ) -> ::anyhow::Result<Self> {
-                let obj = ::convex_native::__private::ConvexObject::try_from(value)?;
-                <Self as ::convex_native::ConvexDocument>::from_convex_object(obj)
+                let obj = ::convex_native_core::__private::ConvexObject::try_from(value)?;
+                <Self as ::convex_native_core::ConvexDocument>::from_convex_object(obj)
             }
         }
     }
@@ -723,7 +723,7 @@ fn build_with_id(with_id_ident: &Ident, struct_ident: &Ident) -> TokenStream2 {
         #[derive(Clone, Debug)]
         #[allow(dead_code)]
         pub struct #with_id_ident {
-            pub id: ::convex_native::Id<#struct_ident>,
+            pub id: ::convex_native_core::Id<#struct_ident>,
             pub doc: #struct_ident,
         }
 
@@ -752,11 +752,11 @@ fn build_trait_impl(
         let name = &f.name;
         quote! {
             {
-                let __field: ::convex_native::__private::FieldName = #name.parse()
+                let __field: ::convex_native_core::__private::FieldName = #name.parse()
                     .map_err(::anyhow::Error::from)?;
                 __map.insert(
                     __field,
-                    ::convex_native::ToConvex::to_convex(::std::clone::Clone::clone(&self.#id))?,
+                    ::convex_native_core::ToConvex::to_convex(::std::clone::Clone::clone(&self.#id))?,
                 );
             }
         }
@@ -768,12 +768,12 @@ fn build_trait_impl(
         let ty = &f.ty;
         quote! {
             let #id: #ty = {
-                let __field: ::convex_native::__private::FieldName = #name.parse()
+                let __field: ::convex_native_core::__private::FieldName = #name.parse()
                     .map_err(::anyhow::Error::from)?;
                 let __v = __map
                     .remove(&__field)
-                    .unwrap_or(::convex_native::__private::ConvexValue::Null);
-                <#ty as ::convex_native::FromConvex>::from_convex(__v)?
+                    .unwrap_or(::convex_native_core::__private::ConvexValue::Null);
+                <#ty as ::convex_native_core::FromConvex>::from_convex(__v)?
             };
         }
     });
@@ -784,20 +784,20 @@ fn build_trait_impl(
         let name = &i.name;
         let field_paths = i.fields.iter().map(|f| {
             quote! {
-                #f.parse::<::convex_native::__private::FieldPath>()?
+                #f.parse::<::convex_native_core::__private::FieldPath>()?
             }
         });
         quote! {
             {
-                let descriptor = ::convex_native::__private::IndexDescriptor::new(#name)?;
+                let descriptor = ::convex_native_core::__private::IndexDescriptor::new(#name)?;
                 let field_paths: ::std::vec::Vec<
-                    ::convex_native::__private::FieldPath,
+                    ::convex_native_core::__private::FieldPath,
                 > = vec![#(#field_paths),*];
-                let indexed_fields: ::convex_native::__private::IndexedFields =
+                let indexed_fields: ::convex_native_core::__private::IndexedFields =
                     ::std::convert::TryFrom::try_from(field_paths)?;
                 __indexes.insert(
                     descriptor.clone(),
-                    ::convex_native::__private::IndexSchema {
+                    ::convex_native_core::__private::IndexSchema {
                         index_descriptor: descriptor,
                         fields: indexed_fields,
                     },
@@ -812,19 +812,19 @@ fn build_trait_impl(
         let search_field = &t.search_field;
         let filter_fields = t.filter_fields.iter().map(|f| {
             quote! {
-                __filter.insert(#f.parse::<::convex_native::__private::FieldPath>()?);
+                __filter.insert(#f.parse::<::convex_native_core::__private::FieldPath>()?);
             }
         });
         quote! {
             {
-                let descriptor = ::convex_native::__private::IndexDescriptor::new(#name)?;
-                let search_path: ::convex_native::__private::FieldPath =
+                let descriptor = ::convex_native_core::__private::IndexDescriptor::new(#name)?;
+                let search_path: ::convex_native_core::__private::FieldPath =
                     #search_field.parse()?;
                 let mut __filter: ::std::collections::BTreeSet<
-                    ::convex_native::__private::FieldPath,
+                    ::convex_native_core::__private::FieldPath,
                 > = ::std::collections::BTreeSet::new();
                 #(#filter_fields)*
-                let schema = ::convex_native::__private::TextIndexSchema::new(
+                let schema = ::convex_native_core::__private::TextIndexSchema::new(
                     descriptor.clone(),
                     search_path,
                     __filter,
@@ -846,21 +846,21 @@ fn build_trait_impl(
         let dimensions = v.dimensions;
         let filter_fields = v.filter_fields.iter().map(|f| {
             quote! {
-                __filter.insert(#f.parse::<::convex_native::__private::FieldPath>()?);
+                __filter.insert(#f.parse::<::convex_native_core::__private::FieldPath>()?);
             }
         });
         quote! {
             {
-                let descriptor = ::convex_native::__private::IndexDescriptor::new(#name)?;
-                let vector_path: ::convex_native::__private::FieldPath =
+                let descriptor = ::convex_native_core::__private::IndexDescriptor::new(#name)?;
+                let vector_path: ::convex_native_core::__private::FieldPath =
                     #vector_field.parse()?;
-                let dims: ::convex_native::__private::VectorDimensions =
+                let dims: ::convex_native_core::__private::VectorDimensions =
                     ::std::convert::TryFrom::try_from(#dimensions as u32)?;
                 let mut __filter: ::std::collections::BTreeSet<
-                    ::convex_native::__private::FieldPath,
+                    ::convex_native_core::__private::FieldPath,
                 > = ::std::collections::BTreeSet::new();
                 #(#filter_fields)*
-                let schema = ::convex_native::__private::VectorIndexSchema::new(
+                let schema = ::convex_native_core::__private::VectorIndexSchema::new(
                     descriptor.clone(),
                     vector_path,
                     dims,
@@ -872,48 +872,48 @@ fn build_trait_impl(
     });
 
     quote! {
-        impl ::convex_native::ConvexDocument for #struct_ident {
+        impl ::convex_native_core::ConvexDocument for #struct_ident {
             type Field = #field_enum_ident;
             type Index = #index_enum_ident;
             type Patch = #patch_ident;
 
-            fn table_name() -> ::convex_native::__private::TableName {
+            fn table_name() -> ::convex_native_core::__private::TableName {
                 #table_name
                     .parse()
                     .expect(concat!("invalid table name: ", #table_name))
             }
 
-            fn table_definition() -> ::convex_native::__private::TableDefinition {
-                let __fn = || -> ::anyhow::Result<::convex_native::__private::TableDefinition> {
+            fn table_definition() -> ::convex_native_core::__private::TableDefinition {
+                let __fn = || -> ::anyhow::Result<::convex_native_core::__private::TableDefinition> {
                     #[allow(unused_mut)]
                     let mut __indexes: ::std::collections::BTreeMap<
-                        ::convex_native::__private::IndexDescriptor,
-                        ::convex_native::__private::IndexSchema,
+                        ::convex_native_core::__private::IndexDescriptor,
+                        ::convex_native_core::__private::IndexSchema,
                     > = ::std::collections::BTreeMap::new();
                     #(#index_entries)*
                     #[allow(unused_mut)]
                     let mut __text_indexes: ::std::collections::BTreeMap<
-                        ::convex_native::__private::IndexDescriptor,
-                        ::convex_native::__private::TextIndexSchema,
+                        ::convex_native_core::__private::IndexDescriptor,
+                        ::convex_native_core::__private::TextIndexSchema,
                     > = ::std::collections::BTreeMap::new();
                     #(#text_index_entries)*
                     #[allow(unused_mut)]
                     let mut __vector_indexes: ::std::collections::BTreeMap<
-                        ::convex_native::__private::IndexDescriptor,
-                        ::convex_native::__private::VectorIndexSchema,
+                        ::convex_native_core::__private::IndexDescriptor,
+                        ::convex_native_core::__private::VectorIndexSchema,
                     > = ::std::collections::BTreeMap::new();
                     #(#vector_index_entries)*
                     let __field_entries: ::std::vec::Vec<(
                         ::std::string::String,
-                        ::convex_native::__private::FieldValidator,
+                        ::convex_native_core::__private::FieldValidator,
                     )> = #document_fields;
                     let __obj_validator =
-                        ::convex_native::__private::build_object_validator(__field_entries)?;
-                    let __doc_schema = ::convex_native::__private::DocumentSchema::Union(
+                        ::convex_native_core::__private::build_object_validator(__field_entries)?;
+                    let __doc_schema = ::convex_native_core::__private::DocumentSchema::Union(
                         ::std::vec![__obj_validator],
                     );
-                    ::std::result::Result::Ok(::convex_native::__private::TableDefinition {
-                        table_name: <Self as ::convex_native::ConvexDocument>::table_name(),
+                    ::std::result::Result::Ok(::convex_native_core::__private::TableDefinition {
+                        table_name: <Self as ::convex_native_core::ConvexDocument>::table_name(),
                         indexes: __indexes,
                         staged_db_indexes: ::std::default::Default::default(),
                         text_indexes: __text_indexes,
@@ -927,22 +927,22 @@ fn build_trait_impl(
             }
 
             fn to_convex_object(&self)
-                -> ::anyhow::Result<::convex_native::__private::ConvexObject>
+                -> ::anyhow::Result<::convex_native_core::__private::ConvexObject>
             {
                 let mut __map: ::std::collections::BTreeMap<
-                    ::convex_native::__private::FieldName,
-                    ::convex_native::__private::ConvexValue,
+                    ::convex_native_core::__private::FieldName,
+                    ::convex_native_core::__private::ConvexValue,
                 > = ::std::collections::BTreeMap::new();
                 #(#field_to_object)*
                 ::std::convert::TryFrom::try_from(__map).map_err(::std::convert::Into::into)
             }
 
-            fn from_convex_object(obj: ::convex_native::__private::ConvexObject)
+            fn from_convex_object(obj: ::convex_native_core::__private::ConvexObject)
                 -> ::anyhow::Result<Self>
             {
                 let mut __map: ::std::collections::BTreeMap<
-                    ::convex_native::__private::FieldName,
-                    ::convex_native::__private::ConvexValue,
+                    ::convex_native_core::__private::FieldName,
+                    ::convex_native_core::__private::ConvexValue,
                 > = obj.into();
                 #(#field_from_object)*
                 ::std::result::Result::Ok(Self {
@@ -980,24 +980,24 @@ fn field_entries_tokens(fields: &[FieldSpec]) -> TokenStream2 {
 fn field_validator_expr(ty: &syn::Type) -> TokenStream2 {
     if is_vec_u8(ty) {
         return quote! {
-            ::convex_native::__private::FieldValidator::required_field_type(
-                ::convex_native::__private::Validator::Bytes,
+            ::convex_native_core::__private::FieldValidator::required_field_type(
+                ::convex_native_core::__private::Validator::Bytes,
             )
         };
     }
     if let Some(inner) = option_of_vec_u8(ty) {
         let _ = inner;
         return quote! {
-            ::convex_native::__private::FieldValidator::optional_field_type(
-                ::convex_native::__private::Validator::Union(::std::vec![
-                    ::convex_native::__private::Validator::Null,
-                    ::convex_native::__private::Validator::Bytes,
+            ::convex_native_core::__private::FieldValidator::optional_field_type(
+                ::convex_native_core::__private::Validator::Union(::std::vec![
+                    ::convex_native_core::__private::Validator::Null,
+                    ::convex_native_core::__private::Validator::Bytes,
                 ]),
             )
         };
     }
     quote! {
-        ::convex_native::__private::field_validator_for::<#ty>()
+        ::convex_native_core::__private::field_validator_for::<#ty>()
     }
 }
 
@@ -1069,15 +1069,15 @@ fn is_primitive_path(ty: &syn::Type, name: &str) -> bool {
 fn build_schema_impl(struct_ident: &Ident, fields: &[FieldSpec]) -> TokenStream2 {
     let entries = field_entries_tokens(fields);
     quote! {
-        impl ::convex_native::ConvexSchema for #struct_ident {
-            fn validator() -> ::convex_native::__private::Validator {
+        impl ::convex_native_core::ConvexSchema for #struct_ident {
+            fn validator() -> ::convex_native_core::__private::Validator {
                 let __fields: ::std::vec::Vec<(
                     ::std::string::String,
-                    ::convex_native::__private::FieldValidator,
+                    ::convex_native_core::__private::FieldValidator,
                 )> = #entries;
-                let __obj = ::convex_native::__private::build_object_validator(__fields)
+                let __obj = ::convex_native_core::__private::build_object_validator(__fields)
                     .expect("build_object_validator");
-                ::convex_native::__private::Validator::Object(__obj)
+                ::convex_native_core::__private::Validator::Object(__obj)
             }
         }
     }
@@ -1094,12 +1094,12 @@ fn build_registration(struct_ident: &Ident, table_name: &str) -> TokenStream2 {
     quote! {
         #[doc(hidden)]
         #[allow(non_upper_case_globals)]
-        fn #hidden_ident() -> ::convex_native::__private::TableDefinition {
-            <#struct_ident as ::convex_native::ConvexDocument>::table_definition()
+        fn #hidden_ident() -> ::convex_native_core::__private::TableDefinition {
+            <#struct_ident as ::convex_native_core::ConvexDocument>::table_definition()
         }
 
-        ::convex_native::inventory::submit! {
-            ::convex_native::TableRegistration {
+        ::convex_native_core::inventory::submit! {
+            ::convex_native_core::TableRegistration {
                 table_name: #table_name,
                 build: #hidden_ident,
             }

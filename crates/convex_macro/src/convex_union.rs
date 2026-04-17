@@ -114,12 +114,12 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             let fname = &field_strs[idx];
             quote! {
                 {
-                    let __field: ::convex_native::__private::FieldName = #fname
+                    let __field: ::convex_native_core::__private::FieldName = #fname
                         .parse()
                         .map_err(::anyhow::Error::from)?;
                     __map.insert(
                         __field,
-                        ::convex_native::ToConvex::to_convex(#fid)?,
+                        ::convex_native_core::ToConvex::to_convex(#fid)?,
                     );
                 }
             }
@@ -127,22 +127,22 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         quote! {
             Self::#vi { #(#field_names),* } => {
                 let mut __map: ::std::collections::BTreeMap<
-                    ::convex_native::__private::FieldName,
-                    ::convex_native::__private::ConvexValue,
+                    ::convex_native_core::__private::FieldName,
+                    ::convex_native_core::__private::ConvexValue,
                 > = ::std::collections::BTreeMap::new();
                 {
-                    let __field: ::convex_native::__private::FieldName = #tag_field
+                    let __field: ::convex_native_core::__private::FieldName = #tag_field
                         .parse()
                         .map_err(::anyhow::Error::from)?;
                     __map.insert(
                         __field,
-                        ::convex_native::__private::ConvexValue::try_from(
+                        ::convex_native_core::__private::ConvexValue::try_from(
                             ::std::string::String::from(#wire),
                         )?,
                     );
                 }
                 #(#field_inserts)*
-                ::convex_native::__private::ConvexValue::Object(
+                ::convex_native_core::__private::ConvexValue::Object(
                     ::std::convert::TryFrom::try_from(__map)?,
                 )
             }
@@ -156,13 +156,13 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             let fname = fid.to_string();
             quote! {
                 let #fid: #ty = {
-                    let __field: ::convex_native::__private::FieldName = #fname
+                    let __field: ::convex_native_core::__private::FieldName = #fname
                         .parse()
                         .map_err(::anyhow::Error::from)?;
                     let __v = __map
                         .remove(&__field)
-                        .unwrap_or(::convex_native::__private::ConvexValue::Null);
-                    <#ty as ::convex_native::FromConvex>::from_convex(__v)?
+                        .unwrap_or(::convex_native_core::__private::ConvexValue::Null);
+                    <#ty as ::convex_native_core::FromConvex>::from_convex(__v)?
                 };
             }
         });
@@ -191,26 +191,26 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             {
                 let mut __entries: ::std::vec::Vec<(
                     ::std::string::String,
-                    ::convex_native::__private::FieldValidator,
+                    ::convex_native_core::__private::FieldValidator,
                 )> = ::std::vec![#(#variant_field_entries,)*];
                 __entries.push((
                     ::std::string::String::from(#tag_field_name),
-                    ::convex_native::__private::FieldValidator::required_field_type(
-                        ::convex_native::__private::string_literal_validator(#wire)
+                    ::convex_native_core::__private::FieldValidator::required_field_type(
+                        ::convex_native_core::__private::string_literal_validator(#wire)
                             .expect("literal string"),
                     ),
                 ));
-                let __obj = ::convex_native::__private::build_object_validator(__entries)
+                let __obj = ::convex_native_core::__private::build_object_validator(__entries)
                     .expect("build_object_validator");
-                ::convex_native::__private::Validator::Object(__obj)
+                ::convex_native_core::__private::Validator::Object(__obj)
             }
         }
     });
 
     Ok(quote! {
-        impl ::convex_native::ToConvex for #ident {
+        impl ::convex_native_core::ToConvex for #ident {
             fn to_convex(self)
-                -> ::anyhow::Result<::convex_native::__private::ConvexValue>
+                -> ::anyhow::Result<::convex_native_core::__private::ConvexValue>
             {
                 ::std::result::Result::Ok(match self {
                     #(#to_arms,)*
@@ -218,16 +218,16 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
 
-        impl ::convex_native::FromConvex for #ident {
+        impl ::convex_native_core::FromConvex for #ident {
             fn from_convex(
-                value: ::convex_native::__private::ConvexValue,
+                value: ::convex_native_core::__private::ConvexValue,
             ) -> ::anyhow::Result<Self> {
-                let obj = ::convex_native::__private::ConvexObject::try_from(value)?;
+                let obj = ::convex_native_core::__private::ConvexObject::try_from(value)?;
                 let mut __map: ::std::collections::BTreeMap<
-                    ::convex_native::__private::FieldName,
-                    ::convex_native::__private::ConvexValue,
+                    ::convex_native_core::__private::FieldName,
+                    ::convex_native_core::__private::ConvexValue,
                 > = obj.into();
-                let __tag_field: ::convex_native::__private::FieldName = #tag_field
+                let __tag_field: ::convex_native_core::__private::FieldName = #tag_field
                     .parse()
                     .map_err(::anyhow::Error::from)?;
                 let __tag_value = __map
@@ -238,7 +238,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         stringify!(#ident),
                     ))?;
                 let __tag: ::std::string::String = <::std::string::String
-                    as ::convex_native::FromConvex>::from_convex(__tag_value)?;
+                    as ::convex_native_core::FromConvex>::from_convex(__tag_value)?;
                 match __tag.as_str() {
                     #(#from_arms,)*
                     other => ::std::result::Result::Err(::anyhow::anyhow!(
@@ -251,15 +251,15 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
 
-        impl ::convex_native::ConvexSchema for #ident {
-            fn validator() -> ::convex_native::__private::Validator {
+        impl ::convex_native_core::ConvexSchema for #ident {
+            fn validator() -> ::convex_native_core::__private::Validator {
                 let __variants: ::std::vec::Vec<
-                    ::convex_native::__private::Validator,
+                    ::convex_native_core::__private::Validator,
                 > = ::std::vec![#(#variant_object_validators,)*];
                 if __variants.len() == 1 {
                     __variants.into_iter().next().expect("1 variant")
                 } else {
-                    ::convex_native::__private::Validator::Union(__variants)
+                    ::convex_native_core::__private::Validator::Union(__variants)
                 }
             }
         }
@@ -272,8 +272,8 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 fn union_field_validator_expr(ty: &syn::Type) -> TokenStream2 {
     if is_vec_u8(ty) {
         return quote! {
-            ::convex_native::__private::FieldValidator::required_field_type(
-                ::convex_native::__private::Validator::Bytes,
+            ::convex_native_core::__private::FieldValidator::required_field_type(
+                ::convex_native_core::__private::Validator::Bytes,
             )
         };
     }
@@ -281,16 +281,16 @@ fn union_field_validator_expr(ty: &syn::Type) -> TokenStream2 {
         && is_vec_u8(inner)
     {
         return quote! {
-            ::convex_native::__private::FieldValidator::optional_field_type(
-                ::convex_native::__private::Validator::Union(::std::vec![
-                    ::convex_native::__private::Validator::Null,
-                    ::convex_native::__private::Validator::Bytes,
+            ::convex_native_core::__private::FieldValidator::optional_field_type(
+                ::convex_native_core::__private::Validator::Union(::std::vec![
+                    ::convex_native_core::__private::Validator::Null,
+                    ::convex_native_core::__private::Validator::Bytes,
                 ]),
             )
         };
     }
     quote! {
-        ::convex_native::__private::field_validator_for::<#ty>()
+        ::convex_native_core::__private::field_validator_for::<#ty>()
     }
 }
 

@@ -240,7 +240,7 @@ pub async fn make_app(
     //     the prebuilt backend image described in DISTRIBUTED_PLAN.md Phase 5.
     let convex_mode = convex_native_distributed::read_mode_from_env();
     tracing::info!("convex-local-backend CONVEX_MODE detected: {convex_mode:?}");
-    use convex_native::distributed::ConvexMode;
+    use convex_native_core::distributed::ConvexMode;
     match convex_mode {
         ConvexMode::Standalone | ConvexMode::Worker => {},
         ConvexMode::Conductor => anyhow::bail!(
@@ -254,7 +254,7 @@ pub async fn make_app(
     // native functions (#[convex::query/mutation/action]) intercept
     // before the request reaches V8. When the registry is empty the
     // composite is a thin pass-through to the JS runner.
-    let native_runner = Arc::new(convex_native::NativeFunctionRunner::from_inventory()?);
+    let native_runner = Arc::new(convex_native_core::NativeFunctionRunner::from_inventory()?);
     tracing::info!(
         "Native function registry: {} registered",
         native_runner.len(),
@@ -424,7 +424,7 @@ pub async fn make_app(
             )
             .await
             {
-                tracing::error!("convex_native worker tonic server exited: {e}");
+                tracing::error!("convex_native_core worker tonic server exited: {e}");
             }
         });
     }

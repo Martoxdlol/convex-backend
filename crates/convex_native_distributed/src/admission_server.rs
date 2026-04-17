@@ -332,7 +332,7 @@ mod tests {
     async fn spawn_worker_server() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let native = Arc::new(convex_native::NativeFunctionRunner::from_inventory().unwrap());
+        let native = Arc::new(convex_native_core::NativeFunctionRunner::from_inventory().unwrap());
         let server = FunctionExecutionServer::new(native).with_registry_version("test-1.0.0");
         tokio::spawn(async move {
             Server::builder()

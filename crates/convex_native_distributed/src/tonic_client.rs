@@ -18,7 +18,7 @@ use std::sync::{
 
 use async_trait::async_trait;
 use common::types::UdfType;
-use convex_native::distributed::{
+use convex_native_core::distributed::{
     ExecuteRequest,
     ExecuteResponse,
 };
@@ -134,7 +134,7 @@ mod tests {
         sync::Arc,
     };
 
-    use convex_native::NativeFunctionRunner;
+    use convex_native_core::NativeFunctionRunner;
     use pb::function_execution::function_execution_service_server::FunctionExecutionServiceServer;
     use tokio::net::TcpListener;
     use tokio_stream::wrappers::TcpListenerStream;

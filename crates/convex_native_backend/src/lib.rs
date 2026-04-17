@@ -1,4 +1,4 @@
-//! Integration glue between `convex_native` and the Convex backend's
+//! Integration glue between `convex_native_core` and the Convex backend's
 //! V8-based function runner.
 //!
 //! [`CompositeFunctionRunner`] implements
@@ -27,7 +27,7 @@
 //!
 //! This crate depends on `function_runner` (and transitively on
 //! `isolate`), so it only builds after the `npm-packages/`
-//! `rush install` + build step has run. `convex_native` itself
+//! `rush install` + build step has run. `convex_native_core` itself
 //! stays lightweight and has no `isolate` dep — the split exists
 //! specifically so framework-only consumers can avoid the V8
 //! build cost.

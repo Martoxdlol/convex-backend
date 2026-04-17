@@ -1,7 +1,7 @@
 //! Substep 4.3 of `convex-native/STATUS.md` — worker-side
 //! `BackendCallbackClient`.
 //!
-//! Translates `convex_native::NativeActionCallbacks` methods into
+//! Translates `convex_native_core::NativeActionCallbacks` methods into
 //! `BackendCallbackService` gRPC calls. The worker's
 //! `FunctionExecutionServer` uses this (wrapped in an `Arc<dyn
 //! NativeActionCallbacks>`) when a backend-callback endpoint is
@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use convex_native::{
+use convex_native_core::{
     callbacks::NativeActionCallbacks,
     ctx::storage::StorageId,
 };

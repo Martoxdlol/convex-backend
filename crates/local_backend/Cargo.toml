@@ -52,7 +52,7 @@ clap = { workspace = true }
 clusters = { workspace = true }
 cmd_util = { workspace = true }
 common = { workspace = true }
-convex_native = { workspace = true }
+convex_native_core = { workspace = true }
 convex_native_backend = { workspace = true }
 convex_native_distributed = { workspace = true }
 database = { workspace = true }

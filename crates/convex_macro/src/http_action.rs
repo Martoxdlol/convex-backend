@@ -105,8 +105,8 @@ fn expand(args: AttrArgs, input: ItemFn) -> syn::Result<TokenStream2> {
     };
 
     let registration = quote! {
-        ::convex_native::inventory::submit! {
-            ::convex_native::HttpRouteRegistration {
+        ::convex_native_core::inventory::submit! {
+            ::convex_native_core::HttpRouteRegistration {
                 method: #method,
                 path: #path,
                 name: #name,

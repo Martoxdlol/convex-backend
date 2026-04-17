@@ -11,7 +11,7 @@
 //! ## What ships here today (post Phase-1)
 //!
 //! - `health`: fully implemented, reports registry version (derived from the
-//!   `convex_native` crate version), `accepts_traffic` (false when the runner
+//!   `convex_native_core` crate version), `accepts_traffic` (false when the runner
 //!   is draining), `registered_functions`, and `in_flight`.
 //! - `execute` for `UdfType::Action`: dispatches via
 //!   `NativeFunctionRunner::run_action_with_callbacks` with `NoopCallbacks`. A
@@ -35,7 +35,7 @@ use common::types::{
     Timestamp,
     UdfType,
 };
-use convex_native::{
+use convex_native_core::{
     NativeFunctionRunner,
     Rt,
 };
@@ -69,7 +69,7 @@ pub struct FunctionExecutionServer {
     /// return `Code::Unimplemented`.
     database: Option<Database<Rt>>,
     /// Registry version reported in `Health`. Defaults to the
-    /// `convex_native` crate version; callers can override if they
+    /// `convex_native_core` crate version; callers can override if they
     /// want a finer-grained tag.
     registry_version: String,
     /// Substep 4.4 of `convex-native/DISTRIBUTED_PLAN.md` — URL
@@ -91,7 +91,7 @@ impl FunctionExecutionServer {
         Self {
             native,
             database: None,
-            registry_version: convex_native::VERSION.to_string(),
+            registry_version: convex_native_core::VERSION.to_string(),
             backend_callback_endpoint: None,
         }
     }
@@ -176,7 +176,7 @@ impl FunctionExecutionService for FunctionExecutionServer {
                 // native ctx; substep 4.4's follow-up wires
                 // identity through `CONVEX_BACKEND_ENDPOINT` +
                 // the admission handshake.
-                let callbacks: Arc<dyn convex_native::NativeActionCallbacks> =
+                let callbacks: Arc<dyn convex_native_core::NativeActionCallbacks> =
                     match &self.backend_callback_endpoint {
                         Some(endpoint) => {
                             let execution_context = proto_req.execution_context.clone();
@@ -196,9 +196,9 @@ impl FunctionExecutionService for FunctionExecutionServer {
                                 })?;
                             Arc::new(client)
                         },
-                        None => Arc::new(convex_native::callbacks::NoopCallbacks),
+                        None => Arc::new(convex_native_core::callbacks::NoopCallbacks),
                     };
-                let log_buffer = convex_native::LogBuffer::new();
+                let log_buffer = convex_native_core::LogBuffer::new();
                 let result = self
                     .native
                     .run_action_with_callbacks_and_log_buffer(
@@ -210,7 +210,7 @@ impl FunctionExecutionService for FunctionExecutionServer {
                     )
                     .await;
                 let log_lines = log_lines_to_pretty_strings(&log_buffer);
-                let native_response = convex_native::distributed::ExecuteResponse::new(
+                let native_response = convex_native_core::distributed::ExecuteResponse::new(
                     result.map_err(|e| e.to_string()),
                 )
                 .with_log_lines(log_lines);
@@ -250,7 +250,7 @@ impl FunctionExecutionService for FunctionExecutionServer {
                 // summary rides on the native `ExecuteResponse` so the
                 // proto encoding — and any future consumer of the
                 // native shape — picks it up through `to_proto_response`.
-                let mut native_response = convex_native::distributed::ExecuteResponse::new(
+                let mut native_response = convex_native_core::distributed::ExecuteResponse::new(
                     dispatch.result.map_err(|e| e.to_string()),
                 )
                 .with_log_lines(dispatch.log_lines);
@@ -294,7 +294,7 @@ impl FunctionExecutionService for FunctionExecutionServer {
 struct InlineDispatch {
     result: anyhow::Result<value::ConvexValue>,
     log_lines: Vec<String>,
-    final_tx: Option<convex_native::distributed::FinalTxSummary>,
+    final_tx: Option<convex_native_core::distributed::FinalTxSummary>,
 }
 
 /// Open a fresh transaction at `begin_ts` (or `now_ts_for_reads()`
@@ -312,7 +312,7 @@ struct InlineDispatch {
 async fn run_query_inline(
     native: &Arc<NativeFunctionRunner>,
     database: &Database<Rt>,
-    req: &convex_native::distributed::ExecuteRequest,
+    req: &convex_native_core::distributed::ExecuteRequest,
     begin_ts: Option<Timestamp>,
 ) -> InlineDispatch {
     run_udf_inline(native, database, req, begin_ts, UdfType::Query).await
@@ -329,7 +329,7 @@ async fn run_query_inline(
 async fn run_mutation_inline(
     native: &Arc<NativeFunctionRunner>,
     database: &Database<Rt>,
-    req: &convex_native::distributed::ExecuteRequest,
+    req: &convex_native_core::distributed::ExecuteRequest,
     begin_ts: Option<Timestamp>,
 ) -> InlineDispatch {
     run_udf_inline(native, database, req, begin_ts, UdfType::Mutation).await
@@ -340,11 +340,11 @@ async fn run_mutation_inline(
 async fn run_udf_inline(
     native: &Arc<NativeFunctionRunner>,
     database: &Database<Rt>,
-    req: &convex_native::distributed::ExecuteRequest,
+    req: &convex_native_core::distributed::ExecuteRequest,
     begin_ts: Option<Timestamp>,
     udf_type: UdfType,
 ) -> InlineDispatch {
-    let log_buffer = convex_native::LogBuffer::new();
+    let log_buffer = convex_native_core::LogBuffer::new();
     let prepared = async {
         let ts = match begin_ts {
             Some(ts) => database.now_ts_for_reads().prior_ts(ts)?,
@@ -427,7 +427,7 @@ async fn run_udf_inline(
 /// tx is always flat at this point; a future invariant violation
 /// would show up as the backend rejecting the response at commit
 /// time under Phase 2 regardless.
-fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::FinalTxSummary {
+fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native_core::distributed::FinalTxSummary {
     let begin_timestamp: u64 = (*tx.begin_timestamp()).into();
     let rows_read_by_tablet = tx
         .stats_by_tablet()
@@ -439,11 +439,11 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::Fi
     // Substep 2.2a: pull scalar read-size counters off the
     // TransactionReadSet before moving its interval-set into the
     // flat ReadSet. `usize → u64` is a lossless widening.
-    let user_tx_size = convex_native::distributed::TxReadSize {
+    let user_tx_size = convex_native_core::distributed::TxReadSize {
         total_document_size: reads.user_tx_size().total_document_size as u64,
         total_document_count: reads.user_tx_size().total_document_count as u64,
     };
-    let system_tx_size = convex_native::distributed::TxReadSize {
+    let system_tx_size = convex_native_core::distributed::TxReadSize {
         total_document_size: reads.system_tx_size().total_document_size as u64,
         total_document_count: reads.system_tx_size().total_document_count as u64,
     };
@@ -453,7 +453,7 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::Fi
     // a typed search surface yet.
     let read_set = reads.into_read_set();
     let (indexed, _search) = read_set.consume();
-    let index_reads: Vec<convex_native::distributed::IndexReadsSummary> = indexed
+    let index_reads: Vec<convex_native_core::distributed::IndexReadsSummary> = indexed
         .map(|(index_name, index_reads)| {
             // `database::IndexReads` isn't re-exported; reach into
             // the `reads` module directly. `stack_traces` is debug-
@@ -464,7 +464,7 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::Fi
                 intervals,
                 stack_traces: _,
             } = index_reads;
-            convex_native::distributed::IndexReadsSummary {
+            convex_native_core::distributed::IndexReadsSummary {
                 index_name,
                 fields,
                 intervals,
@@ -479,7 +479,7 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::Fi
                 .collect()
         })
         .unwrap_or_default();
-    convex_native::distributed::FinalTxSummary {
+    convex_native_core::distributed::FinalTxSummary {
         begin_timestamp,
         writes_count: writes_vec.len() as u64,
         reads_count,
@@ -495,16 +495,16 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::Fi
 /// Matches the `repeated string log_lines` field on the proto: one
 /// formatted line per entry, ready for the backend to forward
 /// into its own log-streaming path without re-parsing.
-fn log_lines_to_pretty_strings(buffer: &convex_native::LogBuffer) -> Vec<String> {
+fn log_lines_to_pretty_strings(buffer: &convex_native_core::LogBuffer) -> Vec<String> {
     buffer
         .snapshot()
         .into_iter()
         .map(|line| {
             let level = match line.level {
-                convex_native::LogLevel::Debug => "DEBUG",
-                convex_native::LogLevel::Info => "INFO",
-                convex_native::LogLevel::Warn => "WARN",
-                convex_native::LogLevel::Error => "ERROR",
+                convex_native_core::LogLevel::Debug => "DEBUG",
+                convex_native_core::LogLevel::Info => "INFO",
+                convex_native_core::LogLevel::Warn => "WARN",
+                convex_native_core::LogLevel::Error => "ERROR",
             };
             format!("[{level}] {}", line.message)
         })
@@ -531,7 +531,7 @@ mod tests {
         time::Duration,
     };
 
-    use convex_native::distributed::ExecuteRequest as NativeExecuteRequest;
+    use convex_native_core::distributed::ExecuteRequest as NativeExecuteRequest;
     use value::{
         ConvexObject,
         ConvexValue,

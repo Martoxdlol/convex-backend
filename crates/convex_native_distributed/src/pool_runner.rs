@@ -131,9 +131,9 @@ impl PoolFunctionRunner {
     pub async fn dispatch(
         &self,
         function_name: &str,
-        req: convex_native::distributed::ExecuteRequest,
+        req: convex_native_core::distributed::ExecuteRequest,
         udf_type: UdfType,
-    ) -> Result<convex_native::distributed::ExecuteResponse, Status> {
+    ) -> Result<convex_native_core::distributed::ExecuteResponse, Status> {
         let started = Instant::now();
         let eligible = self.pool.eligible_for(function_name);
         if eligible.is_empty() {
@@ -153,10 +153,10 @@ impl PoolFunctionRunner {
 /// refactor tracked for after Phase 3 lands.
 async fn dispatch_p2c(
     eligible: Vec<(WorkerId, Arc<dyn WorkerClient>)>,
-    req: convex_native::distributed::ExecuteRequest,
+    req: convex_native_core::distributed::ExecuteRequest,
     udf_type: UdfType,
     _started: Instant,
-) -> Result<convex_native::distributed::ExecuteResponse, Status> {
+) -> Result<convex_native_core::distributed::ExecuteResponse, Status> {
     let n = eligible.len();
     // Degenerate n=1: skip the pick-two, no failover.
     if n == 1 {
@@ -356,7 +356,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use convex_native::distributed::{
+    use convex_native_core::distributed::{
         ExecuteRequest,
         ExecuteResponse,
     };

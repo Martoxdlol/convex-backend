@@ -71,9 +71,9 @@ impl FnKind {
 
     fn marker_trait_path(self) -> TokenStream2 {
         match self {
-            FnKind::Query => quote! { ::convex_native::ConvexQueryFunction },
-            FnKind::Mutation => quote! { ::convex_native::ConvexMutationFunction },
-            FnKind::Action => quote! { ::convex_native::ConvexActionFunction },
+            FnKind::Query => quote! { ::convex_native_core::ConvexQueryFunction },
+            FnKind::Mutation => quote! { ::convex_native_core::ConvexMutationFunction },
+            FnKind::Action => quote! { ::convex_native_core::ConvexActionFunction },
         }
     }
 }
@@ -240,16 +240,16 @@ fn expand(kind: FnKind, flags: AttrFlags, input: ItemFn) -> syn::Result<TokenStr
         let name = &arg_name_strs[i];
         quote! {
             let #ident: #ty = {
-                let __field: ::convex_native::__private::FieldName = #name
+                let __field: ::convex_native_core::__private::FieldName = #name
                     .parse()
                     .map_err(::anyhow::Error::from)?;
                 let __v = __args_map
                     .remove(&__field)
-                    .unwrap_or(::convex_native::__private::ConvexValue::Null);
+                    .unwrap_or(::convex_native_core::__private::ConvexValue::Null);
                 // Wrap the FromConvex failure with the function + field
                 // context so callers see `args::<name>` in the error
                 // chain instead of an anonymous type mismatch.
-                match <#ty as ::convex_native::FromConvex>::from_convex(__v) {
+                match <#ty as ::convex_native_core::FromConvex>::from_convex(__v) {
                     ::std::result::Result::Ok(v) => v,
                     ::std::result::Result::Err(e) => {
                         return ::std::result::Result::Err(e.context(
@@ -269,24 +269,24 @@ fn expand(kind: FnKind, flags: AttrFlags, input: ItemFn) -> syn::Result<TokenStr
     let ctx_type_name = kind.ctx_type_name();
     let ctx_ty: TokenStream2 = match kind {
         FnKind::Query => quote! {
-            &mut ::convex_native::QueryCtx<'_, ::convex_native::Rt>
+            &mut ::convex_native_core::QueryCtx<'_, ::convex_native_core::Rt>
         },
         FnKind::Mutation => quote! {
-            &mut ::convex_native::MutationCtx<'_, ::convex_native::Rt>
+            &mut ::convex_native_core::MutationCtx<'_, ::convex_native_core::Rt>
         },
         FnKind::Action => quote! {
-            &mut ::convex_native::ActionCtx<'_, ::convex_native::Rt>
+            &mut ::convex_native_core::ActionCtx<'_, ::convex_native_core::Rt>
         },
     };
     let ctx_param_ty: TokenStream2 = match kind {
         FnKind::Query => quote! {
-            &'a mut ::convex_native::QueryCtx<'a, ::convex_native::Rt>
+            &'a mut ::convex_native_core::QueryCtx<'a, ::convex_native_core::Rt>
         },
         FnKind::Mutation => quote! {
-            &'a mut ::convex_native::MutationCtx<'a, ::convex_native::Rt>
+            &'a mut ::convex_native_core::MutationCtx<'a, ::convex_native_core::Rt>
         },
         FnKind::Action => quote! {
-            &'a mut ::convex_native::ActionCtx<'a, ::convex_native::Rt>
+            &'a mut ::convex_native_core::ActionCtx<'a, ::convex_native_core::Rt>
         },
     };
     let _ = ctx_type_name;
@@ -299,24 +299,24 @@ fn expand(kind: FnKind, flags: AttrFlags, input: ItemFn) -> syn::Result<TokenStr
         #[doc(hidden)]
         fn #handler_ident<'a>(
             ctx: #ctx_param_ty,
-            __args: ::convex_native::__private::ConvexObject,
+            __args: ::convex_native_core::__private::ConvexObject,
         ) -> ::std::pin::Pin<
             ::std::boxed::Box<
                 dyn ::std::future::Future<
                         Output = ::anyhow::Result<
-                            ::convex_native::__private::ConvexValue,
+                            ::convex_native_core::__private::ConvexValue,
                         >,
                     > + ::std::marker::Send + 'a,
             >,
         > {
             ::std::boxed::Box::pin(async move {
                 let mut __args_map: ::std::collections::BTreeMap<
-                    ::convex_native::__private::FieldName,
-                    ::convex_native::__private::ConvexValue,
+                    ::convex_native_core::__private::FieldName,
+                    ::convex_native_core::__private::ConvexValue,
                 > = __args.into();
                 #(#arg_deser)*
                 let __ret = #fn_call.await?;
-                ::convex_native::ToConvex::to_convex(__ret)
+                ::convex_native_core::ToConvex::to_convex(__ret)
             })
         }
     };
@@ -324,11 +324,11 @@ fn expand(kind: FnKind, flags: AttrFlags, input: ItemFn) -> syn::Result<TokenStr
     // Registration submit. The unique static avoids collision between
     // multiple functions in the same module.
     let registration = quote! {
-        ::convex_native::inventory::submit! {
-            ::convex_native::NativeFunctionRegistration {
+        ::convex_native_core::inventory::submit! {
+            ::convex_native_core::NativeFunctionRegistration {
                 name: #fn_name_str,
                 arg_names: &[ #(#arg_name_strs),* ],
-                handler: ::convex_native::HandlerFn::#handler_variant(#handler_ident),
+                handler: ::convex_native_core::HandlerFn::#handler_variant(#handler_ident),
                 is_internal: #is_internal,
                 timeout_ms: #timeout_ms,
             }
@@ -364,12 +364,12 @@ fn expand(kind: FnKind, flags: AttrFlags, input: ItemFn) -> syn::Result<TokenStr
         let name = &arg_name_strs[i];
         quote! {
             {
-                let __field: ::convex_native::__private::FieldName = #name
+                let __field: ::convex_native_core::__private::FieldName = #name
                     .parse()
                     .map_err(::anyhow::Error::from)?;
                 __map.insert(
                     __field,
-                    ::convex_native::ToConvex::to_convex(self.#id)?,
+                    ::convex_native_core::ToConvex::to_convex(self.#id)?,
                 );
             }
         }
@@ -384,13 +384,13 @@ fn expand(kind: FnKind, flags: AttrFlags, input: ItemFn) -> syn::Result<TokenStr
         let name = &arg_name_strs[i];
         quote! {
             let #id: #ty = {
-                let __field: ::convex_native::__private::FieldName = #name
+                let __field: ::convex_native_core::__private::FieldName = #name
                     .parse()
                     .map_err(::anyhow::Error::from)?;
                 let __v = __map
                     .remove(&__field)
-                    .unwrap_or(::convex_native::__private::ConvexValue::Null);
-                <#ty as ::convex_native::FromConvex>::from_convex(__v)?
+                    .unwrap_or(::convex_native_core::__private::ConvexValue::Null);
+                <#ty as ::convex_native_core::FromConvex>::from_convex(__v)?
             };
         }
     });
@@ -409,31 +409,31 @@ fn expand(kind: FnKind, flags: AttrFlags, input: ItemFn) -> syn::Result<TokenStr
             #(#args_field_decls,)*
         }
 
-        impl ::convex_native::ToConvex for #args_ident {
+        impl ::convex_native_core::ToConvex for #args_ident {
             fn to_convex(self)
-                -> ::anyhow::Result<::convex_native::__private::ConvexValue>
+                -> ::anyhow::Result<::convex_native_core::__private::ConvexValue>
             {
                 let mut __map: ::std::collections::BTreeMap<
-                    ::convex_native::__private::FieldName,
-                    ::convex_native::__private::ConvexValue,
+                    ::convex_native_core::__private::FieldName,
+                    ::convex_native_core::__private::ConvexValue,
                 > = ::std::collections::BTreeMap::new();
                 #(#args_field_to_inserts)*
                 ::std::result::Result::Ok(
-                    ::convex_native::__private::ConvexValue::Object(
+                    ::convex_native_core::__private::ConvexValue::Object(
                         ::std::convert::TryFrom::try_from(__map)?,
                     ),
                 )
             }
         }
 
-        impl ::convex_native::FromConvex for #args_ident {
+        impl ::convex_native_core::FromConvex for #args_ident {
             fn from_convex(
-                value: ::convex_native::__private::ConvexValue,
+                value: ::convex_native_core::__private::ConvexValue,
             ) -> ::anyhow::Result<Self> {
-                let obj = ::convex_native::__private::ConvexObject::try_from(value)?;
+                let obj = ::convex_native_core::__private::ConvexObject::try_from(value)?;
                 let mut __map: ::std::collections::BTreeMap<
-                    ::convex_native::__private::FieldName,
-                    ::convex_native::__private::ConvexValue,
+                    ::convex_native_core::__private::FieldName,
+                    ::convex_native_core::__private::ConvexValue,
                 > = obj.into();
                 #(#args_field_from_binds)*
                 ::std::result::Result::Ok(Self { #(#args_field_from_idents,)* })

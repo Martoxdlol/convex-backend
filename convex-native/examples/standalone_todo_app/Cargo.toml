@@ -1,0 +1,25 @@
+# Example deployer project — monolith (STANDALONE.md) topology.
+#
+# Lives in the parent workspace (easier to verify against the repo's
+# pinned deps). An external deployer would copy this layout and
+# switch the path-deps to git = "..." or crates.io pins.
+[package]
+name = "standalone_todo_app"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "standalone_todo_app"
+path = "src/main.rs"
+
+[dependencies]
+# Batteries-included entry point: brings the developer surface
+# (derives, ctx, prelude) + the `run()` helper.
+convex_native = { path = "../../../crates/convex_native" }
+# Core framework — required as a direct dep because `#[derive]`
+# expansions reference `::convex_native_core::__private::...`.
+convex_native_core = { path = "../../../crates/convex_native_core" }
+
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

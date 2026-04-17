@@ -323,9 +323,9 @@ pub async fn dispatch_query_or_mutation_via<F, Fut>(
     FunctionUsageStats,
 )>
 where
-    F: FnMut(convex_native::distributed::ExecuteRequest, UdfType, String) -> Fut,
+    F: FnMut(convex_native_core::distributed::ExecuteRequest, UdfType, String) -> Fut,
     Fut: std::future::Future<
-        Output = Result<convex_native::distributed::ExecuteResponse, tonic::Status>,
+        Output = Result<convex_native_core::distributed::ExecuteResponse, tonic::Status>,
     >,
 {
     let (function_name, exec_req, prepared) =
@@ -353,9 +353,9 @@ pub async fn dispatch_action_via<F, Fut>(
     FunctionUsageStats,
 )>
 where
-    F: FnMut(convex_native::distributed::ExecuteRequest, UdfType, String) -> Fut,
+    F: FnMut(convex_native_core::distributed::ExecuteRequest, UdfType, String) -> Fut,
     Fut: std::future::Future<
-        Output = Result<convex_native::distributed::ExecuteResponse, tonic::Status>,
+        Output = Result<convex_native_core::distributed::ExecuteResponse, tonic::Status>,
     >,
 {
     let started = Instant::now();
@@ -377,7 +377,7 @@ where
         }
     };
 
-    let exec_req = convex_native::distributed::ExecuteRequest {
+    let exec_req = convex_native_core::distributed::ExecuteRequest {
         name: function_name.clone(),
         namespace: TableNamespace::Global,
         args: args_obj,
@@ -427,7 +427,7 @@ fn prepare_request(
     context: ExecutionContext,
 ) -> anyhow::Result<(
     String,
-    convex_native::distributed::ExecuteRequest,
+    convex_native_core::distributed::ExecuteRequest,
     PreparedRequest,
 )> {
     let started = Instant::now();
@@ -454,7 +454,7 @@ fn prepare_request(
     };
 
     let begin_timestamp_u64: u64 = (*ts).into();
-    let exec_req = convex_native::distributed::ExecuteRequest {
+    let exec_req = convex_native_core::distributed::ExecuteRequest {
         name: function_name.clone(),
         namespace: TableNamespace::Global,
         args: args_obj,
@@ -479,7 +479,7 @@ fn prepare_request(
 async fn build_outcome_triple(
     udf_type: UdfType,
     prepared: PreparedRequest,
-    response: convex_native::distributed::ExecuteResponse,
+    response: convex_native_core::distributed::ExecuteResponse,
 ) -> anyhow::Result<(
     Option<FunctionFinalTransaction>,
     FunctionOutcome,

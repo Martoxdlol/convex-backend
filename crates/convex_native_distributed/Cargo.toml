@@ -15,7 +15,7 @@ async-trait = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 common = { workspace = true }
-convex_native = { workspace = true }
+convex_native_core = { workspace = true }
 database = { workspace = true }
 errors = { workspace = true }
 function_runner = { workspace = true }

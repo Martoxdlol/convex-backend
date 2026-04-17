@@ -94,32 +94,32 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let literal_entries = variants.iter().map(|(_, wire)| {
         quote! {
-            ::convex_native::__private::string_literal_validator(#wire)
+            ::convex_native_core::__private::string_literal_validator(#wire)
                 .expect("literal string")
         }
     });
 
     Ok(quote! {
-        impl ::convex_native::ToConvex for #ident {
+        impl ::convex_native_core::ToConvex for #ident {
             fn to_convex(self)
-                -> ::anyhow::Result<::convex_native::__private::ConvexValue>
+                -> ::anyhow::Result<::convex_native_core::__private::ConvexValue>
             {
                 let s: &'static str = match self {
                     #(#to_arms,)*
                 };
-                ::convex_native::__private::ConvexValue::try_from(
+                ::convex_native_core::__private::ConvexValue::try_from(
                     ::std::string::String::from(s),
                 )
                 .map_err(::std::convert::Into::into)
             }
         }
 
-        impl ::convex_native::FromConvex for #ident {
+        impl ::convex_native_core::FromConvex for #ident {
             fn from_convex(
-                value: ::convex_native::__private::ConvexValue,
+                value: ::convex_native_core::__private::ConvexValue,
             ) -> ::anyhow::Result<Self> {
                 let s: ::std::string::String =
-                    <::std::string::String as ::convex_native::FromConvex>::from_convex(value)?;
+                    <::std::string::String as ::convex_native_core::FromConvex>::from_convex(value)?;
                 match s.as_str() {
                     #(#from_arms,)*
                     other => ::std::result::Result::Err(::anyhow::anyhow!(
@@ -132,15 +132,15 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
 
-        impl ::convex_native::ConvexSchema for #ident {
-            fn validator() -> ::convex_native::__private::Validator {
+        impl ::convex_native_core::ConvexSchema for #ident {
+            fn validator() -> ::convex_native_core::__private::Validator {
                 let __literals: ::std::vec::Vec<
-                    ::convex_native::__private::Validator,
+                    ::convex_native_core::__private::Validator,
                 > = ::std::vec![#(#literal_entries,)*];
                 if __literals.len() == 1 {
                     __literals.into_iter().next().expect("1 element")
                 } else {
-                    ::convex_native::__private::Validator::Union(__literals)
+                    ::convex_native_core::__private::Validator::Union(__literals)
                 }
             }
         }

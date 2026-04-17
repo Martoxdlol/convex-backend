@@ -43,7 +43,7 @@ use common::{
     execution_context::ExecutionContext,
     runtime::UnixTimestamp,
 };
-use convex_native::callbacks::NativeActionCallbacks;
+use convex_native_core::callbacks::NativeActionCallbacks;
 use convex_native_distributed::{
     backend_callbacks_client::BackendCallbackClient,
     backend_callbacks_server::BackendCallbackServer,
@@ -222,7 +222,7 @@ fn empty_object() -> ConvexObject {
 }
 
 async fn spawn_worker_exec_server(endpoint: String) -> SocketAddr {
-    use convex_native::NativeFunctionRunner;
+    use convex_native_core::NativeFunctionRunner;
     use convex_native_distributed::FunctionExecutionServer;
     use pb::function_execution::function_execution_service_server::FunctionExecutionServiceServer;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -283,7 +283,7 @@ async fn worker_exec_server_wires_callback_endpoint_into_action_dispatch() {
         .expect("connect worker");
     let runner = DistributedFunctionRunner::new(vec![client]).unwrap();
     let obj: std::collections::BTreeMap<FieldName, ConvexValue> = std::collections::BTreeMap::new();
-    let req = convex_native::distributed::ExecuteRequest {
+    let req = convex_native_core::distributed::ExecuteRequest {
         name: "does_not_exist".to_string(),
         namespace: TableNamespace::Global,
         args: ConvexObject::try_from(obj).unwrap(),

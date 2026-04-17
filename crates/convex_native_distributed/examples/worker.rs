@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 
-use convex_native::{
+use convex_native_core::{
     distributed::ConvexMode,
     NativeFunctionRunner,
 };

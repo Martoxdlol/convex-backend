@@ -25,7 +25,7 @@ use std::{
 
 use async_trait::async_trait;
 use common::types::UdfType;
-use convex_native::{
+use convex_native_core::{
     distributed::ExecuteRequest,
     NativeFunctionRunner,
 };
@@ -200,7 +200,7 @@ async fn failover_from_unavailable_to_healthy_worker() {
             &self,
             _: ExecuteRequest,
             _: UdfType,
-        ) -> Result<convex_native::distributed::ExecuteResponse, Status> {
+        ) -> Result<convex_native_core::distributed::ExecuteResponse, Status> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Err(Status::unavailable("synthetic"))
         }

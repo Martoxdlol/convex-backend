@@ -1,4 +1,4 @@
-//! Distributed execution for `convex_native`.
+//! Distributed execution for `convex_native_core`.
 //!
 //! **NOTE — topology change in progress.** Phase 1 of the rework
 //! in `convex-native/DISTRIBUTED_PLAN.md` has landed: the worker no
