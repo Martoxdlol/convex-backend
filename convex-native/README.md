@@ -77,10 +77,13 @@ crates/convex_native_backend/    monolith-topology adapter.
 
 crates/convex_native_distributed/ distributed-topology plumbing.
                                  Under active rebuild per
-                                 DISTRIBUTED_PLAN.md — today's
-                                 code still reflects the old
-                                 "worker-commits-locally" shape
-                                 until Phase 1 lands.
+                                 DISTRIBUTED_PLAN.md — Phase 1
+                                 shipped (wire contract +
+                                 worker stops committing);
+                                 Phase 2 (backend-side
+                                 FunctionRunner impl) is the
+                                 active substep work. See
+                                 STATUS.md §"Phase 2 — active".
 ```
 
 ## At a glance (developer surface — unchanged)
@@ -135,6 +138,10 @@ Priority order when docs drift:
    deployer's worker crate will see.
 4. **This README** — landing page, stays short.
 
-Code-wise: everything under `convex_native_distributed` is
-provisional until `DISTRIBUTED_PLAN.md` Phase 1..3 land. Don't
-add features on top of the current shape — fix the shape first.
+Code-wise: Phase 1 of `DISTRIBUTED_PLAN.md` has landed — worker
+stops committing, `ExecuteResponse` carries a `DistributedFinalTx`
+summary. Phase 2 (backend-side `FunctionRunner` impl) is the
+active work; `STATUS.md` breaks it into substeps 2.1..2.8.
+Everything under `convex_native_distributed` is still in
+transition until Phase 3's admission service lands — don't build
+on top of anything the plan marks as provisional.

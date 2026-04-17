@@ -271,13 +271,15 @@ See `DISTRIBUTED_PLAN.md` §15 for the full breakdown.
 ```
 cargo test -p convex_native              # 242 tests
 cargo test -p convex_native_backend      # 10 tests
-cargo test -p convex_native_distributed  # 54 tests
+cargo test -p convex_native_distributed  # 56 tests
 
-# 306 total — all green
+# 308 total — all green
 ```
 
-The number is lower than the peak (309) because removed tests
-were pinning behaviour that's no longer correct.
+The two extra tests on `convex_native_distributed` (54 → 56) came
+in with Phase 1: `response_final_tx_roundtrips_through_proto` and
+`response_without_final_tx_keeps_field_none` pin the `final_tx`
+wire format both with and without the field set.
 
 ---
 
