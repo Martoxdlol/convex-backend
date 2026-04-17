@@ -17,6 +17,12 @@ pub use convex_macro::{
 #[doc(hidden)]
 pub use inventory;
 
+/// Crate version — derived at build time from `CARGO_PKG_VERSION`.
+/// Useful for introspection and deployment traceability: surfaced in
+/// the `introspect::describe_json` envelope (`convex_native_version`
+/// field) and in the worker's `Health` response (`registry_version`).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Pseudo-namespace so developers can write `#[convex::query]`,
 /// `#[convex::mutation]`, and `#[convex::action]` by importing
 /// `convex_native::convex`.
@@ -145,10 +151,6 @@ pub use logging::{
     Logger,
     NativeLogLine,
 };
-
-/// Crate version — derived at build time from `CARGO_PKG_VERSION`.
-/// Useful for introspection / deployment traceability.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use metrics::{
     CountingMetrics,
     NativeMetricsSink,
