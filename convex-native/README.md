@@ -663,8 +663,17 @@ sub-queries, sub-mutations, scheduler, and storage through one
   a typed mutation.
 - `run_action_after<F: ConvexActionFunction>(delay, marker, args)` —
   schedule a typed action.
+- `run_at<F: ConvexMutationFunction>(timestamp, marker, args)` /
+  `run_action_at<F: ConvexActionFunction>(timestamp, marker, args)` —
+  absolute-wall-clock variants. Compute
+  `delay = timestamp - SystemTime::now()` (clamped to `ZERO` for past
+  timestamps) and forward to `run_after` / `run_action_after`. For
+  tests driving a mocked runtime clock, compute the delay from
+  `ctx.unix_timestamp()` and call `run_after` directly — `run_at`
+  always reads real wall-clock time.
+- `cancel(id)` — cancel a previously scheduled job (idempotent).
 
-Both serialize the typed args correctly and then delegate to the
+All serialize the typed args correctly and then delegate to the
 attached `NativeActionCallbacks::schedule`.
 `convex_native_backend::BackendCallbacks` forwards the call to
 `udf::ActionCallbacks::schedule_job`, so scheduling from a native

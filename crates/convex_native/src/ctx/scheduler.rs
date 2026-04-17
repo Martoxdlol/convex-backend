@@ -11,9 +11,13 @@
 
 use std::{
     sync::Arc,
-    time::Duration,
+    time::{
+        Duration,
+        SystemTime,
+    },
 };
 
+use common::runtime::UnixTimestamp;
 use value::{
     ConvexValue,
     DeveloperDocumentId,
@@ -95,10 +99,52 @@ impl<'a> Scheduler<'a> {
             .await
     }
 
+    /// Schedule a mutation to fire at the absolute wall-clock time
+    /// `timestamp`. Returns the scheduled job id.
+    ///
+    /// `timestamp` in the past is clamped to "now" (delay = 0). The
+    /// underlying `NativeActionCallbacks::schedule` API only takes a
+    /// `Duration`, so this method computes `delay = timestamp - now`
+    /// using `SystemTime::now()`. Tests that drive a mocked runtime
+    /// clock won't see the mocked time here — if you need to schedule
+    /// off a transaction-runtime clock, compute the delay yourself
+    /// from `ctx.unix_timestamp()` and use `run_after` directly.
+    pub async fn run_at<F: ConvexMutationFunction>(
+        &self,
+        timestamp: UnixTimestamp,
+        marker: F,
+        args: F::Args,
+    ) -> anyhow::Result<DeveloperDocumentId> {
+        let delay = delay_until(timestamp)?;
+        self.run_after(delay, marker, args).await
+    }
+
+    /// Schedule an action to fire at the absolute wall-clock time
+    /// `timestamp`. Same semantics as [`run_at`](Self::run_at).
+    pub async fn run_action_at<F: ConvexActionFunction>(
+        &self,
+        timestamp: UnixTimestamp,
+        marker: F,
+        args: F::Args,
+    ) -> anyhow::Result<DeveloperDocumentId> {
+        let delay = delay_until(timestamp)?;
+        self.run_action_after(delay, marker, args).await
+    }
+
     /// Cancel a previously scheduled job. Idempotent.
     pub async fn cancel(&self, id: DeveloperDocumentId) -> anyhow::Result<()> {
         self.callbacks.cancel_scheduled(self.namespace, id).await
     }
+}
+
+/// Compute the `Duration` between `SystemTime::now()` and an absolute
+/// `UnixTimestamp`. Returns `Duration::ZERO` when the timestamp is in
+/// the past. Errors only if the host clock predates the Unix epoch
+/// (effectively impossible on real systems).
+pub(crate) fn delay_until(timestamp: UnixTimestamp) -> anyhow::Result<Duration> {
+    let now = UnixTimestamp::from_system_time(SystemTime::now())
+        .ok_or_else(|| anyhow::anyhow!("system clock predates UNIX epoch"))?;
+    Ok(timestamp.checked_sub(now).unwrap_or(Duration::ZERO))
 }
 
 #[cfg(test)]
@@ -216,6 +262,74 @@ mod tests {
         assert!(
             format!("{err}").contains("cannot schedule"),
             "delegated to callbacks.schedule: {err}",
+        );
+    }
+
+    #[tokio::test]
+    async fn run_at_forwards_to_callbacks_when_args_are_object() {
+        let sched = scheduler(SchedulerScope::Mutation);
+        // Far future so the conversion is non-zero — and we don't care
+        // about the precise delay; we only care that the call routed
+        // through to `callbacks.schedule`.
+        let ts = UnixTimestamp::from_secs_f64(4_102_444_800.0).unwrap(); // 2100-01-01
+        let err = sched
+            .run_at(ts, ObjectMarker, ObjectArgs(7))
+            .await
+            .expect_err("noop callbacks bail");
+        assert!(format!("{err}").contains("cannot schedule"));
+    }
+
+    #[tokio::test]
+    async fn run_action_at_forwards_to_callbacks_when_args_are_object() {
+        // Use the action-shaped marker; reuses ObjectArgs.
+        struct ActionObjectMarker;
+        impl ConvexActionFunction for ActionObjectMarker {
+            type Args = ObjectArgs;
+            type Output = i64;
+
+            fn name() -> &'static str {
+                "object_action"
+            }
+        }
+
+        let sched = scheduler(SchedulerScope::Action);
+        let ts = UnixTimestamp::from_secs_f64(4_102_444_800.0).unwrap();
+        let err = sched
+            .run_action_at(ts, ActionObjectMarker, ObjectArgs(7))
+            .await
+            .expect_err("noop callbacks bail");
+        assert!(format!("{err}").contains("cannot schedule"));
+    }
+
+    #[tokio::test]
+    async fn run_at_rejects_args_that_serialise_to_non_object() {
+        let sched = scheduler(SchedulerScope::Mutation);
+        let ts = UnixTimestamp::from_secs_f64(4_102_444_800.0).unwrap();
+        let err = sched
+            .run_at(ts, ScalarMarker, 42_i64)
+            .await
+            .expect_err("scalar args must be rejected");
+        assert!(format!("{err}").contains("must serialize to an object"));
+    }
+
+    #[test]
+    fn delay_until_clamps_past_timestamps_to_zero() {
+        // Epoch is firmly in the past; delay should be Duration::ZERO.
+        let past = UnixTimestamp::from_secs_f64(0.0).unwrap();
+        assert_eq!(delay_until(past).unwrap(), Duration::ZERO);
+    }
+
+    #[test]
+    fn delay_until_returns_positive_for_future_timestamps() {
+        // Far enough in the future that wall-clock drift between the
+        // two reads of `SystemTime::now()` (one inside delay_until,
+        // one in the assert) can't make it negative.
+        let now = UnixTimestamp::from_system_time(SystemTime::now()).expect("clock after epoch");
+        let future = UnixTimestamp::from_secs_f64(now.as_secs_f64() + 3_600.0).unwrap();
+        let delay = delay_until(future).unwrap();
+        assert!(
+            delay >= Duration::from_secs(3_500) && delay <= Duration::from_secs(3_700),
+            "delay should be ~1h: {delay:?}",
         );
     }
 
