@@ -86,6 +86,22 @@ async fn _widget_query<RT: common::runtime::Runtime>(ctx: &mut QueryCtx<'_, RT>)
         .await
         .unwrap();
     let _: Vec<Widget> = ctx.db().query::<Widget>().take(3).await.unwrap();
+
+    // `.page(cursor, page_size) -> TypedPage<T>` compiles from a ctx
+    // surface. The first page uses `None` as the cursor; subsequent
+    // pages feed `page.cursor` back in.
+    let first_page: convex_native::TypedPage<Widget> = ctx
+        .db()
+        .query::<Widget>()
+        .with_index(WidgetIndex::ByOwner)
+        .eq(WidgetField::Owner, "alice".to_string())
+        .unwrap()
+        .page(None, 50)
+        .await
+        .unwrap();
+    let _next: Option<convex_native::Cursor> = first_page.cursor;
+    let _items: Vec<Widget> = first_page.items;
+    let _done: bool = first_page.is_done;
 }
 
 #[allow(dead_code)]
