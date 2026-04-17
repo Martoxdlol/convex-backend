@@ -169,8 +169,16 @@ ctx.scheduler()
     .run_after(
         Duration::from_secs(60),
         SendWelcome,
-        SendWelcomeArgs { email },
+        SendWelcomeArgs { email: email.clone() },
     )
+    .await?;
+
+// Absolute wall-clock scheduling — `run_at` (mutations) and
+// `run_action_at` (actions) take a `UnixTimestamp` and compute the
+// delay from `SystemTime::now()`. Past timestamps clamp to "now".
+let deadline = UnixTimestamp::from_secs_f64(1_893_456_000.0).unwrap(); // 2030-01-01
+ctx.scheduler()
+    .run_at(deadline, SendWelcome, SendWelcomeArgs { email })
     .await?;
 
 // Inside an action:
