@@ -26,6 +26,8 @@ blocked on `rush install` rather than on native-dispatch behaviour
 cargo test -p convex_native              # 229 tests
 cargo test -p convex_native_backend      # 10 tests
 cargo test -p convex_native_distributed  # 52 tests
+
+# total: 291
 ```
 
 All green at HEAD.
@@ -122,6 +124,11 @@ All green at HEAD.
   `describe_pretty_full` / `describe_json_full`.
 - `convex_native::VERSION` constant surfaced through
   introspection + `worker` `Health` response.
+- `ctx.log()` output is drained into the backend's log-streaming
+  path. Query / mutation lines populate `UdfOutcome::log_lines`;
+  action lines stream through the `log_line_sender` the function
+  runner passes in. Level + message mapping is 1:1 to
+  `common::log_lines::LogLine`.
 
 ## Missing / outstanding
 
