@@ -253,6 +253,47 @@ async fn welcome_action_sub_calls_query() {
 }
 ```
 
+## 6. Returning user-facing errors
+
+Tag errors with [`convex_native::errors`][errors] so the HTTP / RPC
+layer maps them to the right status code. Without the tag, any
+returned `anyhow::Error` is surfaced to the client as a generic 500
+— which is the right default for internal bugs but wrong for
+actionable user errors.
+
+```rust
+use convex_native::errors;
+
+#[convex::mutation]
+async fn invite(ctx: &mut MutationCtx, email: String) -> Result<()> {
+    if !ctx.auth().is_authenticated() {
+        return Err(errors::unauthenticated(
+            "MissingToken",
+            "An auth token is required to send invites.",
+        )
+        .into());
+    }
+    if ctx.db().query::<Invite>().eq(InviteField::Email, email.clone())?
+        .first().await?.is_some() {
+        return Err(errors::conflict(
+            "DuplicateInvite",
+            "That email already has a pending invite.",
+        )
+        .into());
+    }
+    // ...
+    Ok(())
+}
+```
+
+Helpers: `bad_request` (400), `unauthenticated` (401), `forbidden`
+(403), `not_found` (404), `conflict` (409), `rate_limited` (429),
+`overloaded` (503). Prefer a bare `anyhow::bail!` over
+`errors::overloaded` unless a specific custom message helps the
+caller recover.
+
+[errors]: https://docs.rs/convex_native/latest/convex_native/errors/index.html
+
 ## Operational knobs
 
 All optional, configured on `NativeFunctionRunner`:
