@@ -34,6 +34,7 @@ use convex_native::{
 use database::{
     Database,
     Transaction,
+    UserFacingModel,
     WriteSource,
 };
 use file_storage::FileStorage;
@@ -52,6 +53,7 @@ use value::{
     ConvexObject,
     ConvexValue,
     DeveloperDocumentId,
+    TableName,
     TableNamespace,
 };
 
@@ -424,6 +426,41 @@ impl<RT: Runtime + 'static> NativeActionCallbacks for BackendCallbacks<RT> {
             .storage_delete(self.identity.clone(), ComponentId::Root, storage_id)
             .await?;
         Ok(true)
+    }
+
+    async fn read_document_at_snapshot(
+        &self,
+        namespace: TableNamespace,
+        table: TableName,
+        id: DeveloperDocumentId,
+    ) -> anyhow::Result<Option<ConvexObject>> {
+        let _ = table;
+        let database = self.database.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "BackendCallbacks::read_document_at_snapshot requires a Database<RT> handle — \
+                 construct via with_native(...) to enable native ctx.db() reads from actions."
+            )
+        })?;
+        // Pin to the action's snapshot ts when set so sequential
+        // `ctx.db().get(...)` reads inside one action observe a
+        // consistent world (matching try_run_native_query /
+        // run_query_by_name). Fall back to the latest repeatable ts
+        // when no snapshot is pinned.
+        let ts = self
+            .snapshot_ts
+            .unwrap_or_else(|| database.now_ts_for_reads());
+        let usage = usage_tracking::FunctionUsageTracker::new();
+        let mut tx = database
+            .begin_with_ts(self.identity.clone(), *ts, usage)
+            .await?;
+        let maybe = UserFacingModel::new(&mut tx, namespace)
+            .get_with_ts(id, None)
+            .await?;
+        // Tx is read-only and dropped on return — no commit needed.
+        Ok(maybe.map(|(doc, _ts)| {
+            let value: common::pii::PII<ConvexObject> = doc.into_value();
+            value.0
+        }))
     }
 }
 

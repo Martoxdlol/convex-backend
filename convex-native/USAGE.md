@@ -242,7 +242,7 @@ client calls but internal sub-calls still work.
 |-----|--------|--------------|
 | `QueryCtx<'tx, Rt>` | `ctx.db()` | Read DB, `auth`, `unix_timestamp`, `log` |
 | `MutationCtx<'tx, Rt>` | as query + `insert/patch/replace/delete`, `scheduler` (tx-scoped), `tx()` escape-hatch |
-| `ActionCtx<'a, Rt>` | no tx; sub-calls, `scheduler`, `storage`, `run_query/mutation/action`, `log` |
+| `ActionCtx<'a, Rt>` | no tx; `db()` (snapshot reads), sub-calls, `scheduler`, `storage`, `run_query/mutation/action`, `log` |
 | `HttpActionCtx<'a, Rt>` | wraps `ActionCtx`; same surface + HTTP req/resp types |
 
 Shared methods across all ctxs:
@@ -310,8 +310,18 @@ let batch: Vec<Option<User>> = ctx.db().get_many(ids).await?;
 
 ## 6. Sub-calls from actions
 
+Actions don't own a transaction, but they can still read at the
+request's pinned snapshot and sub-call queries, mutations, or other
+actions.
+
 ```rust
-// Typed (compile-time-checked):
+// Direct read at the action's pinned snapshot (composite backend
+// only — distributed workers and the noop stub bail):
+let user: Option<User> = ctx.db().get(id).await?;
+let user: User = ctx.db().try_get(id).await?;
+let batch: Vec<Option<User>> = ctx.db().get_many(ids).await?;
+
+// Typed sub-calls (compile-time-checked):
 let user: Option<User> = ctx.run_query(GetByEmail, GetByEmailArgs { email }).await?;
 let id: Id<User> = ctx.run_mutation(Create, CreateArgs { email }).await?;
 let sent: bool = ctx.run_action(SendEmail, SendEmailArgs { .. }).await?;
@@ -320,8 +330,11 @@ let sent: bool = ctx.run_action(SendEmail, SendEmailArgs { .. }).await?;
 let v: ConvexValue = ctx.run_query_raw("get_by_email", args_obj).await?;
 ```
 
-Typed sub-calls skip name resolution entirely and preserve the
-compile-time arg/return signature. The raw forms exist for dynamic
+`ctx.db()` is a thin convenience over `NativeActionCallbacks::read_document_at_snapshot`
+— backed by `BackendCallbacks` it opens a short-lived read-only tx
+at the pinned snapshot ts for each read, so sequential `get(...)`
+calls observe a consistent world. Typed sub-calls skip name
+resolution entirely and preserve the
 dispatch and JS-target fallback.
 
 When the name resolves to a registered native function, the

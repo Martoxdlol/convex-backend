@@ -10,11 +10,11 @@ JS → Rust cheatsheet read `MIGRATION.md`.
 Phases 1 / 2 / 4 / 5 of `IMPLEMENTATION_PLAN.md` are fully shipped.
 Phase 3 (distributed execution) is shipped at the crate level plus a
 `convex-local-backend` `CONVEX_MODE=worker` mode. Mutation-scoped
-scheduling now wires through `VirtualSchedulerModel` directly and
-every derived document emits a concrete `DocumentSchema` for
-write-time shape validation. The remaining outstanding items are a
-snapshot-capable native `ActionCtx` and an end-to-end client smoke
-test — polish around the edges of Phases 1–2, not new phases.
+scheduling wires through `VirtualSchedulerModel`, every derived
+document emits a concrete `DocumentSchema` for write-time shape
+validation, and native `ActionCtx::db()` now reads at a pinned
+snapshot via `NativeActionCallbacks::read_document_at_snapshot`. The
+only remaining outstanding item is an end-to-end client smoke test.
 
 ## Test tallies
 
@@ -170,28 +170,27 @@ request-id chain needs to be preserved.
 compute the delay from `ctx.unix_timestamp()` and call `run_after`
 directly.
 
-### Native action `FunctionFinalTransaction` is always `None`
-The composite intercepts `UdfType::Action` and dispatches native
-actions via `run_action_with_callbacks`, producing a real
-`FunctionOutcome::Action(ActionOutcome { .. })`. What's not threaded
-through is a transaction snapshot — native `ActionCtx` has no
-`Transaction<Rt>` today, so the returned `final_tx` is always
-`None`. JS actions behave the same way (no transaction writes);
-native's extra limitation is that `ctx.db().get(...)` isn't
-available directly on the ctx — you route through
-`ctx.run_query(...)` / `ctx.run_query_by_name(...)`.
+### Native action snapshot-pinned `ctx.db()` (shipped)
+Native `ActionCtx` now exposes a read-only `ctx.db()` returning an
+`ActionDb<'_>` with `get<T>(id)` / `try_get<T>(id)` /
+`get_many<T>(ids)`. The handle routes each read through
+`NativeActionCallbacks::read_document_at_snapshot`, which the
+backend adapter implements by opening a fresh read-only
+`Transaction<Rt>` pinned to the action's snapshot ts — so multiple
+`ctx.db().get(...)` calls inside one action observe one consistent
+world, matching how `dispatch_native_action` already pins query
+sub-calls via `BackendCallbacks::with_snapshot_ts(...)`.
 
-**Mitigation shipped**: query sub-calls within a single action
-share a snapshot — `dispatch_native_action` pins
-`database.now_ts_for_reads()` once and threads it into
-`BackendCallbacks::with_snapshot_ts(...)`, so every native query
-sub-call inside one action opens its transaction at the same ts.
-Mutations still commit at a fresh ts (committing at a stale one
-would lose writes).
+Writes still go through `ctx.run_mutation(...)` (mutations commit
+in their own transaction; actions don't own one). The
+`FunctionOutcome::Action(ActionOutcome { final_tx: None, .. })`
+shape is unchanged — matching JS-action semantics — so the
+"always None" report is expected, not a gap.
 
-**Effort**: medium-to-large. Either extend `ActionCtx` with an
-optional `Transaction<Rt>` borrow, or add a read-only pass-through
-API on the ctx that reuses the pinned snapshot.
+**Limitations**: the distributed worker and `NoopCallbacks` both
+bail on `read_document_at_snapshot` with a clear error. Tests can
+register handlers via
+`TestCallbacksBuilder::on_doc_read(table, fn)`.
 
 ### Non-obvious caveats
 

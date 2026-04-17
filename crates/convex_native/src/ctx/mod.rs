@@ -19,7 +19,10 @@ pub mod query_builder;
 pub mod scheduler;
 pub mod storage;
 
-pub use action::ActionCtx;
+pub use action::{
+    ActionCtx,
+    ActionDb,
+};
 pub use mutation::{
     MutationCtx,
     MutationDb,

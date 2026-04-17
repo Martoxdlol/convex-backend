@@ -130,6 +130,7 @@ pub use ctx::{
         TypedPage,
     },
     ActionCtx,
+    ActionDb,
     MutationCtx,
     MutationDb,
     MutationScheduler,

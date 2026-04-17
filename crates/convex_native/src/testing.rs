@@ -53,6 +53,7 @@ use value::{
     ConvexObject,
     ConvexValue,
     DeveloperDocumentId,
+    TableName,
     TableNamespace,
 };
 
@@ -63,16 +64,38 @@ use crate::{
 
 type QueryFn = Box<dyn Fn(ConvexObject) -> anyhow::Result<ConvexValue> + Send + Sync>;
 type MutationFn = Box<dyn Fn(ConvexObject) -> anyhow::Result<ConvexValue> + Send + Sync>;
+type DocReadFn =
+    Box<dyn Fn(DeveloperDocumentId) -> anyhow::Result<Option<ConvexObject>> + Send + Sync>;
 
 /// One entry captured in [`TestCallbacks::history`].
 #[derive(Debug, Clone)]
 pub enum CallRecord {
-    Query { name: String, args: ConvexObject },
-    Mutation { name: String, args: ConvexObject },
-    Schedule { name: String, delay: Duration },
-    StorageStore { content_type: String, bytes: usize },
-    StorageGetUrl { id: StorageId },
-    StorageDelete { id: StorageId },
+    Query {
+        name: String,
+        args: ConvexObject,
+    },
+    Mutation {
+        name: String,
+        args: ConvexObject,
+    },
+    Schedule {
+        name: String,
+        delay: Duration,
+    },
+    StorageStore {
+        content_type: String,
+        bytes: usize,
+    },
+    StorageGetUrl {
+        id: StorageId,
+    },
+    StorageDelete {
+        id: StorageId,
+    },
+    DocRead {
+        table: String,
+        id: DeveloperDocumentId,
+    },
 }
 
 /// Builder for a fake [`NativeActionCallbacks`]. Once [`build`] is
@@ -81,6 +104,7 @@ pub enum CallRecord {
 pub struct TestCallbacksBuilder {
     queries: BTreeMap<String, QueryFn>,
     mutations: BTreeMap<String, MutationFn>,
+    doc_reads: BTreeMap<String, DocReadFn>,
     default_storage_url: Option<String>,
 }
 
@@ -89,6 +113,7 @@ impl Default for TestCallbacksBuilder {
         Self {
             queries: BTreeMap::new(),
             mutations: BTreeMap::new(),
+            doc_reads: BTreeMap::new(),
             default_storage_url: Some("https://test/url".into()),
         }
     }
@@ -118,6 +143,17 @@ impl TestCallbacksBuilder {
         self
     }
 
+    /// Register a handler for `table` — invoked when an action's
+    /// `ctx.db().get::<T>(id)` resolves to this table. The handler
+    /// receives the raw id and decides whether a document exists.
+    pub fn on_doc_read<F>(mut self, table: impl Into<String>, f: F) -> Self
+    where
+        F: Fn(DeveloperDocumentId) -> anyhow::Result<Option<ConvexObject>> + Send + Sync + 'static,
+    {
+        self.doc_reads.insert(table.into(), Box::new(f));
+        self
+    }
+
     /// Change the URL returned by `storage_get_url` (default
     /// `https://test/url`). Pass `None` to return `None`.
     pub fn with_storage_url(mut self, url: Option<&str>) -> Self {
@@ -133,6 +169,7 @@ impl TestCallbacksBuilder {
         let inner = TestCallbacksImpl {
             queries: self.queries,
             mutations: self.mutations,
+            doc_reads: self.doc_reads,
             default_storage_url: self.default_storage_url,
             history: history.clone(),
         };
@@ -170,6 +207,7 @@ pub type TestCallbacks = TestCallbacksBuilder;
 struct TestCallbacksImpl {
     queries: BTreeMap<String, QueryFn>,
     mutations: BTreeMap<String, MutationFn>,
+    doc_reads: BTreeMap<String, DocReadFn>,
     default_storage_url: Option<String>,
     history: TestHistory,
 }
@@ -259,6 +297,26 @@ impl NativeActionCallbacks for TestCallbacksImpl {
             .unwrap()
             .push(CallRecord::StorageDelete { id });
         Ok(true)
+    }
+
+    async fn read_document_at_snapshot(
+        &self,
+        _ns: TableNamespace,
+        table: TableName,
+        id: DeveloperDocumentId,
+    ) -> anyhow::Result<Option<ConvexObject>> {
+        let table_str = table.to_string();
+        self.history.0.lock().unwrap().push(CallRecord::DocRead {
+            table: table_str.clone(),
+            id,
+        });
+        match self.doc_reads.get(&table_str) {
+            Some(f) => f(id),
+            // Unregistered tables resolve as "no document" so tests
+            // that only care about one table don't have to register
+            // every table the action might touch.
+            None => Ok(None),
+        }
     }
 }
 

@@ -98,6 +98,31 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
         self.namespace
     }
 
+    /// Read-only, snapshot-pinned database handle.
+    ///
+    /// Unlike `QueryCtx::db()`, this handle doesn't own a
+    /// `Transaction<RT>` — actions never do. Instead each read routes
+    /// through the attached
+    /// [`NativeActionCallbacks::read_document_at_snapshot`], which opens a
+    /// short-lived read-only transaction at the action's pinned snapshot
+    /// timestamp. Multiple `ctx.db().get(...)` calls inside one action
+    /// therefore observe one consistent world, matching the
+    /// [`super::query::QueryDb::get`] contract.
+    ///
+    /// Writes are not supported on this handle — mutations still go
+    /// through `ctx.run_mutation(...)` / `ctx.run_mutation_raw(...)`
+    /// so they commit in their own transaction (actions don't own
+    /// one). This method is a convenience on top of the composite
+    /// runner path; the distributed worker and [`NoopCallbacks`]
+    /// both bail at read time with a clear error.
+    pub fn db(&mut self) -> ActionDb<'_> {
+        ActionDb {
+            callbacks: self.callbacks.clone(),
+            namespace: self.namespace,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
     /// Scheduler handle — see [`super::scheduler::Scheduler`].
     pub fn scheduler(&mut self) -> super::scheduler::Scheduler<'_> {
         super::scheduler::Scheduler::new_with_callbacks(
@@ -188,6 +213,62 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
     /// the attached runner.
     pub fn has_function(&self, name: &str) -> bool {
         self.runner.as_ref().is_some_and(|r| r.has_function(name))
+    }
+}
+
+/// Read-only database handle returned by [`ActionCtx::db`].
+///
+/// Holds only a clone of the action's callbacks — the actual
+/// transaction is opened fresh (at the pinned snapshot ts) for each
+/// read by the backend adapter. That pattern matches how the JS
+/// action runtime exposes `ctx.runQuery` / `ctx.db` under the hood:
+/// actions are transactionless at the top level but individual reads
+/// project through a backend-owned tx.
+pub struct ActionDb<'a> {
+    callbacks: Arc<dyn NativeActionCallbacks>,
+    namespace: TableNamespace,
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> ActionDb<'a> {
+    /// Fetch a document by id against the action's pinned snapshot.
+    /// Returns `None` if the document doesn't exist.
+    pub async fn get<T: crate::document::ConvexDocument>(
+        &self,
+        id: crate::id::Id<T>,
+    ) -> anyhow::Result<Option<T>> {
+        let table = T::table_name();
+        let dev_id = id.into_developer_id();
+        let maybe_obj = self
+            .callbacks
+            .read_document_at_snapshot(self.namespace, table, dev_id)
+            .await?;
+        maybe_obj.map(T::from_convex_object).transpose()
+    }
+
+    /// Fetch a document by id, erroring when it doesn't exist.
+    /// Saves the `.ok_or_else(...)` ceremony in the common case.
+    pub async fn try_get<T: crate::document::ConvexDocument>(
+        &self,
+        id: crate::id::Id<T>,
+    ) -> anyhow::Result<T> {
+        self.get(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("document {id} not found in {}", T::table_name()))
+    }
+
+    /// Bulk-fetch documents by id. Returns `None` for ids that don't
+    /// resolve, preserving input order — same contract as
+    /// [`super::query::QueryDb::get_many`].
+    pub async fn get_many<T: crate::document::ConvexDocument>(
+        &self,
+        ids: impl IntoIterator<Item = crate::id::Id<T>>,
+    ) -> anyhow::Result<Vec<Option<T>>> {
+        let mut out = Vec::new();
+        for id in ids {
+            out.push(self.get(id).await?);
+        }
+        Ok(out)
     }
 }
 

@@ -24,6 +24,7 @@ use value::{
     ConvexObject,
     ConvexValue,
     DeveloperDocumentId,
+    TableName,
     TableNamespace,
 };
 
@@ -99,6 +100,32 @@ pub trait NativeActionCallbacks: Send + Sync + 'static {
         namespace: TableNamespace,
         id: StorageId,
     ) -> anyhow::Result<bool>;
+
+    /// Fetch a document by id using the callback's snapshot view —
+    /// without opening a full user query. `BackendCallbacks` opens a
+    /// fresh read-only transaction pinned to the action's pinned
+    /// snapshot timestamp (so multiple `ctx.db().get(...)` calls
+    /// inside one action see a consistent world), runs
+    /// `UserFacingModel::get_with_ts`, and returns the serialized
+    /// object.
+    ///
+    /// Backends without a native `Database<RT>` hook (e.g. the
+    /// distributed worker) and `NoopCallbacks` both bail — native
+    /// `ctx.db()` is a convenience on top of the composite runner
+    /// path, and callers that need portability should keep using
+    /// typed `ctx.run_query(...)` sub-calls.
+    async fn read_document_at_snapshot(
+        &self,
+        namespace: TableNamespace,
+        table: TableName,
+        id: DeveloperDocumentId,
+    ) -> anyhow::Result<Option<ConvexObject>> {
+        let _ = (namespace, table, id);
+        anyhow::bail!(
+            "NativeActionCallbacks::read_document_at_snapshot not implemented by this backend \
+             adapter"
+        )
+    }
 }
 
 /// Fallback that `bail!`s on every callback — used when an `ActionCtx`
@@ -162,6 +189,15 @@ impl NativeActionCallbacks for NoopCallbacks {
 
     async fn storage_delete(&self, _ns: TableNamespace, _id: StorageId) -> anyhow::Result<bool> {
         anyhow::bail!("no callbacks attached — cannot delete from file storage")
+    }
+
+    async fn read_document_at_snapshot(
+        &self,
+        _ns: TableNamespace,
+        table: TableName,
+        _id: DeveloperDocumentId,
+    ) -> anyhow::Result<Option<ConvexObject>> {
+        anyhow::bail!("no callbacks attached — cannot read document from table {table}")
     }
 }
 
