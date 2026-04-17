@@ -331,17 +331,28 @@ async fn run_mutation_inline(
     }
 }
 
-/// Drain a finished transaction into the Phase-1 wire summary.
-/// Today only scalars (begin_ts, writes_count, reads_count); Phase
-/// 2 grows the `FinalTxSummary` / `DistributedFinalTx` pair to
-/// carry the full `FunctionReads` + `FunctionWrites` content the
-/// backend's Committer needs. Errors from `into_flat()` (nested
-/// transaction leftover) are swallowed into a zero writes count —
-/// for native handlers the tx is always flat at this point; a
-/// future invariant violation would show up as the backend
-/// rejecting the response at commit time under Phase 2 regardless.
+/// Drain a finished transaction into the wire summary.
+///
+/// After substep 2.1 the summary now carries `rows_read_by_tablet`
+/// alongside the Phase-1 scalars — the backend's
+/// `Transaction::apply_function_runner_tx` consumes that map in
+/// the in-process path, and the distributed path has to provide
+/// the same information for usage tracking to match. Substeps
+/// 2.2 / 2.3 (see `convex-native/STATUS.md`) grow the rest of
+/// the content the Committer needs.
+///
+/// Errors from `into_flat()` (nested transaction leftover) are
+/// swallowed into a zero writes count — for native handlers the
+/// tx is always flat at this point; a future invariant violation
+/// would show up as the backend rejecting the response at commit
+/// time under Phase 2 regardless.
 fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::FinalTxSummary {
     let begin_timestamp: u64 = (*tx.begin_timestamp()).into();
+    let rows_read_by_tablet = tx
+        .stats_by_tablet()
+        .iter()
+        .map(|(tablet, stats)| (tablet.to_string(), stats.rows_read))
+        .collect();
     let (reads, writes) = tx.into_reads_and_writes();
     let reads_count = reads.num_intervals() as u64;
     let writes_count = writes
@@ -352,6 +363,7 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::Fi
         begin_timestamp,
         writes_count,
         reads_count,
+        rows_read_by_tablet,
     }
 }
 

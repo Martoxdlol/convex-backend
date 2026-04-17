@@ -157,7 +157,7 @@ pub fn to_proto_response(native: &ExecuteResponse) -> proto::ExecuteResponse {
         user_execution_time: None,
         served_by_version: None,
         log_lines: native.log_lines.clone(),
-        final_tx: native.final_tx.map(final_tx_to_proto),
+        final_tx: native.final_tx.clone().map(final_tx_to_proto),
     }
 }
 
@@ -185,26 +185,32 @@ pub fn from_proto_response(p: &proto::ExecuteResponse) -> anyhow::Result<Execute
     })
 }
 
-/// Encode a native `FinalTxSummary` as the wire message. Today a
-/// thin 1:1 map of the three scalar fields; Phase 2 grows both
-/// sides in lockstep to carry the full `FunctionReads` +
-/// `FunctionWrites` content the backend's Committer consumes.
+/// Encode a native `FinalTxSummary` as the wire message. Substep
+/// 2.1 of `convex-native/STATUS.md` grew the map side of this
+/// pair; substeps 2.2 / 2.3 grow the rest.
 pub fn final_tx_to_proto(summary: FinalTxSummary) -> proto::DistributedFinalTx {
     proto::DistributedFinalTx {
         begin_timestamp: summary.begin_timestamp,
         writes_count: summary.writes_count,
         reads_count: summary.reads_count,
+        rows_read_by_tablet: summary.rows_read_by_tablet.into_iter().collect(),
     }
 }
 
 /// Inverse of `final_tx_to_proto`. Backend-side callers invoke this
 /// on the parsed `ExecuteResponse` so downstream code works off the
-/// tonic-free native shape.
+/// tonic-free native shape. `HashMap` → `BTreeMap` so the native
+/// shape has deterministic ordering for tests and diffs.
 pub fn final_tx_from_proto(proto: &proto::DistributedFinalTx) -> FinalTxSummary {
     FinalTxSummary {
         begin_timestamp: proto.begin_timestamp,
         writes_count: proto.writes_count,
         reads_count: proto.reads_count,
+        rows_read_by_tablet: proto
+            .rows_read_by_tablet
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect(),
     }
 }
 
@@ -372,12 +378,16 @@ mod tests {
         // backend's Phase-2 Committer consumes. Pin the three-field
         // round-trip so a future proto expansion can't silently drop
         // a field on the native-decoded side.
+        let mut rows_read_by_tablet = std::collections::BTreeMap::new();
+        rows_read_by_tablet.insert("tab1".to_string(), 11);
+        rows_read_by_tablet.insert("tab2".to_string(), 22);
         let summary = FinalTxSummary {
             begin_timestamp: 42,
             writes_count: 3,
             reads_count: 7,
+            rows_read_by_tablet: rows_read_by_tablet.clone(),
         };
-        let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary);
+        let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
         let p = to_proto_response(&native);
         let decoded_proto = p
             .final_tx
@@ -386,6 +396,8 @@ mod tests {
         assert_eq!(decoded_proto.begin_timestamp, 42);
         assert_eq!(decoded_proto.writes_count, 3);
         assert_eq!(decoded_proto.reads_count, 7);
+        assert_eq!(decoded_proto.rows_read_by_tablet.get("tab1"), Some(&11));
+        assert_eq!(decoded_proto.rows_read_by_tablet.get("tab2"), Some(&22));
         let decoded_native = from_proto_response(&p).unwrap();
         assert_eq!(decoded_native.final_tx, Some(summary));
     }

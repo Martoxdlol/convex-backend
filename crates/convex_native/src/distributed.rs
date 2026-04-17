@@ -156,16 +156,16 @@ impl ExecuteResponse {
     }
 }
 
-/// Phase-1 shape of `function_runner::FunctionFinalTransaction` on
-/// the native side of the gRPC boundary. Mirrors the proto message
-/// `pb::function_execution::DistributedFinalTx` 1:1 so the
-/// conversions layer can move between them without losing fields.
+/// Native-side shape of `function_runner::FunctionFinalTransaction`,
+/// mirroring the proto message `pb::function_execution::DistributedFinalTx`
+/// 1:1 so the conversions layer can move between them without
+/// losing fields.
 ///
-/// Phase 2 of `convex-native/DISTRIBUTED_PLAN.md` grows this
+/// Substeps 2.2 / 2.3 of `convex-native/STATUS.md` grow this
 /// struct — and the matching proto message — with the full
 /// `FunctionReads` / `FunctionWrites` content the backend's
 /// Committer needs to validate OCC and stage writes.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct FinalTxSummary {
     /// Raw u64 representation of the `Timestamp` the worker opened
     /// its transaction at.
@@ -174,9 +174,17 @@ pub struct FinalTxSummary {
     pub writes_count: u64,
     /// Number of read intervals the handler accumulated. Not
     /// "rows read" exactly — it's the count of `ReadSet` intervals,
-    /// which the backend uses as a coarse usage signal in Phase 2
-    /// until the full read-set wire format lands.
+    /// which the backend uses as a coarse usage signal until
+    /// substep 2.2's full read-set wire format lands.
     pub reads_count: u64,
+    /// Per-tablet row counts the handler observed. Keys are
+    /// `TabletId` strings in their canonical `Display` form
+    /// (see `value::InternalId`). The backend feeds this straight
+    /// into `Transaction::apply_function_runner_tx`'s
+    /// `rows_read_by_tablet` argument, so distributed and
+    /// in-process dispatch produce identical usage numbers.
+    /// Empty on the error / action paths.
+    pub rows_read_by_tablet: std::collections::BTreeMap<String, u64>,
 }
 
 /// Trait a worker implements to accept remote calls. The

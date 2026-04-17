@@ -175,13 +175,83 @@ trait impl + backend-side dispatch) is next.
 
 ---
 
-## Phases 2..7 — not started
+## Phase 2 — active, decomposed into concrete substeps
+
+`DISTRIBUTED_PLAN.md` §15 Phase 2 bundles three outcomes:
+`impl FunctionRunner<RT>`, env-var switchover in `local_backend`,
+and an integration test. To make incremental progress tractable,
+the work is split here into numbered substeps. Each is meant to
+ship as its own commit; the overall phase is done when every
+substep is checked and the integration test is green.
+
+2.1. **Wire `DistributedFinalTx` to carry `rows_read_by_tablet`.**
+     Today the proto message is three scalars; the backend's
+     `Transaction::apply_function_runner_tx(...)` needs the
+     per-tablet row counts so its usage tracker stays consistent
+     with the in-process path. TabletId encodes as its
+     `Display` form (UUID-shaped string) to keep the wire shape
+     JSON-readable for Phase 6 consumers.
+
+2.2. **Wire `FunctionReads` content.**
+     Grow `DistributedFinalTx` with a nested `FunctionReads`
+     sub-message carrying `reads: ReadSet`, `num_intervals`,
+     `user_tx_size`, and `system_tx_size`. Requires new
+     proto encodings for `ReadSet` / `TransactionReadSize`.
+     Round-trip tests prove the encoding is lossless.
+
+2.3. **Wire `FunctionWrites` content.**
+     Grow `DistributedFinalTx` with a `FunctionWrites`
+     sub-message carrying `Vec<DocumentUpdateWithPrevTs>`.
+     Uses the existing `pb::document` types where possible; adds
+     what's missing. Round-trip tests.
+
+2.4. **Wire `ExistingWrites` content.**
+     Grow the `ExistingWrites` message on `ExecuteRequest` from
+     a counter to the full `FunctionWrites` content the backend
+     stages in batched UDFs. The worker calls
+     `tx.merge_writes(...)` at the begin of each handler.
+
+2.5. **Worker applies `existing_writes` + returns full
+     `FunctionFinalTransaction`.**
+     Update `run_query_inline` / `run_mutation_inline` to
+     (a) merge in the staged writes from the request and
+     (b) drain the closed transaction into the full proto
+     `FunctionFinalTransaction` shape.
+
+2.6. **`impl FunctionRunner<ProdRuntime> for DistributedFunctionRunner`.**
+     The trait has eight methods; only `run_function` is
+     dispatched over gRPC. The JS-heavy methods (`analyze`,
+     `evaluate_*`, `set_action_callbacks`) return
+     `unimplemented` — the composite runner in
+     `convex_native_backend` delegates those to the in-process
+     JS runner. After this substep the distributed runner is a
+     drop-in for a native-only backend.
+
+2.7. **`local_backend` env-var switchover.**
+     `CONVEX_NATIVE_WORKERS=grpc://host-a:4567,grpc://host-b:4567`
+     (comma-separated) swaps the composite runner's native
+     branch from the in-process `NativeFunctionRunner` to
+     `DistributedFunctionRunner` built from the listed
+     endpoints. Undefined → keep in-process behaviour.
+
+2.8. **Integration test: subscription invalidation across the
+     wire.**
+     Start backend + one worker in the same test process.
+     Register a mutation on the worker that writes to table
+     `T`. Register a subscriber on the backend for a query
+     reading `T`. Dispatch the mutation. Assert the
+     subscriber sees an `InvalidationEvent` — this is the
+     cross-process OCC + subscription loop working end-to-end.
+
+Exit criteria: every substep shipped and the integration test
+(2.8) green. After Phase 2, a deployer with a fixed
+`CONVEX_NATIVE_WORKERS` list has OCC + subscriptions working
+over the distributed path.
+
+## Phases 3..7 — not started
 
 See `DISTRIBUTED_PLAN.md` §15 for the full breakdown.
 
-- **Phase 2**: `impl FunctionRunner<RT> for DistributedFunctionRunner`;
-  `local_backend` env-var to swap runners. After Phase 2, OCC +
-  subscriptions work against remote workers.
 - **Phase 3**: dynamic worker pool + `WorkerAdmissionService`
   (workers register on start; inventory carried in the
   registration envelope).

@@ -160,11 +160,13 @@ message ExecuteResponse {
   optional DistributedFinalTx final_tx = 5;
 }
 
-// Phase 1 shape of `function_runner::FunctionFinalTransaction` on
-// the wire. Only the fields needed to prove the mechanics round-
-// trip end-to-end are populated; Phase 2 grows this with
-// `FunctionReads` + `FunctionWrites` sub-messages so the backend
-// can actually commit through its Committer.
+// Phase-2 on-the-wire shape of `function_runner::FunctionFinalTransaction`.
+// Substep 2.1 has landed: the message now carries
+// `rows_read_by_tablet` alongside the Phase-1 scalars. Substeps
+// 2.2 and 2.3 (see convex-native/STATUS.md) grow this with
+// `FunctionReads` + `FunctionWrites` sub-messages so the
+// backend's Committer has everything it needs to validate OCC
+// and stage writes.
 message DistributedFinalTx {
   // `Timestamp` the worker opened its read transaction at, encoded
   // as the raw u64 of `common::types::Timestamp`. For Phase 2 the
@@ -174,12 +176,24 @@ message DistributedFinalTx {
 
   // Number of document updates produced by the handler. Round-trip
   // tests assert this matches what the handler actually wrote;
-  // real writes land here in Phase 2.
+  // full writes move to `writes` (substep 2.3) and this scalar
+  // becomes derivable from `writes.updates.len()`.
   uint64 writes_count = 2;
 
-  // Number of documents read by the handler. Backend-side metrics
-  // in Phase 2 derive usage from this.
+  // Number of read-set intervals the handler accumulated. Full
+  // reads move to `reads` (substep 2.2) and this scalar becomes
+  // derivable from `reads.num_intervals`.
   uint64 reads_count = 3;
+
+  // Per-tablet row-counts — one entry per `TabletId` the handler
+  // observed, with the value being the number of rows read from
+  // that tablet. Tablet ids are encoded as their canonical
+  // `Display` form (see `value::InternalId`) so the wire shape
+  // stays readable for non-Rust Phase-6 consumers. The backend
+  // feeds these into `Transaction::apply_function_runner_tx`'s
+  // `rows_read_by_tablet` argument so distributed and in-process
+  // dispatch produce identical usage-tracking numbers.
+  map<string, uint64> rows_read_by_tablet = 4;
 }
 
 message HealthRequest {
