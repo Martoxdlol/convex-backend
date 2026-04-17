@@ -719,11 +719,30 @@ an action causes indirectly).
      function path + serialized args. Proves the wire is
      hooked up end-to-end.
 
-4.5. **Enable `UdfType::Action` on the distributed runner.**
-     `DistributedFunctionRunner::run_function` /
-     `PoolFunctionRunner::run_function` stop returning the
-     "Phase 4" guidance error and dispatch actions through
-     the wire.
+4.5. ✓ **Enable `UdfType::Action` on the distributed runner.**
+     Landed. Both `DistributedFunctionRunner::run_function`
+     and `PoolFunctionRunner::run_function` stop returning the
+     "Phase 4" guidance error and now dispatch actions over
+     the wire. Substep 4.4's worker-side
+     `BackendCallbackClient` routing keeps the Committer in
+     the loop for sub-calls the action makes.
+
+     New helper `function_runner_impl::dispatch_action_via`
+     mirrors `dispatch_query_or_mutation_via` but for
+     actions: builds an `ExecuteRequest` with
+     `begin_timestamp=None` + empty `existing_writes` (actions
+     have no enclosing tx), routes through the caller's
+     dispatch closure, and assembles the response into
+     `(None, FunctionOutcome::Action(ActionOutcome),
+     FunctionUsageStats)`.
+
+     Tests: existing "Phase 4 guidance" assertion replaced
+     with a `function_metadata`-required contract check (same
+     programmer-error shape as Query/Mutation). New
+     integration test
+     `tests/function_runner_e2e::action_dispatch_never_carries_final_tx`
+     pins the "actions don't open a tx → final_tx stays None"
+     invariant end-to-end across real tonic.
 
 4.6. **Integration test.** Action calls a sub-mutation; assert
      the write lands in the backend's database.

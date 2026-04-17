@@ -242,11 +242,34 @@ impl FunctionRunner<ProdRuntime> for PoolFunctionRunner {
                 )
                 .await
             },
-            UdfType::Action => anyhow::bail!(
-                "PoolFunctionRunner: UdfType::Action dispatch is not yet implemented — native \
-                 actions need Phase 4's BackendCallbackService so sub-calls route back to the \
-                 backend's Committer. See convex-native/DISTRIBUTED_PLAN.md §7.4.",
-            ),
+            UdfType::Action => {
+                let meta = function_metadata.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "PoolFunctionRunner: function_metadata is required for Action dispatch",
+                    )
+                })?;
+                crate::function_runner_impl::dispatch_action_via(
+                    |req, udf_type, name| {
+                        let pool = self.pool.clone();
+                        async move {
+                            let eligible = pool.eligible_for(&name);
+                            if eligible.is_empty() {
+                                return Err(Status::unavailable(format!(
+                                    "PoolFunctionRunner: no worker in the pool currently \
+                                     advertises {name:?} (pool size {}); retry when the admission \
+                                     service registers one",
+                                    pool.len(),
+                                )));
+                            }
+                            dispatch_p2c(eligible, req, udf_type, Instant::now()).await
+                        }
+                    },
+                    identity,
+                    meta,
+                    context,
+                )
+                .await
+            },
             UdfType::HttpAction => anyhow::bail!(
                 "PoolFunctionRunner: UdfType::HttpAction uses the HttpRouter dispatch path, not \
                  FunctionExecutionService. See convex-native/DISTRIBUTED_PLAN.md §7.5.",

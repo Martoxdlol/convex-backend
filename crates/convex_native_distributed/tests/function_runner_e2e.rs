@@ -147,6 +147,41 @@ async fn query_without_database_surfaces_as_transport_error() {
 }
 
 #[tokio::test]
+async fn action_dispatch_never_carries_final_tx() {
+    // Substep 4.5 invariant: actions don't open a transaction,
+    // so the `final_tx` field on the round-tripped response
+    // must stay `None` independent of whether the handler
+    // succeeded or errored. Regression guard for a future
+    // refactor accidentally forwarding the Query/Mutation
+    // `summarise_tx` path through the action branch.
+    let addr = spawn_worker().await;
+    let client = TonicWorkerClient::connect(format!("http://{addr}"))
+        .await
+        .expect("connect");
+    let runner = DistributedFunctionRunner::new(vec![client]).unwrap();
+    let req = ExecuteRequest {
+        name: "does_not_exist".to_string(),
+        namespace: TableNamespace::Global,
+        args: empty_object(),
+        timeout: None,
+        min_registry_version: None,
+        execution_context: None,
+        begin_timestamp: None,
+        existing_writes: Vec::new(),
+    };
+    let resp = runner
+        .execute(req, UdfType::Action)
+        .await
+        .expect("dispatch");
+    assert!(resp.final_tx.is_none(), "actions never carry final_tx");
+    assert!(
+        matches!(resp.result, Err(ref m) if m.contains("does_not_exist")),
+        "handler-level error surfaced: {:?}",
+        resp.result,
+    );
+}
+
+#[tokio::test]
 async fn action_request_carries_phase2_fields_through_the_wire() {
     // Even when the server rejects the call at the handler layer,
     // the Phase-2 request fields (`begin_timestamp`,

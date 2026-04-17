@@ -159,11 +159,31 @@ impl FunctionRunner<ProdRuntime> for DistributedFunctionRunner {
                 )
                 .await
             },
-            UdfType::Action => anyhow::bail!(
-                "DistributedFunctionRunner: UdfType::Action dispatch is not yet implemented — \
-                 native actions need Phase 4's BackendCallbackService so sub-calls route back to \
-                 the backend's Committer. See convex-native/DISTRIBUTED_PLAN.md §7.4.",
-            ),
+            UdfType::Action => {
+                let meta = function_metadata.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "DistributedFunctionRunner: function_metadata is required for Action \
+                         dispatch",
+                    )
+                })?;
+                dispatch_action_via(
+                    |req, _udf_type, function_name| {
+                        let this = self;
+                        let fname = function_name.clone();
+                        async move {
+                            this.execute(req, UdfType::Action).await.map_err(|status| {
+                                tonic::Status::internal(format!(
+                                    "gRPC dispatch of {fname}: {status}"
+                                ))
+                            })
+                        }
+                    },
+                    identity,
+                    meta,
+                    context,
+                )
+                .await
+            },
             UdfType::HttpAction => anyhow::bail!(
                 "DistributedFunctionRunner: UdfType::HttpAction uses the HttpRouter dispatch \
                  path, not FunctionExecutionService. See convex-native/DISTRIBUTED_PLAN.md §7.5.",
@@ -314,6 +334,88 @@ where
         .await
         .map_err(|status| anyhow::anyhow!("gRPC dispatch of {function_name} failed: {status}"))?;
     build_outcome_triple(udf_type, prepared, response).await
+}
+
+/// Substep 4.5 action-dispatch helper. Mirrors
+/// `dispatch_query_or_mutation_via` but for `UdfType::Action`:
+/// no `begin_timestamp`, no `existing_writes`, no
+/// `final_tx` on the response (actions have no enclosing tx).
+/// Assembles `(None, FunctionOutcome::Action(ActionOutcome),
+/// FunctionUsageStats)`.
+pub async fn dispatch_action_via<F, Fut>(
+    mut dispatch: F,
+    identity: Identity,
+    meta: FunctionMetadata,
+    context: ExecutionContext,
+) -> anyhow::Result<(
+    Option<FunctionFinalTransaction>,
+    FunctionOutcome,
+    FunctionUsageStats,
+)>
+where
+    F: FnMut(convex_native::distributed::ExecuteRequest, UdfType, String) -> Fut,
+    Fut: std::future::Future<
+        Output = Result<convex_native::distributed::ExecuteResponse, tonic::Status>,
+    >,
+{
+    let started = Instant::now();
+    let (path, arguments, udf_server_version) = meta.path_and_args.clone().consume();
+    let function_name = path.udf_path.function_name().to_string();
+    let inert_identity = identity.into();
+
+    let args_obj = {
+        let raw_args = arguments.clone().into_args()?;
+        let first = raw_args.into_iter().next().ok_or_else(|| {
+            anyhow::anyhow!("distributed action: {function_name}: missing args object")
+        })?;
+        let cv: ConvexValue = first.try_into()?;
+        match cv {
+            ConvexValue::Object(obj) => obj,
+            _ => {
+                anyhow::bail!("distributed action: {function_name}: args must be a single object",)
+            },
+        }
+    };
+
+    let exec_req = convex_native::distributed::ExecuteRequest {
+        name: function_name.clone(),
+        namespace: TableNamespace::Global,
+        args: args_obj,
+        timeout: None,
+        min_registry_version: None,
+        execution_context: Some(context.clone()),
+        // Actions don't take a read snapshot; leave these
+        // absent so the worker falls through to its
+        // action-branch dispatch path.
+        begin_timestamp: None,
+        existing_writes: Vec::new(),
+    };
+
+    let response = dispatch(exec_req, UdfType::Action, function_name.clone())
+        .await
+        .map_err(|status| {
+            anyhow::anyhow!("gRPC action dispatch of {function_name} failed: {status}")
+        })?;
+    let duration = started.elapsed();
+
+    let result = match response.result {
+        Ok(v) => Ok(JsonPackedValue::pack(v)),
+        Err(msg) => Err(JsError::from_message(msg)),
+    };
+
+    let outcome = udf::ActionOutcome {
+        path: path.for_logging(),
+        arguments,
+        identity: inert_identity,
+        unix_timestamp: now_unix_timestamp(),
+        result,
+        syscall_trace: SyscallTrace::new(),
+        udf_server_version,
+        user_execution_time: Some(duration),
+    };
+    let wrapped = FunctionOutcome::Action(outcome);
+    let usage_stats = FunctionUsageTracker::new().gather_user_stats();
+    Ok((None, wrapped, usage_stats))
 }
 
 fn prepare_request(
@@ -520,11 +622,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_function_action_returns_phase_4_guidance() {
-        // `UdfType::Action` on the distributed runner isn't wired
-        // until Phase 4's BackendCallbackService. The error must
-        // point the operator at that plan step.
-        assert_run_function_err(UdfType::Action, "Phase 4").await;
+    async fn run_function_action_requires_function_metadata() {
+        // Substep 4.5: Action dispatch is wired now, so the
+        // "Phase 4 guidance" error is gone. What remains is the
+        // same programmer-error check as Query/Mutation:
+        // missing `function_metadata` → explicit error naming
+        // the missing argument.
+        assert_run_function_err(UdfType::Action, "function_metadata").await;
     }
 
     #[tokio::test]
