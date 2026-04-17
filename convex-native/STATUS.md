@@ -380,13 +380,76 @@ Exit criteria: every substep shipped and the integration test
 `CONVEX_NATIVE_WORKERS` list has OCC + subscriptions working
 over the distributed path.
 
-## Phases 3..7 — not started
+## Phase 3 — active, decomposed into concrete substeps
+
+`DISTRIBUTED_PLAN.md` §15 Phase 3 bundles three outcomes:
+`WorkerAdmissionService` proto + server + worker client, a
+dynamic `WorkerPool`, and backend tolerance for no-workers +
+mid-lifetime churn. Same decomposition approach as Phase 2:
+each substep ships as its own commit.
+
+3.1. ✓ **`WorkerAdmissionService` proto contract.** Landed. New
+     proto file `crates/pb/protos/worker_admission.proto`
+     defining the service and every message type:
+     `RegistrationEnvelope`, `FunctionInventory`
+     (`FunctionRegistration` + `DatabaseSchema` +
+     `HttpRouteRegistration` + `CronRegistration`),
+     `WorkerStatus`, `DrainNotice`, `RegistryFloorUpdate`,
+     `WorkerKind` enum. Generates `pb::worker_admission::*`.
+
+3.2. **`FunctionInventory` content wiring.** Native-side builder
+     that fills the proto from
+     `NativeFunctionRegistry::collect()` /
+     `NativeSchema::collect()` /
+     `HttpRouteRegistry::collect()` / `CronRegistry::collect()`.
+     Includes canonicalisation rules for the SHA-256
+     inventory-hash field.
+
+3.3. **`WorkerPool` type.** Replaces the fixed
+     `Vec<Arc<dyn WorkerClient>>` with a churn-tolerant
+     `DashMap<WorkerId, WorkerEntry>` plus a
+     `by_function: DashMap<String, Vec<WorkerId>>` dispatch
+     index. Per-registry-version groups; floor-bump control.
+
+3.4. **`WorkerAdmissionServer`.** Backend-side tonic service
+     implementation. Accepts `Register` streams, validates the
+     envelope against the active pool, stores the admitted
+     worker in the `WorkerPool`. Rejection path surfaces the
+     reason back to the worker before closing the stream.
+
+3.5. **Worker-side registration loop.** Worker binary dials
+     `CONVEX_BACKEND_ENDPOINT=grpc://backend:5678`, opens the
+     `Register` stream, sends envelope + periodic `WorkerStatus`
+     messages, handles `DrainNotice` by flipping its readiness
+     flag and exiting after in-flight drains.
+
+3.6. **`WorkerPool` as `FunctionRunner`.** The pool itself
+     (not a single runner) implements
+     `FunctionRunner<ProdRuntime>`. Routes each dispatch to a
+     worker that advertises the requested function; uses P2C
+     across the worker set that serves the name.
+
+3.7. **No-workers 503 + worker-leaves handling.** Backend
+     surfaces a clear error when no worker currently serves a
+     requested function. `WorkerPool` removes a worker cleanly
+     when its stream closes.
+
+3.8. **Drain + retire flow.** `DrainNotice` plumbing; the
+     operator-facing "retire this worker" path triggers a
+     notice, waits for in-flight to clear, closes the stream.
+     `CONVEX_WORKER_ENDPOINTS` is retired in favor of
+     `CONVEX_BACKEND_ENDPOINT` (worker-outbound);
+     `CONVEX_NATIVE_WORKERS` on the backend is replaced by the
+     admission service's dynamic pool.
+
+Exit criteria: workers auto-register on start; the backend
+dispatches through the dynamic pool; operators don't need to
+restart the backend to change the worker set.
+
+## Phases 4..7 — not started
 
 See `DISTRIBUTED_PLAN.md` §15 for the full breakdown.
 
-- **Phase 3**: dynamic worker pool + `WorkerAdmissionService`
-  (workers register on start; inventory carried in the
-  registration envelope).
 - **Phase 4**: `BackendCallbackService` — action sub-calls
   route back to the backend's Committer.
 - **Phase 5**: prebuilt `getconvex/convex-backend` container

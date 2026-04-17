@@ -1,0 +1,216 @@
+// Worker registration + admission protocol. Phase 3 of
+// convex-native/DISTRIBUTED_PLAN.md.
+//
+// The backend process publishes a WorkerAdmissionService on its
+// internal gRPC port (`CONVEX_ADMISSION_BIND_ADDR`). Workers dial
+// it on startup and open a bidirectional stream — the worker
+// sends its `RegistrationEnvelope` as the first message, then
+// periodic `WorkerStatus` messages; the backend sends
+// `BackendToWorker` control messages (drain notices, registry
+// floor updates) as needed. Closing the stream = worker leaves
+// the pool.
+//
+// Workers are internal gRPC only. Clients hit the backend's
+// public HTTP/WebSocket surface, never the workers directly —
+// see DISTRIBUTED_PLAN.md §3 for the topology decision rationale.
+//
+// The generated Rust types live at
+// `pb::worker_admission::*`. The Rust-side bindings are in
+// `crates/convex_native_distributed/src/admission/` (substep 3.4
+// server + substep 3.5 worker client).
+
+syntax = "proto3";
+
+package worker_admission;
+
+import "common.proto";
+
+// Runtime a worker is using. Lets the backend tell a JS-backed
+// worker apart from a native-Rust one so the inventory / dispatch
+// decisions can branch on it (e.g. JS workers only advertise JS
+// function names; native workers carry `NativeFunctionRegistration`
+// entries). Both are interchangeable from the
+// `FunctionExecutionService` dispatch path's perspective.
+enum WorkerKind {
+  WORKER_KIND_UNSPECIFIED = 0;
+  WORKER_KIND_NATIVE_RUST = 1;
+  WORKER_KIND_JAVASCRIPT = 2;
+}
+
+service WorkerAdmissionService {
+  // Long-lived streaming RPC. Worker keeps the stream open for its
+  // whole lifetime; backend uses it to push drain notices and
+  // registry-floor updates. Closing the stream (client-side or
+  // server-side) un-registers the worker from the pool.
+  rpc Register(stream WorkerToBackend) returns (stream BackendToWorker);
+}
+
+message WorkerToBackend {
+  oneof msg {
+    // First message on the stream. The backend validates the
+    // envelope (schema hash match vs. the active pool, version
+    // acceptance) and either admits the worker or closes the
+    // stream with a failed-precondition `Status`.
+    RegistrationEnvelope register = 1;
+    // Periodic status update so the backend's load-balancing /
+    // drain decisions have fresh signal. Frequency is worker-
+    // controlled; the backend tolerates missing updates by
+    // falling back to its own `TonicWorkerClient::in_flight`
+    // counter for P2C decisions.
+    WorkerStatus status = 2;
+  }
+}
+
+message BackendToWorker {
+  oneof msg {
+    // Backend is asking the worker to drain. Worker stops
+    // accepting new dispatches, finishes in-flight, and exits.
+    // Sent during rolling updates and when the backend wants to
+    // retire a worker for any reason.
+    DrainNotice drain = 1;
+    // Backend informs the worker of the current
+    // `min_registry_version` floor (Phase-4.7 rolling-update
+    // lever). Informational — the worker doesn't need to act on
+    // it, but `describe_json`-style tooling on the worker can
+    // surface the floor for debugging.
+    RegistryFloorUpdate floor_update = 2;
+  }
+}
+
+message RegistrationEnvelope {
+  // gRPC URL the backend should dial for function dispatches
+  // (`grpc://worker-a.convex.svc.cluster.local:4567` or similar).
+  // Worker advertises its public-from-the-backend's-perspective
+  // endpoint; the backend uses this to build a
+  // `TonicWorkerClient`.
+  string execute_endpoint = 1;
+
+  // Worker's `registry_version` tag. Usually the Cargo version of
+  // the deployer's worker crate; the backend enforces that
+  // workers with the same `registry_version` carry identical
+  // inventory (SHA-matched). During rolling updates multiple
+  // versions coexist; the backend tracks a floor to steer
+  // traffic.
+  string registry_version = 2;
+
+  WorkerKind kind = 3;
+
+  // Function registry + schema + HTTP routes + cron schedules
+  // the worker serves. The backend merges these into its own
+  // routing tables at registration time.
+  FunctionInventory inventory = 4;
+
+  // SHA-256 hash of the canonicalized inventory. Workers with the
+  // same `registry_version` must produce the same hash — a
+  // mismatch is a hard error and the worker is rejected.
+  // Canonicalisation rules are documented in
+  // `convex_native_distributed::admission`.
+  bytes inventory_sha256 = 5;
+}
+
+message WorkerStatus {
+  // Handler invocations currently in flight. Backend uses this
+  // in its P2C load-balancer's tie-breaker when the worker's own
+  // `TonicWorkerClient::in_flight` stat is stale (e.g. right
+  // after a worker restart).
+  uint64 in_flight = 1;
+
+  // CPU utilisation percent (0..=100). Optional — workers that
+  // can't cheaply report CPU leave this as zero. The backend
+  // uses it when non-zero to avoid piling work onto a saturated
+  // worker.
+  uint32 cpu_percent = 2;
+
+  // `registry_version` the worker is serving, in case it rolled
+  // in-place (unusual — most workers are immutable binaries).
+  // Mismatches vs the registration envelope's value trigger a
+  // re-registration flow.
+  string registry_version = 3;
+}
+
+message DrainNotice {
+  // Deadline in unix-nanoseconds by which the worker should have
+  // finished draining. The backend enforces its own timeout;
+  // this field is informational for tooling.
+  uint64 deadline_unix_nanos = 1;
+
+  // Human-readable reason (shown in operator logs). Examples:
+  // "rolling update — new registry_version available",
+  // "operator-requested retirement".
+  string reason = 2;
+}
+
+message RegistryFloorUpdate {
+  // New `min_registry_version` floor. Workers below this floor
+  // should expect a `DrainNotice` shortly.
+  string min_registry_version = 1;
+}
+
+// What a worker advertises to the backend at registration time.
+// Substep 3.2 of `convex-native/STATUS.md` — grown incrementally
+// as the Phase-3 work lands the JSON shapes mapping back onto
+// the existing `NativeFunctionRegistration` / `NativeSchema` /
+// `HttpRouteRegistration` / `CronRegistration` types in
+// `convex_native`.
+message FunctionInventory {
+  repeated FunctionRegistration functions = 1;
+  // Serialized `DatabaseSchema` — the worker's authoritative
+  // schema (from `#[derive(ConvexDocument)]` + `NativeSchema::collect()`
+  // for native workers; from `schema.ts` evaluation for JS
+  // workers). The backend uses this for write validation.
+  DatabaseSchema schema = 2;
+  repeated HttpRouteRegistration routes = 3;
+  repeated CronRegistration crons = 4;
+}
+
+// One entry per `#[convex::{query,mutation,action}]` the worker
+// serves (native), or one per JS function (JS workers). Shape
+// intentionally thin — the full handler metadata lives on the
+// worker; the backend only needs the name + kind + namespace
+// for dispatch routing.
+message FunctionRegistration {
+  // Dotted registry name, matches `NativeFunctionRegistration.name`.
+  // For JS workers this is the canonicalised `module:function`
+  // form the backend already uses on its JS dispatch path.
+  string name = 1;
+  // UdfType so the backend can reject mismatched dispatches
+  // ("you asked to run this as a Mutation but the handler is
+  // registered as a Query").
+  common.UdfType udf_type = 2;
+}
+
+// Schema the worker advertises. Substep 3.2 uses a JSON blob —
+// the same shape `describe_json` emits on the `convex_native`
+// side — so backend and JS worker can both produce / consume it
+// without a proto-level schema-definition surface. A dedicated
+// message replaces this in a follow-up substep once the schema
+// wire format stabilises.
+message DatabaseSchema {
+  bytes schema_json = 1;
+}
+
+// One entry per HTTP route the worker serves. Backend builds its
+// merged `HttpRouter` from the union of every worker's routes at
+// registration time.
+message HttpRouteRegistration {
+  // Method + path pair the worker serves.
+  string method = 1;
+  string path = 2;
+  // Dotted handler name on the worker. The backend looks this up
+  // at dispatch time via the normal function-execution path.
+  string handler = 3;
+}
+
+// One entry per cron job the worker declares. The backend's cron
+// worker reads these at registration time and drives the
+// schedule; it dispatches to the worker pool at fire time via
+// the normal `FunctionExecutionService` path.
+message CronRegistration {
+  // Cron identifier (matches `#[convex::cron(name = "...")]`).
+  string name = 1;
+  // Cron expression ("0 */5 * * *") or interval spec in the
+  // form the native `CronRegistration` already carries.
+  string schedule = 2;
+  // Dotted handler name to fire. Must match a `functions` entry.
+  string handler = 3;
+}

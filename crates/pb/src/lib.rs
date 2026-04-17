@@ -42,6 +42,9 @@ pub mod storage {
 pub mod usage {
     include!(concat!(env!("OUT_DIR"), "/usage.rs"));
 }
+pub mod worker_admission {
+    include!(concat!(env!("OUT_DIR"), "/worker_admission.rs"));
+}
 
 include!(concat!(env!("OUT_DIR"), "/_extras.rs"));
 use std::sync::LazyLock;
