@@ -330,11 +330,20 @@ pub async fn make_app(
         );
         let worker_db = database.clone();
         let worker_native = native_runner.clone();
+        // Drain on the same broadcast the HTTP server listens on
+        // (cloned as `zombify_rx` at the make_app boundary). A single
+        // `shutdown_tx.broadcast(())` therefore takes down HTTP, the
+        // site proxy, and the worker gRPC server together.
+        let mut worker_shutdown_rx = zombify_rx.clone();
+        let worker_shutdown = async move {
+            let _ = worker_shutdown_rx.recv().await;
+        };
         runtime.spawn_background("convex_native_worker", async move {
-            if let Err(e) = convex_native_distributed::serve_worker_with_database(
+            if let Err(e) = convex_native_distributed::serve_worker_with_shutdown(
                 bind_addr,
                 worker_native,
                 worker_db,
+                worker_shutdown,
             )
             .await
             {

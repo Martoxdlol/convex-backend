@@ -117,16 +117,41 @@ pub fn build_worker_server(
 ///
 /// Used by `convex-local-backend` under `CONVEX_MODE=worker` to
 /// expose native functions over gRPC without duplicating the tonic
-/// wiring.
+/// wiring. Callers that need coordinated shutdown (e.g. to drain on
+/// the same signal the HTTP server uses) should prefer
+/// [`serve_worker_with_shutdown`].
 pub async fn serve_worker_with_database(
     addr: SocketAddr,
     native: Arc<NativeFunctionRunner>,
     database: Database<Rt>,
 ) -> anyhow::Result<()> {
+    serve_worker_with_shutdown(addr, native, database, std::future::pending::<()>()).await
+}
+
+/// Serve `FunctionExecutionService` on `addr` with a
+/// caller-provided shutdown future. When the future resolves, tonic
+/// stops accepting new connections, drains in-flight RPCs, and
+/// returns `Ok(())` (mapped into `anyhow::Result`). A transport error
+/// from `serve_with_shutdown` still surfaces as `Err`.
+///
+/// Use this variant when the worker server is embedded in a larger
+/// process (e.g. `convex-local-backend` under `CONVEX_MODE=worker`)
+/// and must drain in lockstep with the rest of the process. The
+/// shutdown future is typically an `async_broadcast::Receiver<()>`
+/// wrapped in `async move { let _ = rx.recv().await; }`.
+pub async fn serve_worker_with_shutdown<F>(
+    addr: SocketAddr,
+    native: Arc<NativeFunctionRunner>,
+    database: Database<Rt>,
+    shutdown: F,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
     let server = FunctionExecutionServer::new(native).with_database(database);
     Server::builder()
         .add_service(FunctionExecutionServiceServer::new(server))
-        .serve(addr)
+        .serve_with_shutdown(addr, shutdown)
         .await
         .map_err(|e| anyhow::anyhow!("FunctionExecutionService serve({addr}): {e}"))
 }

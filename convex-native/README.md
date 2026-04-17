@@ -515,10 +515,15 @@ shuts down every clone.
   doesn't own a `Database`; boot the dedicated
   `convex_native_distributed::examples::conductor` binary instead).
   The wiring lives in `local_backend::make_app` and hops through
-  `convex_native_distributed::serve_worker_with_database(addr, native,
-  db)`, which keeps `pb` and `tonic` out of `local_backend`'s direct
-  dep graph. The worker server is spawned as a background task;
-  graceful co-shutdown with the HTTP server is future work.
+  `convex_native_distributed::serve_worker_with_shutdown(addr,
+  native, db, shutdown_future)`, which keeps `pb` and `tonic` out of
+  `local_backend`'s direct dep graph. The shutdown future is a clone
+  of the HTTP server's broadcast receiver, so Ctrl-C / the `/preempt`
+  endpoint drains HTTP, the site proxy, and the worker gRPC server
+  together — tonic `serve_with_shutdown` stops accepting new
+  connections and lets in-flight RPCs finish before returning. The
+  no-shutdown `serve_worker_with_database(...)` shim is still
+  re-exported for callers that want "bind and run forever".
 - **Phase 3.5 — binary-level mode switching helpers (shipped):**
   `mode.rs` decodes `CONVEX_MODE`, `CONVEX_WORKER_ENDPOINTS`
   (comma-separated gRPC URLs), and `CONVEX_WORKER_BIND_ADDR`
