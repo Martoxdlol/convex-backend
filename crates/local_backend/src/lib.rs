@@ -315,12 +315,10 @@ pub async fn make_app(
     // on `CONVEX_WORKER_BIND_ADDR`. Queries and mutations arriving
     // over gRPC execute inline against the same `Database` the HTTP
     // path uses, so a conductor and a direct HTTP client see one
-    // consistent read timeline.
-    //
-    // Spawned as a background task: the tonic server lives for the
-    // lifetime of the process. Graceful co-shutdown with the HTTP
-    // server is future work — today a Ctrl-C kills the process and
-    // takes the tonic listener with it.
+    // consistent read timeline. The server drains on the same
+    // `zombify_rx` broadcast the HTTP server listens on, so Ctrl-C /
+    // `/preempt` stops accepting new RPCs, lets in-flight calls
+    // finish, and tears down alongside HTTP.
     if matches!(convex_mode, ConvexMode::Worker) {
         let bind_addr = convex_native_distributed::read_worker_bind_addr_from_env()?;
         tracing::info!(
