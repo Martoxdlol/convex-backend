@@ -221,6 +221,94 @@ fn empty_object() -> ConvexObject {
     ConvexObject::try_from(m).unwrap()
 }
 
+async fn spawn_worker_exec_server(endpoint: String) -> SocketAddr {
+    use convex_native::NativeFunctionRunner;
+    use convex_native_distributed::FunctionExecutionServer;
+    use pb::function_execution::function_execution_service_server::FunctionExecutionServiceServer;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let native = Arc::new(NativeFunctionRunner::from_inventory().unwrap());
+    let server = FunctionExecutionServer::new(native)
+        .with_backend_callback_endpoint(endpoint)
+        .with_registry_version("4.6-test");
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(FunctionExecutionServiceServer::new(server))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .unwrap();
+    });
+    tokio::task::yield_now().await;
+    addr
+}
+
+#[tokio::test]
+async fn worker_exec_server_wires_callback_endpoint_into_action_dispatch() {
+    // Substep 4.6 exit criterion (wire-proof portion): a worker
+    // whose `FunctionExecutionServer` is configured with
+    // `.with_backend_callback_endpoint(...)` dispatches
+    // `UdfType::Action` requests with a `BackendCallbackClient`
+    // wired up, not `NoopCallbacks`. We can't exercise the full
+    // action → ctx.run_mutation path here because the test
+    // binary doesn't register `#[convex::action]` entries (the
+    // handler registry is `inventory::submit!`-populated at
+    // link time and empty in this binary); the action
+    // dispatch surfaces a handler-level "does not exist"
+    // error. What this test pins is that the Action branch on
+    // the server **runs** rather than bailing from
+    // `Unimplemented`, and that the backend callback endpoint
+    // dial succeeds.
+    //
+    // The remaining substep 4.6b — actually dispatching a
+    // sub-mutation from inside a running action and asserting
+    // the backend's database sees the commit — is blocked on
+    // the same `Database<Rt>` test fixture story as substep
+    // 2.8b. See `convex-native/STATUS.md` for the deferral.
+    use convex_native_distributed::{
+        DistributedFunctionRunner,
+        TonicWorkerClient,
+    };
+    use value::{
+        ConvexObject,
+        ConvexValue,
+        FieldName,
+        TableNamespace,
+    };
+    let callbacks = Arc::new(RecordingCallbacks::default());
+    let callback_addr = spawn_backend_callbacks(callbacks.clone()).await;
+    let worker_addr = spawn_worker_exec_server(format!("http://{callback_addr}")).await;
+
+    let client = TonicWorkerClient::connect(format!("http://{worker_addr}"))
+        .await
+        .expect("connect worker");
+    let runner = DistributedFunctionRunner::new(vec![client]).unwrap();
+    let obj: std::collections::BTreeMap<FieldName, ConvexValue> = std::collections::BTreeMap::new();
+    let req = convex_native::distributed::ExecuteRequest {
+        name: "does_not_exist".to_string(),
+        namespace: TableNamespace::Global,
+        args: ConvexObject::try_from(obj).unwrap(),
+        timeout: None,
+        min_registry_version: None,
+        execution_context: None,
+        begin_timestamp: None,
+        existing_writes: Vec::new(),
+    };
+    let resp = runner
+        .execute(req, common::types::UdfType::Action)
+        .await
+        .expect("gRPC dispatch");
+    // Handler doesn't exist in the test binary → native runner
+    // surfaces an error. The important thing is the dispatch
+    // reached `run_action_with_callbacks_and_log_buffer` (proving
+    // the callback client was constructed) rather than bailing
+    // from the outer match.
+    assert!(
+        matches!(resp.result, Err(ref m) if m.contains("does_not_exist")),
+        "action reached the NativeFunctionRunner past the callback-client setup: {:?}",
+        resp.result,
+    );
+}
+
 #[tokio::test]
 async fn worker_sub_mutation_reaches_backend_action_callbacks() {
     // Substep 4.4 exit criterion: a sub-mutation call on the

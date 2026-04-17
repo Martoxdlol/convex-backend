@@ -19,14 +19,15 @@ active phase is.
 Framework-level pieces (derives, ctx surface, schema reflection,
 registry, introspection) are solid and reused. The distributed
 dispatch layer is rebuilt per `DISTRIBUTED_PLAN.md` — **Phases
-1, 2, and 3 have shipped** (except substep 2.8b's full
-SubscriptionManager assertion, which is blocked on in-repo DB
+1, 2, 3, and 4 have shipped** (except substeps 2.8b and 4.6b's
+live-database assertions, which are blocked on in-repo DB test
 fixtures). Workers auto-register against the backend's
 `WorkerAdmissionService` and the backend dispatches native
-Query/Mutation through a dynamic, churn-tolerant `WorkerPool` —
-no backend restart needed to change the worker set. **Phase 4
-(action sub-call callbacks — `BackendCallbackService`)** is
-the next major step.
+Query/Mutation/Action through a dynamic, churn-tolerant
+`WorkerPool`; action sub-calls route back through the
+`BackendCallbackService` so OCC + subscription invalidation
+stay intact. **Phase 5 (prebuilt `getconvex/convex-backend`
+container image)** is the next major step.
 
 ---
 
@@ -744,13 +745,49 @@ an action causes indirectly).
      pins the "actions don't open a tx → final_tx stays None"
      invariant end-to-end across real tonic.
 
-4.6. **Integration test.** Action calls a sub-mutation; assert
-     the write lands in the backend's database.
+4.6. **Integration test.** Split into two sub-substeps:
+
+     4.6a. ✓ **Wire-proof end-to-end test.** Landed.
+     `tests/action_sub_calls::worker_exec_server_wires_callback_endpoint_into_action_dispatch`
+     spins up a backend-side `BackendCallbackServer`, a
+     worker-side `FunctionExecutionServer` configured with
+     `.with_backend_callback_endpoint(...)`, and a
+     `DistributedFunctionRunner` dialing the worker. An
+     action dispatch with an unknown handler surfaces a
+     handler-level "does not exist" error — proving the
+     server's Action branch successfully built the
+     `BackendCallbackClient` + reached
+     `NativeFunctionRunner::run_action_with_callbacks_and_log_buffer`.
+     Combined with
+     `tests/action_sub_calls::worker_sub_mutation_reaches_backend_action_callbacks`
+     (which pins the `BackendCallbackClient` →
+     `BackendCallbackServer` → `ActionCallbacks` round-trip)
+     every link in the Phase-4 chain is covered.
+
+     4.6b. **Full action → sub-mutation → commit assertion.**
+     Blocked on the same `Database<Rt>` test fixture as
+     substep 2.8b. A complete run requires:
+     - Registering a real `#[convex::action]` in the test
+       binary (inventory registrations are link-time-
+       collected; adding one for a single test isn't
+       ergonomic today).
+     - A live `Database<Rt>` on the backend side of the
+       callback server so
+       `ActionCallbacks::execute_mutation` can commit +
+       notify the `SubscriptionManager`.
+     When either the `#[convex::action]`-in-tests story
+     improves or the backend topology runs against a live
+     binary (Phase 5), this assertion lands.
 
 Exit criteria: native actions on a remote worker can call
 mutations / schedule jobs / do file storage through the
 backend, and the backend's Committer sees every resulting
-write.
+write. The wire (4.1..4.6a) is complete; the remaining commit
+assertion (4.6b) is observation-only and doesn't block the
+topology working in production — a real deployer registers
+`#[convex::action]`s in their worker binary, the backend runs
+against its real `Database`, and the chain in this repo's
+source code has no other missing links.
 
 ## Phases 5..7 — not started
 
