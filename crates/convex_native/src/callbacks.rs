@@ -164,3 +164,103 @@ impl NativeActionCallbacks for NoopCallbacks {
         anyhow::bail!("no callbacks attached — cannot delete from file storage")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Every `NoopCallbacks` method must fail loudly when invoked.
+    //! An accidental `Ok(())` would silently drop user operations
+    //! (e.g. a scheduled job that never runs, a mutation that never
+    //! commits) — these tests pin the "every path bails" contract.
+
+    use std::collections::BTreeMap;
+
+    use value::{
+        DeveloperDocumentId,
+        FieldName,
+    };
+
+    use super::*;
+
+    fn empty_obj() -> ConvexObject {
+        ConvexObject::try_from(BTreeMap::<FieldName, ConvexValue>::new()).unwrap()
+    }
+
+    fn id() -> DeveloperDocumentId {
+        DeveloperDocumentId::MIN
+    }
+
+    #[tokio::test]
+    async fn run_query_by_name_bails() {
+        let err = NoopCallbacks
+            .run_query_by_name(TableNamespace::Global, "get_user", empty_obj())
+            .await
+            .expect_err("no callbacks attached");
+        assert!(
+            format!("{err}").contains("cannot run query"),
+            "error names the operation: {err}",
+        );
+    }
+
+    #[tokio::test]
+    async fn run_mutation_by_name_bails() {
+        let err = NoopCallbacks
+            .run_mutation_by_name(TableNamespace::Global, "set_user", empty_obj())
+            .await
+            .expect_err("no callbacks attached");
+        assert!(format!("{err}").contains("cannot run mutation"));
+    }
+
+    #[tokio::test]
+    async fn schedule_bails() {
+        let err = NoopCallbacks
+            .schedule(
+                TableNamespace::Global,
+                "bg_job",
+                empty_obj(),
+                Duration::from_secs(1),
+            )
+            .await
+            .expect_err("no callbacks attached");
+        assert!(format!("{err}").contains("cannot schedule"));
+    }
+
+    #[tokio::test]
+    async fn cancel_scheduled_bails() {
+        let err = NoopCallbacks
+            .cancel_scheduled(TableNamespace::Global, id())
+            .await
+            .expect_err("no callbacks attached");
+        assert!(format!("{err}").contains("cannot cancel"));
+    }
+
+    #[tokio::test]
+    async fn storage_store_bails() {
+        let err = NoopCallbacks
+            .storage_store(
+                TableNamespace::Global,
+                bytes::Bytes::from_static(b"abc"),
+                "text/plain",
+            )
+            .await
+            .expect_err("no callbacks attached");
+        assert!(format!("{err}").contains("cannot store"));
+    }
+
+    #[tokio::test]
+    async fn storage_get_url_bails() {
+        let err = NoopCallbacks
+            .storage_get_url(TableNamespace::Global, StorageId("abc".into()))
+            .await
+            .expect_err("no callbacks attached");
+        assert!(format!("{err}").contains("cannot read"));
+    }
+
+    #[tokio::test]
+    async fn storage_delete_bails() {
+        let err = NoopCallbacks
+            .storage_delete(TableNamespace::Global, StorageId("abc".into()))
+            .await
+            .expect_err("no callbacks attached");
+        assert!(format!("{err}").contains("cannot delete"));
+    }
+}
