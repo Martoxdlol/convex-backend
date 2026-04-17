@@ -85,7 +85,13 @@ impl Chooser for RandomChooser {
 pub struct DistributedFunctionRunner {
     workers: Vec<Arc<dyn WorkerClient>>,
     chooser: Arc<dyn Chooser>,
-    retries: u32,
+    /// When true, an `Unavailable` from the primary worker retries
+    /// once against the backup. When false, the primary's error
+    /// bubbles up immediately. Defaults to `true`. P2C semantics
+    /// cap this at one retry — trying a third worker would pick
+    /// another random pair and defeat the point of the load-balancing
+    /// decision, so multi-retry isn't modelled at this layer.
+    failover: bool,
     /// Applied to every `ExecuteRequest` that doesn't already set
     /// one. Phase 4.7 rolling-update floor: during a deploy the
     /// operator pins a minimum `registry_version` here so the
@@ -104,7 +110,7 @@ impl DistributedFunctionRunner {
         Ok(Self {
             workers,
             chooser: Arc::new(RandomChooser),
-            retries: 1,
+            failover: true,
             min_registry_version: None,
         })
     }
@@ -116,9 +122,13 @@ impl DistributedFunctionRunner {
         self
     }
 
-    /// Set the number of retries on `Unavailable` errors. Default 1.
-    pub fn with_retries(mut self, retries: u32) -> Self {
-        self.retries = retries;
+    /// Enable or disable single-retry failover on `Unavailable`.
+    /// Defaults to enabled. When disabled, the primary worker's
+    /// error bubbles up without trying the backup — useful for
+    /// clients that want strict primary-only semantics or that
+    /// handle their own retry policy upstream.
+    pub fn with_failover(mut self, enabled: bool) -> Self {
+        self.failover = enabled;
         self
     }
 
@@ -157,13 +167,16 @@ impl DistributedFunctionRunner {
         let (i, j) = self.chooser.pick_two(n);
         let (primary, backup) = self.rank(i, j);
 
+        let attempts: &[usize] = if self.failover && primary != backup {
+            &[primary, backup]
+        } else {
+            // Either failover is disabled or the chooser degenerated
+            // to the same worker twice — no point in a second try.
+            std::slice::from_ref(&primary)
+        };
+
         let mut last_err: Option<Status> = None;
-        let mut attempts_left = self.retries + 1;
-        for idx in [primary, backup] {
-            if attempts_left == 0 {
-                break;
-            }
-            attempts_left -= 1;
+        for &idx in attempts {
             let worker = &self.workers[idx];
             match worker.execute(req.clone(), udf_type).await {
                 Ok(resp) => return Ok(resp),
@@ -361,6 +374,24 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
         assert_eq!(a.calls(), 1);
         assert_eq!(b.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn failover_disabled_bubbles_primary_error_without_retry() {
+        let a = MockWorkerClient::with_handler("A", 0, |_, _| Err(Status::unavailable("A down")));
+        let b = MockWorkerClient::new("B", 5);
+        let runner = DistributedFunctionRunner::new(vec![a.clone(), b.clone()])
+            .unwrap()
+            .with_chooser(Arc::new(FixedChooser((0, 1))))
+            .with_failover(false);
+        let err = runner.execute(req(), UdfType::Action).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unavailable);
+        assert_eq!(a.calls(), 1);
+        assert_eq!(
+            b.calls(),
+            0,
+            "backup must not be tried when failover disabled"
+        );
     }
 
     #[tokio::test]
