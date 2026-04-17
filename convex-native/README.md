@@ -730,13 +730,16 @@ registrations, no schema entries.
     dispatch decisions
   - `run_query(name, tx, namespace, args)` / `run_mutation(...)` — execute
     a handler directly against a borrowed `Transaction<Rt>`
-- `NativeFunctionRunner` is deliberately standalone and does **not** yet
-  implement `function_runner::FunctionRunner`. The adapter that does
-  (wrapping a JS runner and delegating unmapped calls) is documented in
-  `COMPOSITE_RUNNER.md` — it's not built in-workspace because
-  `function_runner` transitively depends on `isolate` (V8), which needs
-  `rush install` + build steps to compile. When the full backend build
-  lands in a new integration crate, the composite code moves there.
+- `NativeFunctionRunner` is deliberately standalone and does
+  **not** implement `function_runner::FunctionRunner`. The
+  adapter that does (wrapping a JS runner and delegating
+  unmapped calls) lives in the sibling
+  `convex_native_backend::CompositeFunctionRunner`. Keeping the
+  trait impl out of this crate avoids pulling the `isolate` / V8
+  build cost into every consumer — framework-only users
+  (tests, CLI tools, codegen tooling) stay lightweight while the
+  production binary picks up the adapter through
+  `local_backend/src/lib.rs`.
 
 ### New in Phase 1.2.4 / 1.2.5 — function attribute macros
 
