@@ -275,18 +275,40 @@ substep is checked and the integration test is green.
      reads carries through).
      Added deps: `function_runner`, `udf`, `errors`, `tokio`.
 
-     2.6b. **FunctionRunner trait impl.** Pending. `run_function`
-     builds the ExecuteRequest from `function_metadata +
-     identity + ts + existing_writes + context`, dispatches via
-     the pool's `execute()`, then assembles
-     `(Option<FunctionFinalTransaction>, FunctionOutcome,
-     FunctionUsageStats)` via `final_tx_summary_to_function_tx`
-     + a new helper that builds `FunctionOutcome`. JS-only
-     methods return an anyhow error that tells the operator to
-     configure a JS runner instead. `set_action_callbacks` is a
-     no-op (distributed actions route sub-calls back to the
-     backend via Phase 4's `BackendCallbackService`, not via
-     these local callbacks).
+     2.6b. ✓ **FunctionRunner trait impl.** Landed. New module
+     `function_runner_impl` at
+     `crates/convex_native_distributed/src/function_runner_impl.rs`
+     implements `FunctionRunner<ProdRuntime>` on
+     `DistributedFunctionRunner`:
+
+     - `run_function` for `UdfType::Query` /
+       `UdfType::Mutation` builds the native `ExecuteRequest`
+       from `function_metadata + identity + ts +
+       existing_writes + context`, dispatches via the pool's
+       `execute()`, then assembles
+       `(Option<FunctionFinalTransaction>, FunctionOutcome,
+       FunctionUsageStats)` via `final_tx_summary_to_function_tx`
+       + a minimal `UdfOutcome` builder. Observed flags
+       (`observed_identity` / `observed_rng` / `observed_time`)
+       default to false and `rng_seed` defaults to zeros — the
+       wire protocol doesn't carry those yet; a follow-up
+       substep extends the proto if the backend needs them for
+       non-cached subscription-reuse semantics.
+     - `UdfType::Action` returns a clear error pointing at
+       Phase 4's `BackendCallbackService`.
+     - `UdfType::HttpAction` returns a clear error pointing at
+       the `HttpRouter` dispatch path (substep 2.7 / Phase 3).
+     - `analyze` / `evaluate_*` return descriptive errors so
+       the operator knows to wrap in a composite runner or
+       ship a JS-only backend.
+     - `set_action_callbacks` is a no-op (distributed actions
+       route sub-calls back to the backend via Phase 4's
+       `BackendCallbackService`, not via these local callbacks).
+
+     Dep add: `runtime` (for `ProdRuntime`).
+
+     Tests: `function_runner_impl::evaluate_schema_returns_clear_error`
+     pins the "guidance error" contract on JS-only methods.
 
 2.7. **`local_backend` env-var switchover.**
      `CONVEX_NATIVE_WORKERS=grpc://host-a:4567,grpc://host-b:4567`

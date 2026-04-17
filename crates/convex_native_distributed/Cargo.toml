@@ -23,6 +23,7 @@ model = { workspace = true }
 pb = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
+runtime = { workspace = true }
 serde_json = { workspace = true }
 sync_types = { workspace = true }
 tokio = { workspace = true }

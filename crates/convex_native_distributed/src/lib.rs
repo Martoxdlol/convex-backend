@@ -37,6 +37,7 @@
 
 pub mod client;
 pub mod conversions;
+pub mod function_runner_impl;
 pub mod mode;
 pub mod server;
 pub mod tonic_client;
