@@ -6,8 +6,10 @@
 //! before wiring up a runner or starting a gRPC server. The actual
 //! binary glue (spawn a `tonic::transport::Server` in worker mode;
 //! build a `DistributedFunctionRunner` in conductor mode) lives in
-//! `local_backend` or a follow-up distributed binary — this module
-//! just decodes the env vars and assembles the pieces.
+//! `examples/worker.rs` and `examples/conductor.rs` of this crate —
+//! this module just decodes the env vars and assembles the pieces.
+//! `convex-local-backend` also consumes [`read_mode_from_env`] to
+//! refuse boot on any `CONVEX_MODE` other than `Standalone`.
 //!
 //! ## Env vars
 //!

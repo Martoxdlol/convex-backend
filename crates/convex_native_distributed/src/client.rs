@@ -8,10 +8,10 @@
 //! estimates, send to the lower. On an `Unavailable` gRPC error the
 //! conductor retries against the other chosen worker, then gives up.
 //!
-//! The `WorkerClient` trait is the seam for testing: the real
-//! implementation (`TonicWorkerClient`, added in a follow-up
-//! commit) wraps a `FunctionExecutionServiceClient` and tracks
-//! in-flight locally; tests use the in-memory `MockWorkerClient`
+//! The `WorkerClient` trait is the seam for testing. The real
+//! implementation — [`crate::tonic_client::TonicWorkerClient`] —
+//! wraps a `FunctionExecutionServiceClient<Channel>` and tracks
+//! in-flight locally. Tests use the in-memory `MockWorkerClient`
 //! below.
 
 use std::sync::{
