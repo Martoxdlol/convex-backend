@@ -246,6 +246,123 @@ pub fn final_tx_to_proto(summary: FinalTxSummary) -> anyhow::Result<proto::Distr
     })
 }
 
+/// Build the backend-consumable `FunctionFinalTransaction` from
+/// the wire summary. Substep 2.6a of
+/// `convex-native/STATUS.md`: the backend's Committer expects the
+/// full `FunctionFinalTransaction` shape with reads as a
+/// `FunctionReads { reads, num_intervals, user_tx_size,
+/// system_tx_size }`, writes as `FunctionWrites { updates }`, and
+/// `rows_read_by_tablet` keyed by `TabletId`. This function
+/// builds that shape from the wire message.
+///
+/// Errors if:
+/// - `begin_timestamp` fails `Timestamp::try_from` (value outside the legal
+///   range),
+/// - a `rows_read_by_tablet` key fails to parse as a `TabletId` (wire
+///   corruption or a version skew between backend and worker),
+/// - missing `user_tx_size` / `system_tx_size` (only sent by post-2.2a workers
+///   — pre-2.2a workers fall back to zero counters so the Committer's usage
+///   path doesn't trip on a missing field).
+pub fn final_tx_summary_to_function_tx(
+    summary: FinalTxSummary,
+) -> anyhow::Result<function_runner::FunctionFinalTransaction> {
+    use std::collections::BTreeMap;
+
+    use common::types::TabletIndexName;
+    use database::{
+        reads::IndexReads,
+        ReadSet,
+        TransactionReadSize,
+    };
+    use function_runner::{
+        FunctionFinalTransaction,
+        FunctionReads,
+        FunctionWrites,
+    };
+    use sync_types::Timestamp;
+    use value::TabletId;
+    let FinalTxSummary {
+        begin_timestamp,
+        writes_count: _,
+        reads_count,
+        rows_read_by_tablet,
+        writes,
+        user_tx_size,
+        system_tx_size,
+        index_reads,
+    } = summary;
+
+    let begin_timestamp = Timestamp::try_from(begin_timestamp)?;
+
+    // `rows_read_by_tablet` keys are TabletId's Display form; parse
+    // each back to the strongly-typed TabletId the Committer
+    // expects.
+    let rows_read_by_tablet: BTreeMap<TabletId, u64> = rows_read_by_tablet
+        .into_iter()
+        .map(|(k, v)| -> anyhow::Result<_> {
+            let tablet_id: TabletId = k
+                .parse()
+                .map_err(|e| anyhow::anyhow!("rows_read_by_tablet key {k:?}: {e}"))?;
+            Ok((tablet_id, v))
+        })
+        .collect::<anyhow::Result<_>>()?;
+
+    // Rebuild the indexed-side of `ReadSet` from the per-
+    // (tablet, index) summary. Search-side is empty because the
+    // wire contract doesn't carry search reads yet (Phase 2 TODO).
+    let indexed: BTreeMap<TabletIndexName, IndexReads> = index_reads
+        .into_iter()
+        .map(|ir| -> anyhow::Result<_> {
+            let IndexReadsSummary {
+                index_name,
+                fields,
+                intervals,
+            } = ir;
+            Ok((
+                index_name,
+                IndexReads {
+                    fields,
+                    intervals,
+                    // stack_traces is debug-only (collected under
+                    // READ_SET_CAPTURE_BACKTRACES); not carried
+                    // over the wire.
+                    stack_traces: None,
+                },
+            ))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let read_set = ReadSet::new(indexed, BTreeMap::new());
+
+    let user_tx_size = user_tx_size
+        .map(|s| TransactionReadSize {
+            total_document_size: s.total_document_size as usize,
+            total_document_count: s.total_document_count as usize,
+        })
+        .unwrap_or_default();
+    let system_tx_size = system_tx_size
+        .map(|s| TransactionReadSize {
+            total_document_size: s.total_document_size as usize,
+            total_document_count: s.total_document_count as usize,
+        })
+        .unwrap_or_default();
+
+    let reads = FunctionReads {
+        reads: read_set,
+        num_intervals: reads_count as usize,
+        user_tx_size,
+        system_tx_size,
+    };
+
+    let writes = FunctionWrites { updates: writes };
+
+    Ok(FunctionFinalTransaction {
+        begin_timestamp,
+        reads,
+        writes,
+        rows_read_by_tablet,
+    })
+}
+
 fn index_reads_to_proto(native: IndexReadsSummary) -> proto::DistributedIndexReads {
     let IndexReadsSummary {
         index_name,
@@ -756,6 +873,73 @@ mod tests {
         // proto round-trip (All → `ALL_INTERVAL_PROTO`).
         let encoded: Vec<pb::common::Interval> = summary.index_reads[0].intervals.clone().into();
         assert_eq!(encoded.len(), 1, "IntervalSet::All encodes to one interval");
+    }
+
+    #[test]
+    fn final_tx_summary_to_function_tx_builds_committer_input() {
+        // Substep 2.6a: the conversion is the glue the Phase-2
+        // FunctionRunner impl will call on a worker's response to
+        // feed the backend's Committer. Pin a round-trip where
+        // every in-wire field surfaces on the output:
+        // - begin_timestamp parses to Timestamp
+        // - rows_read_by_tablet keys parse back to TabletId
+        // - index_reads rebuild the ReadSet
+        // - writes flow through to FunctionWrites
+        // - user_tx_size / system_tx_size flow through.
+        use common::{
+            bootstrap_model::index::database_index::IndexedFields,
+            document::DocumentUpdateWithPrevTs,
+            interval::IntervalSet,
+            types::{
+                IndexDescriptor,
+                TabletIndexName,
+            },
+        };
+        use convex_native::distributed::IndexReadsSummary;
+        use sync_types::Timestamp;
+        let tablet_id = value::TabletId::MIN;
+        let mut rows = std::collections::BTreeMap::new();
+        rows.insert(tablet_id.to_string(), 7u64);
+        let summary = FinalTxSummary {
+            begin_timestamp: 100,
+            writes_count: 1,
+            reads_count: 1,
+            rows_read_by_tablet: rows,
+            writes: vec![DocumentUpdateWithPrevTs {
+                id: value::ResolvedDocumentId::MIN,
+                old_document: None,
+                new_document: None,
+            }],
+            user_tx_size: Some(TxReadSize {
+                total_document_size: 123,
+                total_document_count: 4,
+            }),
+            system_tx_size: Some(TxReadSize {
+                total_document_size: 45,
+                total_document_count: 2,
+            }),
+            index_reads: vec![IndexReadsSummary {
+                index_name: TabletIndexName::new(
+                    tablet_id,
+                    IndexDescriptor::new("by_email").unwrap(),
+                )
+                .unwrap(),
+                fields: IndexedFields::try_from(vec!["email".parse::<value::FieldPath>().unwrap()])
+                    .unwrap(),
+                intervals: IntervalSet::All,
+            }],
+        };
+        let ft = final_tx_summary_to_function_tx(summary).unwrap();
+        assert_eq!(ft.begin_timestamp, Timestamp::try_from(100u64).unwrap());
+        assert_eq!(ft.reads.num_intervals, 1);
+        assert_eq!(ft.reads.user_tx_size.total_document_size, 123);
+        assert_eq!(ft.reads.system_tx_size.total_document_count, 2);
+        assert_eq!(ft.writes.updates.len(), 1);
+        assert_eq!(ft.rows_read_by_tablet.get(&tablet_id), Some(&7));
+        // Indexed ReadSet has the one entry we put in.
+        let (indexed, _) = ft.reads.reads.consume();
+        let collected: Vec<_> = indexed.collect();
+        assert_eq!(collected.len(), 1, "ReadSet indexed has one entry");
     }
 
     #[test]

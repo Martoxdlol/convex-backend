@@ -2367,6 +2367,8 @@ dependencies = [
  "convex_native",
  "convex_sync_types",
  "database",
+ "errors",
+ "function_runner",
  "keybroker",
  "model",
  "pb",
@@ -2376,6 +2378,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "udf",
  "usage_tracking",
  "value",
 ]

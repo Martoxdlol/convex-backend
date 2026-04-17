@@ -261,7 +261,32 @@ substep is checked and the integration test is green.
      `unimplemented` — the composite runner in
      `convex_native_backend` delegates those to the in-process
      JS runner. After this substep the distributed runner is a
-     drop-in for a native-only backend.
+     drop-in for a native-only backend. Split into two
+     sub-substeps:
+
+     2.6a. ✓ **`FinalTxSummary → FunctionFinalTransaction` conversion.**
+     Landed. `conversions::final_tx_summary_to_function_tx`
+     builds the backend-consumable
+     `function_runner::FunctionFinalTransaction` from a worker
+     response: `Timestamp::try_from` on `begin_timestamp`,
+     `TabletId::from_str` on `rows_read_by_tablet` keys, and
+     reconstruction of `ReadSet` from the per-index entries
+     with an empty search map (substep 2.2b TODO on search
+     reads carries through).
+     Added deps: `function_runner`, `udf`, `errors`, `tokio`.
+
+     2.6b. **FunctionRunner trait impl.** Pending. `run_function`
+     builds the ExecuteRequest from `function_metadata +
+     identity + ts + existing_writes + context`, dispatches via
+     the pool's `execute()`, then assembles
+     `(Option<FunctionFinalTransaction>, FunctionOutcome,
+     FunctionUsageStats)` via `final_tx_summary_to_function_tx`
+     + a new helper that builds `FunctionOutcome`. JS-only
+     methods return an anyhow error that tells the operator to
+     configure a JS runner instead. `set_action_callbacks` is a
+     no-op (distributed actions route sub-calls back to the
+     backend via Phase 4's `BackendCallbackService`, not via
+     these local callbacks).
 
 2.7. **`local_backend` env-var switchover.**
      `CONVEX_NATIVE_WORKERS=grpc://host-a:4567,grpc://host-b:4567`
