@@ -279,12 +279,79 @@ for change in convex_native::diff_schemas(&old_schema, &new_schema) {
 }
 ```
 
+## Running against a real backend
+
+The `crates/convex_native_backend/` adapter bridges everything in
+this crate onto the backend's `FunctionRunner` trait and on to
+`udf::ActionCallbacks`. `crates/local_backend/src/lib.rs` now wraps
+the V8 runner in a `convex_native_backend::CompositeFunctionRunner`
+ahead of `Application::new`, so any `#[convex::query/mutation/action]`
+linked into the `convex-local-backend` binary is dispatched
+natively with zero extra wiring. Raw-byte uploads from
+`ctx.storage().store(...)` route through `FileStorage::store_file`
+when the composite is built with `.with_file_storage(fs)`.
+
+## Deploying in a distributed topology
+
+For production split deployments (a **conductor** process dispatches
+function calls over gRPC to a pool of identical **worker** binaries)
+use `crates/convex_native_distributed/`. The two runnable example
+binaries in that crate are the template:
+
+```sh
+# Worker: serves FunctionExecutionService on a port.
+CONVEX_MODE=worker CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567 \
+    cargo run -p convex_native_distributed --example worker
+
+# Conductor: probes each worker's health and exits.
+CONVEX_MODE=conductor \
+    CONVEX_WORKER_ENDPOINTS="http://worker-a:4567,http://worker-b:4567" \
+    cargo run -p convex_native_distributed --example conductor
+```
+
+Programmatic usage from your own binary:
+
+```rust
+use convex_native_distributed::{
+    build_conductor_runner,
+    build_worker_server,
+    read_mode_from_env,
+    read_worker_bind_addr_from_env,
+    read_worker_endpoints_from_env,
+};
+
+match read_mode_from_env() {
+    ConvexMode::Worker => {
+        let addr = read_worker_bind_addr_from_env()?;
+        let native = Arc::new(NativeFunctionRunner::from_inventory()?);
+        let (mut builder, service) = build_worker_server(native);
+        // .with_database(db) on the FunctionExecutionServer enables
+        // query/mutation dispatch against a local tx.
+        builder.add_service(service).serve(addr).await?;
+    },
+    ConvexMode::Conductor => {
+        let endpoints = read_worker_endpoints_from_env()?;
+        let runner = build_conductor_runner(&endpoints).await?
+            .with_min_registry_version("1.2.0")  // Phase 4.7 floor
+            .with_failover(true);
+        // ... dispatch via runner.execute(req, udf_type).await ...
+    },
+    ConvexMode::Standalone => {
+        // Same binary you'd run in single-node mode.
+    },
+}
+```
+
+`convex-local-backend` itself runs only in Standalone mode — it
+detects `CONVEX_MODE` at startup and refuses to boot under any
+other value, pointing at the example binaries.
+
 ## What's not yet wired
 
-The list in `README.md` tracks this accurately. In short: everything
-described in this quickstart compiles and runs today; the one thing
-you need that isn't in-crate yet is the **backend adapter** that
-implements `NativeActionCallbacks` against a real
-`database::Transaction` + `udf::ActionCallbacks`. That adapter lives
-in a future `crates/convex_native_backend` crate — see
-`COMPOSITE_RUNNER.md` for the reference implementation shape.
+The list in `README.md` tracks this accurately. Short version:
+non-indexed filters still require `.with_index(...)`; native
+actions don't hold a snapshot transaction (each sub-call opens
+its own); and a unified `convex-local-backend` binary that
+internally switches between standalone / worker / conductor
+modes isn't shipped — today the operator picks the topology by
+picking which binary to run.
