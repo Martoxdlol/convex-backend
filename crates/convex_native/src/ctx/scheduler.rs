@@ -17,8 +17,25 @@ use std::{
     },
 };
 
-use common::runtime::UnixTimestamp;
+use common::{
+    components::{
+        CanonicalizedComponentFunctionPath,
+        ComponentPath,
+    },
+    execution_context::{
+        ExecutionContext,
+        RequestId,
+    },
+    runtime::{
+        Runtime,
+        UnixTimestamp,
+    },
+};
+use database::Transaction;
+use model::scheduled_jobs::VirtualSchedulerModel;
+use sync_types::UdfPath;
 use value::{
+    ConvexArray,
     ConvexValue,
     DeveloperDocumentId,
     TableNamespace,
@@ -145,6 +162,155 @@ pub(crate) fn delay_until(timestamp: UnixTimestamp) -> anyhow::Result<Duration> 
     let now = UnixTimestamp::from_system_time(SystemTime::now())
         .ok_or_else(|| anyhow::anyhow!("system clock predates UNIX epoch"))?;
     Ok(timestamp.checked_sub(now).unwrap_or(Duration::ZERO))
+}
+
+/// Scheduler bound to a live mutation transaction.
+///
+/// Unlike the callback-based [`Scheduler`] (used by actions and HTTP
+/// actions), this variant writes directly into the mutation's own
+/// `Transaction<RT>` via [`VirtualSchedulerModel`]. Scheduled jobs
+/// therefore commit atomically with the rest of the mutation's
+/// writes — if the mutation bails, the scheduled job is never
+/// persisted. This matches the JS `ctx.scheduler.runAfter` semantics.
+///
+/// Every scheduling call uses a freshly-minted [`ExecutionContext`]
+/// anchored at the root component. When the native runner gains a
+/// path to propagate an existing request's [`ExecutionContext`] into
+/// the mutation, callers can switch to
+/// [`MutationScheduler::with_execution_context`] to preserve the
+/// parent request-id chain.
+pub struct MutationScheduler<'a, RT: Runtime> {
+    pub(crate) tx: &'a mut Transaction<RT>,
+    pub(crate) namespace: TableNamespace,
+    pub(crate) context: ExecutionContext,
+}
+
+impl<'a, RT: Runtime> MutationScheduler<'a, RT> {
+    /// Construct with a default (newly-minted) [`ExecutionContext`].
+    pub(crate) fn new(tx: &'a mut Transaction<RT>, namespace: TableNamespace) -> Self {
+        Self {
+            tx,
+            namespace,
+            context: default_context(),
+        }
+    }
+
+    /// Override the [`ExecutionContext`]. Used by callers that
+    /// propagate the parent request's request-id / execution-id into
+    /// scheduled jobs (e.g. when the mutation is running under a
+    /// known request context rather than a synthetic one).
+    pub fn with_execution_context(mut self, context: ExecutionContext) -> Self {
+        self.context = context;
+        self
+    }
+
+    /// Schedule a mutation to run after `delay`. Returns the scheduled
+    /// job id. The job is recorded against the mutation's own
+    /// transaction, so the schedule is committed atomically with the
+    /// rest of the mutation's writes.
+    pub async fn run_after<F: ConvexMutationFunction>(
+        &mut self,
+        delay: Duration,
+        _marker: F,
+        args: F::Args,
+    ) -> anyhow::Result<DeveloperDocumentId> {
+        self.schedule_by_name(F::name(), args_to_single_arg_array(args)?, delay)
+            .await
+    }
+
+    /// Schedule an action to run after `delay`.
+    pub async fn run_action_after<F: ConvexActionFunction>(
+        &mut self,
+        delay: Duration,
+        _marker: F,
+        args: F::Args,
+    ) -> anyhow::Result<DeveloperDocumentId> {
+        self.schedule_by_name(F::name(), args_to_single_arg_array(args)?, delay)
+            .await
+    }
+
+    /// Schedule a mutation to fire at the absolute wall-clock time
+    /// `timestamp`. Delegates to [`run_after`](Self::run_after) with a
+    /// delay computed from `SystemTime::now()`.
+    pub async fn run_at<F: ConvexMutationFunction>(
+        &mut self,
+        timestamp: UnixTimestamp,
+        marker: F,
+        args: F::Args,
+    ) -> anyhow::Result<DeveloperDocumentId> {
+        let delay = delay_until(timestamp)?;
+        self.run_after(delay, marker, args).await
+    }
+
+    /// Schedule an action to fire at the absolute wall-clock time.
+    pub async fn run_action_at<F: ConvexActionFunction>(
+        &mut self,
+        timestamp: UnixTimestamp,
+        marker: F,
+        args: F::Args,
+    ) -> anyhow::Result<DeveloperDocumentId> {
+        let delay = delay_until(timestamp)?;
+        self.run_action_after(delay, marker, args).await
+    }
+
+    /// Cancel a previously scheduled job. Idempotent.
+    pub async fn cancel(&mut self, id: DeveloperDocumentId) -> anyhow::Result<()> {
+        VirtualSchedulerModel::new(self.tx, self.namespace)
+            .cancel(id)
+            .await
+    }
+
+    async fn schedule_by_name(
+        &mut self,
+        name: &str,
+        args: ConvexArray,
+        delay: Duration,
+    ) -> anyhow::Result<DeveloperDocumentId> {
+        let path = udf_path_for(name)?;
+        // `VirtualSchedulerModel::schedule` takes a wall-clock
+        // UnixTimestamp. Compose from "now + delay" using
+        // `SystemTime::now()` — tests that mock the runtime clock
+        // don't see that mocked time here; if precise scheduling
+        // against a mocked clock is required, compute the absolute
+        // timestamp yourself from `ctx.unix_timestamp()` and call
+        // `schedule_by_name` (or add an override).
+        let now = UnixTimestamp::from_system_time(SystemTime::now())
+            .ok_or_else(|| anyhow::anyhow!("system clock predates UNIX epoch"))?;
+        let target = now + delay;
+        VirtualSchedulerModel::new(self.tx, self.namespace)
+            .schedule(path, args, target, self.context.clone())
+            .await
+    }
+}
+
+fn default_context() -> ExecutionContext {
+    // Root request, no parent scheduled job. Fresh RequestId /
+    // ExecutionId so scheduled jobs can be correlated in logs even
+    // when no parent context was propagated.
+    ExecutionContext::new_from_parts(RequestId::new(), Default::default(), None, true)
+}
+
+/// Parse `name` as a UDF path and root it in the default component.
+/// Bare identifiers (e.g. `"bump"`) are treated as a default export
+/// of module `bump`; `module:function` syntax is also supported.
+fn udf_path_for(name: &str) -> anyhow::Result<CanonicalizedComponentFunctionPath> {
+    let udf: UdfPath = name.parse()?;
+    Ok(CanonicalizedComponentFunctionPath {
+        component: ComponentPath::root(),
+        udf_path: udf.canonicalize(),
+    })
+}
+
+/// Serialise a single `Args` struct into the `ConvexArray` that
+/// `VirtualSchedulerModel::schedule` expects. Native function
+/// handlers accept exactly one object arg, so the array always has
+/// one entry — an object shape.
+fn args_to_single_arg_array<A: ToConvex>(args: A) -> anyhow::Result<ConvexArray> {
+    let value = args.to_convex()?;
+    match value {
+        ConvexValue::Object(_) => ConvexArray::try_from(vec![value]).map_err(Into::into),
+        _ => anyhow::bail!("scheduled args must serialize to an object"),
+    }
 }
 
 #[cfg(test)]
@@ -384,5 +550,58 @@ mod tests {
             },
             other => panic!("unexpected record {other:?}"),
         }
+    }
+
+    // ── MutationScheduler helpers ─────────────────────────────────
+
+    #[test]
+    fn args_to_single_arg_array_wraps_object_args_into_single_element_array() {
+        // `VirtualSchedulerModel::schedule` takes a `ConvexArray` (the
+        // scheduled-jobs metadata shape) but native handlers always
+        // receive a single object — so the outgoing array has exactly
+        // one entry, an object. This pins that shape so a refactor
+        // that tries to flatten args into multiple positional
+        // arguments fails loudly.
+        let arr = args_to_single_arg_array(ObjectArgs(42)).expect("object args round-trip");
+        assert_eq!(arr.len(), 1, "handlers take a single object arg");
+        assert!(
+            matches!(arr.into_iter().next(), Some(ConvexValue::Object(_))),
+            "entry is an object value",
+        );
+    }
+
+    #[test]
+    fn args_to_single_arg_array_rejects_non_object_args() {
+        // Same gate as the callback-based scheduler: a scalar `Args`
+        // must not silently land in the scheduler queue — users would
+        // then have their handler fail at read time with a shape
+        // mismatch that's hard to trace back.
+        let err = args_to_single_arg_array(42_i64).expect_err("scalar must fail");
+        assert!(
+            format!("{err}").contains("must serialize to an object"),
+            "error names the contract: {err}",
+        );
+    }
+
+    #[test]
+    fn udf_path_for_roots_bare_identifiers_in_default_component() {
+        let path = udf_path_for("bump").expect("bare identifier parses");
+        assert_eq!(path.component, ComponentPath::root());
+        // Bare identifiers map to module `bump` default export — the
+        // same convention as the action-side callback path.
+    }
+
+    #[test]
+    fn udf_path_for_rejects_empty_name() {
+        assert!(udf_path_for("").is_err());
+    }
+
+    #[test]
+    fn default_context_is_root_with_no_parent_job() {
+        let ctx = default_context();
+        assert!(
+            ctx.is_root(),
+            "mutation-scoped schedule defaults to a root request",
+        );
     }
 }

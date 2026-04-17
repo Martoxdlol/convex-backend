@@ -86,20 +86,16 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
         self.tx.runtime().unix_timestamp()
     }
 
-    /// Scheduler handle — see [`super::scheduler::Scheduler`].
+    /// Scheduler handle bound to the mutation's own transaction.
     ///
-    /// Today mutations don't have a real scheduler wired up (the
-    /// equivalent backend integration is the `VirtualSchedulerModel`
-    /// path). We return a scheduler bound to [`NoopCallbacks`] so the
-    /// API is callable but returns a clear error until the backend
-    /// integration lands.
-    pub fn scheduler(&mut self) -> super::scheduler::Scheduler<'_> {
-        use std::sync::Arc;
-        super::scheduler::Scheduler::new_with_callbacks(
-            super::scheduler::SchedulerScope::Mutation,
-            self.namespace,
-            Arc::new(crate::callbacks::NoopCallbacks),
-        )
+    /// Returns a [`super::scheduler::MutationScheduler`], which writes
+    /// scheduled jobs directly through `VirtualSchedulerModel` on the
+    /// live transaction. That means scheduled jobs commit atomically
+    /// with the rest of the mutation's writes — if the mutation
+    /// bails, the scheduled job is never persisted. This matches the
+    /// JS `ctx.scheduler.runAfter` contract.
+    pub fn scheduler(&mut self) -> super::scheduler::MutationScheduler<'_, RT> {
+        super::scheduler::MutationScheduler::new(self.tx, self.namespace)
     }
 }
 

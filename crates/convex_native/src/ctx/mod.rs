@@ -29,7 +29,10 @@ pub use query::{
     QueryDb,
 };
 pub use query_builder::TypedQueryBuilder;
-pub use scheduler::Scheduler;
+pub use scheduler::{
+    MutationScheduler,
+    Scheduler,
+};
 pub use storage::{
     StorageCtx,
     StorageId,

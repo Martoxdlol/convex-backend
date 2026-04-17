@@ -217,7 +217,7 @@ client calls but internal sub-calls still work.
 | Ctx | Source | Capabilities |
 |-----|--------|--------------|
 | `QueryCtx<'tx, Rt>` | `ctx.db()` | Read DB, `auth`, `unix_timestamp`, `log` |
-| `MutationCtx<'tx, Rt>` | as query + `insert/patch/replace/delete`, `scheduler` (stub), `tx()` escape-hatch |
+| `MutationCtx<'tx, Rt>` | as query + `insert/patch/replace/delete`, `scheduler` (tx-scoped), `tx()` escape-hatch |
 | `ActionCtx<'a, Rt>` | no tx; sub-calls, `scheduler`, `storage`, `run_query/mutation/action`, `log` |
 | `HttpActionCtx<'a, Rt>` | wraps `ActionCtx`; same surface + HTTP req/resp types |
 
@@ -341,11 +341,13 @@ Caveats:
   Tests driving a mocked runtime clock should compute the delay
   from `ctx.unix_timestamp()` and call `run_after` with a
   `Duration`.
-- **Mutation-scoped scheduling is a no-op today.**
-  `MutationCtx::scheduler()` binds to `NoopCallbacks`; `run_after`
-  inside a mutation bails with "no callbacks attached". Schedule
-  from an action or via `ctx.tx()`'s system-table access.
-  `STATUS.md` tracks this.
+- **Mutation vs. action scheduler semantics differ internally.**
+  `MutationCtx::scheduler()` writes through `VirtualSchedulerModel`
+  on the mutation's own transaction, so scheduled jobs commit
+  atomically with the rest of the mutation's writes. The
+  action-scoped scheduler goes through `NativeActionCallbacks`
+  (callback-based) because actions don't own a transaction. The
+  developer-facing API is the same on both.
 - **Past timestamps clamp to "now"** (delay = `Duration::ZERO`).
 
 ## 8. Storage

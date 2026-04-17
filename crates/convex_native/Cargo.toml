@@ -25,6 +25,7 @@ futures = { workspace = true }
 http = { workspace = true }
 inventory = { workspace = true }
 keybroker = { workspace = true }
+model = { workspace = true }
 parking_lot = { workspace = true }
 runtime = { workspace = true }
 serde = { workspace = true }

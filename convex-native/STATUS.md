@@ -9,8 +9,11 @@ JS → Rust cheatsheet read `MIGRATION.md`.
 
 Phases 1 / 2 / 4 / 5 of `IMPLEMENTATION_PLAN.md` are fully shipped.
 Phase 3 (distributed execution) is shipped at the crate level plus a
-`convex-local-backend` `CONVEX_MODE=worker` mode. Outstanding work
-is polish around the edges of Phases 1–2, not new phases.
+`convex-local-backend` `CONVEX_MODE=worker` mode. Mutation-scoped
+scheduling now wires through `VirtualSchedulerModel` directly; the
+remaining outstanding items are document-shape validation, a
+snapshot-capable native `ActionCtx`, and an end-to-end client smoke
+test — all polish around the edges of Phases 1–2, not new phases.
 
 ## Test tallies
 
@@ -134,25 +137,27 @@ proc macro into a concrete `DocumentSchema::Union(Vec<ObjectValidator>)`
 and handling the recursive `Validator` type for nested / enum /
 union fields.
 
-### Mutation-scoped scheduling is a no-op
-`MutationCtx::scheduler()` returns a scheduler bound to
-`NoopCallbacks`, so `run_after` inside a `#[convex::mutation]` bails
-with "no callbacks attached". The correct wiring is through
-`VirtualSchedulerModel` on the mutation's active transaction so the
+### Mutation-scoped scheduling (shipped)
+`MutationCtx::scheduler()` now returns a
+`MutationScheduler<'_, RT>` that writes scheduled jobs through
+`VirtualSchedulerModel` on the mutation's own transaction — so the
 scheduled job commits atomically with the rest of the mutation's
-writes (matching the JS `ctx.scheduler.runAfter` semantics).
+writes, matching the JS `ctx.scheduler.runAfter` semantics. The
+action-scoped `Scheduler` (callback-based) is unchanged; only the
+mutation path switched.
 
-**Effort**: medium. The `NativeActionCallbacks` trait is
-`&self`-async and doesn't have a path to the live
-`&mut Transaction<RT>`. A clean fix needs either a new scheduler
-type dedicated to the mutation scope or a transaction-aware
-callbacks trait. Action-scoped scheduling works today because
-actions dispatch through `run_action_with_callbacks`, which
-attaches `BackendCallbacks`.
+API: `ctx.scheduler().run_after(Duration, Marker, Args)` /
+`run_at(UnixTimestamp, Marker, Args)` for mutations, the same for
+actions (`run_action_after` / `run_action_at`), and
+`cancel(DeveloperDocumentId)`. Every scheduling call uses a
+freshly-minted `ExecutionContext` by default; override via
+`scheduler().with_execution_context(ctx)` when a parent
+request-id chain needs to be preserved.
 
-**Workaround today**: schedule through an action
-(`ctx.run_action(...)` → that action's scheduler), or write to the
-`_scheduled_functions` system table directly via `ctx.tx()`.
+**Caveat**: `run_at` still computes its delay against
+`SystemTime::now()`, not the runtime clock. For mocked-clock tests,
+compute the delay from `ctx.unix_timestamp()` and call `run_after`
+directly.
 
 ### Native action `FunctionFinalTransaction` is always `None`
 The composite intercepts `UdfType::Action` and dispatches native

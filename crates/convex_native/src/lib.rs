@@ -116,6 +116,7 @@ pub use ctx::{
     ActionCtx,
     MutationCtx,
     MutationDb,
+    MutationScheduler,
     QueryCtx,
     QueryDb,
     Scheduler,
