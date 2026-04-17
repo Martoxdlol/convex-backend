@@ -244,13 +244,15 @@ substep is checked and the integration test is green.
      `run_{query,mutation}_inline` call `tx.merge_writes(...)`
      on the staged updates before dispatching the handler.
 
-2.5. **Drain the transaction into the full
+2.5. ✓ **Drain the transaction into the full
      `FunctionFinalTransaction` shape.**
-     `tx.merge_writes` on the request side landed with substep
-     2.4; the rest of this substep — making `summarise_tx` fire
-     for successful-with-zero-writes runs and carrying the full
-     `FunctionReads` content (substep 2.2) — lands alongside
-     substep 2.6's backend-side dispatch glue.
+     Landed. `run_udf_inline` is the shared query/mutation
+     dispatch body; summary fires on every completion path where
+     the tx was successfully opened (handler success, handler
+     error, or handler-produces-no-writes). Matches
+     `CompositeFunctionRunner::dispatch_native_inner`'s
+     in-process behaviour so OCC + subscription semantics stay
+     identical across the two dispatch paths.
 
 2.6. **`impl FunctionRunner<ProdRuntime> for DistributedFunctionRunner`.**
      The trait has eight methods; only `run_function` is

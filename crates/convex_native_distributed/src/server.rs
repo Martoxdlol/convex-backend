@@ -244,19 +244,54 @@ struct InlineDispatch {
 }
 
 /// Open a fresh transaction at `begin_ts` (or `now_ts_for_reads()`
-/// when the backend didn't supply one — pre-Phase-1 callers), run
-/// the native query, then summarise the transaction's read set
-/// into a `DistributedFinalTx`. Queries are read-only by design so
-/// nothing ever commits.
+/// when the backend didn't supply one), run the native query, and
+/// summarise the transaction's reads into a `FinalTxSummary`.
+/// Queries are read-only by design so nothing ever commits — the
+/// summary only matters for subscription tracking on the backend
+/// side.
+///
+/// The summary fires regardless of whether the handler succeeded
+/// or errored, as long as the tx was successfully opened. This
+/// matches `CompositeFunctionRunner::dispatch_native_inner`'s
+/// behaviour (substep 2.5) so distributed + in-process dispatch
+/// produce the same `(result, final_tx)` tuple shape.
 async fn run_query_inline(
     native: &Arc<NativeFunctionRunner>,
     database: &Database<Rt>,
     req: &convex_native::distributed::ExecuteRequest,
     begin_ts: Option<Timestamp>,
 ) -> InlineDispatch {
+    run_udf_inline(native, database, req, begin_ts, UdfType::Query).await
+}
+
+/// Open a fresh transaction at `begin_ts` (or `now_ts_for_reads()`
+/// when the backend didn't supply one), run the native mutation,
+/// and summarise the transaction into a `FinalTxSummary`. **Phase
+/// 1 removed the inline commit**: the worker no longer touches
+/// `Database::commit_with_write_source`. The backend's Committer
+/// consumes the returned summary (substep 2.6 wires this through
+/// `impl FunctionRunner`). Summary-on-error matches
+/// `CompositeFunctionRunner` (substep 2.5).
+async fn run_mutation_inline(
+    native: &Arc<NativeFunctionRunner>,
+    database: &Database<Rt>,
+    req: &convex_native::distributed::ExecuteRequest,
+    begin_ts: Option<Timestamp>,
+) -> InlineDispatch {
+    run_udf_inline(native, database, req, begin_ts, UdfType::Mutation).await
+}
+
+/// Shared query/mutation dispatch body. Factored out in substep
+/// 2.5 so the summary-on-error invariant only lives in one place.
+async fn run_udf_inline(
+    native: &Arc<NativeFunctionRunner>,
+    database: &Database<Rt>,
+    req: &convex_native::distributed::ExecuteRequest,
+    begin_ts: Option<Timestamp>,
+    udf_type: UdfType,
+) -> InlineDispatch {
     let log_buffer = convex_native::LogBuffer::new();
-    let mut final_tx: Option<convex_native::distributed::FinalTxSummary> = None;
-    let result = async {
+    let prepared = async {
         let ts = match begin_ts {
             Some(ts) => database.now_ts_for_reads().prior_ts(ts)?,
             None => database.now_ts_for_reads(),
@@ -271,69 +306,50 @@ async fn run_query_inline(
         if !req.existing_writes.is_empty() {
             tx.merge_writes(req.existing_writes.clone())?;
         }
-        let value = native
-            .run_query_with_log_buffer(
-                &req.name,
-                &mut tx,
-                req.namespace,
-                req.args.clone(),
-                log_buffer.clone(),
-            )
-            .await?;
-        final_tx = Some(summarise_tx(tx));
-        Ok(value)
+        anyhow::Ok(tx)
     }
     .await;
-    let log_lines = log_lines_to_pretty_strings(&log_buffer);
-    InlineDispatch {
-        result,
-        log_lines,
-        final_tx,
-    }
-}
-
-/// Open a fresh transaction at `begin_ts` (or `now_ts_for_reads()`
-/// when the backend didn't supply one), run the native mutation,
-/// and — on handler success — summarise the resulting transaction
-/// into a `DistributedFinalTx`. **Phase 1 of `DISTRIBUTED_PLAN.md`
-/// removes the inline commit**: the worker no longer touches
-/// `Database::commit_with_write_source`. Phase 2 wires the backend
-/// to consume the returned `DistributedFinalTx` and commit through
-/// its own Committer. On handler error the tx is dropped without
-/// reporting.
-async fn run_mutation_inline(
-    native: &Arc<NativeFunctionRunner>,
-    database: &Database<Rt>,
-    req: &convex_native::distributed::ExecuteRequest,
-    begin_ts: Option<Timestamp>,
-) -> InlineDispatch {
-    let log_buffer = convex_native::LogBuffer::new();
-    let mut final_tx: Option<convex_native::distributed::FinalTxSummary> = None;
-    let result = async {
-        let ts = match begin_ts {
-            Some(ts) => database.now_ts_for_reads().prior_ts(ts)?,
-            None => database.now_ts_for_reads(),
-        };
-        let usage = FunctionUsageTracker::new();
-        let mut tx = database
-            .begin_with_ts(Identity::system(), *ts, usage)
-            .await?;
-        if !req.existing_writes.is_empty() {
-            tx.merge_writes(req.existing_writes.clone())?;
-        }
-        let value = native
-            .run_mutation_with_log_buffer(
-                &req.name,
-                &mut tx,
-                req.namespace,
-                req.args.clone(),
-                log_buffer.clone(),
-            )
-            .await?;
-        final_tx = Some(summarise_tx(tx));
-        Ok(value)
-    }
-    .await;
+    let mut tx = match prepared {
+        Ok(tx) => tx,
+        Err(setup_err) => {
+            // Transaction couldn't be opened — no tx to summarise,
+            // no handler to run. Surface the setup error as the
+            // handler result so it lands on the proto's
+            // `result.js_error` channel.
+            let log_lines = log_lines_to_pretty_strings(&log_buffer);
+            return InlineDispatch {
+                result: Err(setup_err),
+                log_lines,
+                final_tx: None,
+            };
+        },
+    };
+    let result = match udf_type {
+        UdfType::Query => {
+            native
+                .run_query_with_log_buffer(
+                    &req.name,
+                    &mut tx,
+                    req.namespace,
+                    req.args.clone(),
+                    log_buffer.clone(),
+                )
+                .await
+        },
+        UdfType::Mutation => {
+            native
+                .run_mutation_with_log_buffer(
+                    &req.name,
+                    &mut tx,
+                    req.namespace,
+                    req.args.clone(),
+                    log_buffer.clone(),
+                )
+                .await
+        },
+        _ => unreachable!("run_udf_inline only handles Query/Mutation"),
+    };
+    let final_tx = Some(summarise_tx(tx));
     let log_lines = log_lines_to_pretty_strings(&log_buffer);
     InlineDispatch {
         result,
