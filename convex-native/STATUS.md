@@ -397,13 +397,22 @@ each substep ships as its own commit.
      `WorkerStatus`, `DrainNotice`, `RegistryFloorUpdate`,
      `WorkerKind` enum. Generates `pb::worker_admission::*`.
 
-3.2. **`FunctionInventory` content wiring.** Native-side builder
-     that fills the proto from
-     `NativeFunctionRegistry::collect()` /
-     `NativeSchema::collect()` /
-     `HttpRouteRegistry::collect()` / `CronRegistry::collect()`.
-     Includes canonicalisation rules for the SHA-256
-     inventory-hash field.
+3.2. ✓ **`FunctionInventory` content wiring.** Landed. New
+     module `convex_native_distributed::admission` with
+     `collect_inventory()` → `(FunctionInventory, [u8; 32])`.
+     Walks `NativeFunctionRegistry::collect()`,
+     `NativeSchema::collect()` (serialised via the existing
+     `DatabaseSchema ↔ DatabaseSchemaJson` JSON form),
+     `HttpRouter::collect()`, and `CronRegistry::collect()`
+     on the worker side, sorts each list for canonical
+     output, and hashes the prost-serialised proto bytes with
+     SHA-256. Result is stable across successive calls so
+     workers built from identical source always produce the
+     same hash. Deps added: `sha2`, `prost` (direct).
+
+     Tests: four unit tests on `admission::tests` — stable
+     round-trip, empty registries shape, hash determinism,
+     hash changes with content.
 
 3.3. **`WorkerPool` type.** Replaces the fixed
      `Vec<Arc<dyn WorkerClient>>` with a churn-tolerant

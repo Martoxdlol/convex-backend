@@ -35,6 +35,7 @@
 //! - `tests/{examples_smoke,client_e2e_smoke}.rs` — tested the removed
 //!   behaviour end-to-end.
 
+pub mod admission;
 pub mod client;
 pub mod conversions;
 pub mod function_runner_impl;
