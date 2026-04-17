@@ -49,6 +49,15 @@ pub struct Blob {
     pub checksum: String,
 }
 
+/// Exercises the container validators (`Vec<T>`, `BTreeMap<String, V>`)
+/// end-to-end through the derive.
+#[derive(ConvexDocument, Debug, Clone, PartialEq)]
+#[convex(table = "settings")]
+pub struct Settings {
+    pub tags: Vec<String>,
+    pub limits: std::collections::BTreeMap<String, i64>,
+}
+
 #[test]
 fn field_enum_variants_expose_field_names() {
     assert_eq!(UserField::Name.as_str(), "name");
@@ -213,6 +222,47 @@ fn table_definition_emits_bytes_validator_for_vec_u8_fields() {
     assert_eq!(
         opt.validator,
         Validator::Union(vec![Validator::Null, Validator::Bytes]),
+    );
+}
+
+#[test]
+fn table_definition_emits_container_validators_for_vec_and_btreemap_fields() {
+    // `Vec<T>` must nest the element validator; `BTreeMap<String, V>`
+    // must become `Record(String, V)`. These are the default paths
+    // in `schema_type.rs`; pin them end-to-end through the derive
+    // so a refactor to the macro's validator-expr emitter can't
+    // silently flip them back to `Any`.
+    use common::schemas::{
+        validator::{
+            ObjectValidator,
+            Validator,
+        },
+        DocumentSchema,
+    };
+    use value::IdentifierFieldName;
+
+    let def = Settings::table_definition();
+    let DocumentSchema::Union(objs) =
+        def.document_type.as_ref().expect("document_type populated")
+    else {
+        panic!("expected Union");
+    };
+    let ObjectValidator(fields) = &objs[0];
+
+    let tags_key: IdentifierFieldName = "tags".parse().unwrap();
+    let tags = fields.get(&tags_key).expect("tags field present");
+    assert_eq!(
+        tags.validator,
+        Validator::Array(Box::new(Validator::String)),
+        "Vec<String> -> Array(String)",
+    );
+
+    let limits_key: IdentifierFieldName = "limits".parse().unwrap();
+    let limits = fields.get(&limits_key).expect("limits field present");
+    assert_eq!(
+        limits.validator,
+        Validator::Record(Box::new(Validator::String), Box::new(Validator::Int64)),
+        "BTreeMap<String, i64> -> Record(String, Int64)",
     );
 }
 
