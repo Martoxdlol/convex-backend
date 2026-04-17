@@ -676,10 +676,26 @@ sub-queries, sub-mutations, scheduler, and storage through one
 
 All serialize the typed args correctly and then delegate to the
 attached `NativeActionCallbacks::schedule`.
-`convex_native_backend::BackendCallbacks` forwards the call to
-`udf::ActionCallbacks::schedule_job`, so scheduling from a native
-mutation or action now reaches the real backend scheduler when
-the composite runner is wired.
+
+**Actions** wire through `convex_native_backend::BackendCallbacks`,
+which forwards the call to `udf::ActionCallbacks::schedule_job` — so
+scheduling from a native `#[convex::action]` reaches the real
+backend scheduler once the composite runner is wired.
+
+**Mutations** are a known gap today: `MutationCtx::scheduler()`
+returns a scheduler bound to `NoopCallbacks`, so `run_after` inside a
+mutation `bail`s with a clear "no callbacks attached" error. The
+correct wiring for mutations is to route through
+`VirtualSchedulerModel` on the active `Transaction<RT>` (so the
+scheduled job commits atomically with the mutation's other writes).
+That wiring is deliberately still TODO: unlike actions, mutations
+need the scheduling to live inside the same tx that the rest of the
+handler writes to, which requires either a different Scheduler type
+for the mutation scope or a transaction-aware callbacks trait. Until
+that lands, mutations should schedule by opening a sub-call path
+through an action (`ctx.run_action(...)` → that action's scheduler)
+or by writing directly to the `_scheduled_functions` system table
+via the underlying `tx`.
 
 ### New in Phase 2.3 / 2.4 — Function markers + typed sub-calls
 
@@ -839,6 +855,16 @@ registrations, no schema entries.
   `document_type: None` — i.e. every derived type currently gets an "any"
   schema shape. Enforcing the shape against the struct's fields is
   Phase 1 extension work, not part of the MVP critical path.
+- **Mutation-scoped scheduling is a no-op.** `MutationCtx::scheduler()`
+  returns a `Scheduler` bound to `NoopCallbacks`, so `run_after` inside
+  a `#[convex::mutation]` errors with "no callbacks attached" rather
+  than scheduling. The right wiring is through `VirtualSchedulerModel`
+  on the mutation's active transaction so the scheduled job commits
+  atomically with the rest of the mutation's writes — which needs
+  either a transaction-aware scheduler type or an expanded
+  `NativeActionCallbacks` trait. Action-scoped scheduling works today
+  because actions dispatch through `run_action_with_callbacks` which
+  attaches `BackendCallbacks`.
 - **Native action `FunctionFinalTransaction` is always `None`.** The
   composite now intercepts `UdfType::Action` and dispatches native
   actions via `run_action_with_callbacks`, building a real
