@@ -148,6 +148,30 @@ let schema: common::schemas::DatabaseSchema = convex_native::NativeSchema::colle
 
 Enumerates every derived table in the binary via `inventory`.
 
+### Write-time document shape validation
+
+`#[derive(ConvexDocument)]` emits `TableDefinition::document_type`
+populated from the struct's Rust fields, so the database layer
+rejects shape-violating writes before they hit disk. Reflection
+rules:
+
+- Primitives (`String`, `i64`, `f64`, `bool`) → their matching
+  `Validator` (`String`, `Int64`, `Float64`, `Boolean`).
+- `Vec<T>` → `Validator::Array(T)`. `Vec<u8>` → `Validator::Bytes`
+  (special-cased inside the derive).
+- `Option<T>` → `Validator::Union(Null, T)` **and** the field is
+  marked optional (`v.optional(...)` in JS parlance). Absent fields
+  and present-as-Null both pass.
+- `BTreeMap<String, V>` → `Validator::Record(String, V)`.
+- `Id<T>` → `Validator::Id(T::table_name())`. Cross-table Id mixups
+  fail at validation time as well as compile time.
+- Nested `#[derive(ConvexNested)]` / `ConvexEnum` / `ConvexUnion`
+  → emit their own `ConvexSchema` impl so they compose through
+  `Vec<...>` / `Option<...>` / `BTreeMap<...>` without boilerplate.
+
+If you need an explicit "any shape" field, type it as
+`value::ConvexValue` — `ConvexSchema` maps that to `Validator::Any`.
+
 ## 3. Writing functions
 
 ### Query / Mutation / Action

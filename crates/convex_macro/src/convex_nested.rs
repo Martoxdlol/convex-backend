@@ -86,6 +86,13 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     });
     let from_idents = fields.iter().map(|(f, ..)| f);
 
+    let schema_entries = fields.iter().map(|(_, name, ty)| {
+        let validator_expr = nested_field_validator_expr(ty);
+        quote! {
+            (::std::string::String::from(#name), #validator_expr)
+        }
+    });
+
     Ok(quote! {
         impl ::convex_native::ToConvex for #ident {
             fn to_convex(self)
@@ -119,6 +126,95 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 })
             }
         }
+
+        impl ::convex_native::ConvexSchema for #ident {
+            fn validator() -> ::convex_native::__private::Validator {
+                let __entries: ::std::vec::Vec<(
+                    ::std::string::String,
+                    ::convex_native::__private::FieldValidator,
+                )> = ::std::vec![#(#schema_entries,)*];
+                let __obj = ::convex_native::__private::build_object_validator(__entries)
+                    .expect("build_object_validator");
+                ::convex_native::__private::Validator::Object(__obj)
+            }
+        }
+    })
+}
+
+/// Emit the per-field `FieldValidator` expression used inside
+/// `ConvexSchema::validator()` for `#[derive(ConvexNested)]`.
+///
+/// Mirrors the logic in `convex_document::field_validator_expr` — kept
+/// separate to avoid crate-internal dependency graphs between the two
+/// modules; the duplication is tiny.
+fn nested_field_validator_expr(ty: &syn::Type) -> TokenStream2 {
+    if is_vec_u8(ty) {
+        return quote! {
+            ::convex_native::__private::FieldValidator::required_field_type(
+                ::convex_native::__private::Validator::Bytes,
+            )
+        };
+    }
+    if let Some(inner) = option_inner(ty)
+        && is_vec_u8(inner)
+    {
+        return quote! {
+            ::convex_native::__private::FieldValidator::optional_field_type(
+                ::convex_native::__private::Validator::Union(::std::vec![
+                    ::convex_native::__private::Validator::Null,
+                    ::convex_native::__private::Validator::Bytes,
+                ]),
+            )
+        };
+    }
+    quote! {
+        ::convex_native::__private::field_validator_for::<#ty>()
+    }
+}
+
+fn is_vec_u8(ty: &syn::Type) -> bool {
+    let Some(inner) = vec_inner(ty) else {
+        return false;
+    };
+    matches!(inner, syn::Type::Path(p)
+        if p.path.segments.last().is_some_and(|s| s.ident == "u8" && s.arguments.is_empty()))
+}
+
+fn vec_inner(ty: &syn::Type) -> Option<&syn::Type> {
+    let path = match ty {
+        syn::Type::Path(p) => &p.path,
+        _ => return None,
+    };
+    let last = path.segments.last()?;
+    if last.ident != "Vec" {
+        return None;
+    }
+    let args = match &last.arguments {
+        syn::PathArguments::AngleBracketed(a) => a,
+        _ => return None,
+    };
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(t) => Some(t),
+        _ => None,
+    })
+}
+
+fn option_inner(ty: &syn::Type) -> Option<&syn::Type> {
+    let path = match ty {
+        syn::Type::Path(p) => &p.path,
+        _ => return None,
+    };
+    let last = path.segments.last()?;
+    if last.ident != "Option" {
+        return None;
+    }
+    let args = match &last.arguments {
+        syn::PathArguments::AngleBracketed(a) => a,
+        _ => return None,
+    };
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(t) => Some(t),
+        _ => None,
     })
 }
 

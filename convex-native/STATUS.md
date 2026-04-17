@@ -10,10 +10,11 @@ JS → Rust cheatsheet read `MIGRATION.md`.
 Phases 1 / 2 / 4 / 5 of `IMPLEMENTATION_PLAN.md` are fully shipped.
 Phase 3 (distributed execution) is shipped at the crate level plus a
 `convex-local-backend` `CONVEX_MODE=worker` mode. Mutation-scoped
-scheduling now wires through `VirtualSchedulerModel` directly; the
-remaining outstanding items are document-shape validation, a
-snapshot-capable native `ActionCtx`, and an end-to-end client smoke
-test — all polish around the edges of Phases 1–2, not new phases.
+scheduling now wires through `VirtualSchedulerModel` directly and
+every derived document emits a concrete `DocumentSchema` for
+write-time shape validation. The remaining outstanding items are a
+snapshot-capable native `ActionCtx` and an end-to-end client smoke
+test — polish around the edges of Phases 1–2, not new phases.
 
 ## Test tallies
 
@@ -125,17 +126,27 @@ convex_native` plus the successful binary build.
 **Effort**: small-to-medium. Mechanics exist — needs a test harness
 that owns the backend lifecycle and a client reaching in.
 
-### Document shape validation is off
-`table_definition()` currently emits `document_type: None`, i.e.
-every derived document currently gets an "any" schema shape.
-Enforcing the shape against the struct's fields would let the
-database layer reject shape-violating writes instead of relying on
-`from_convex_object` failing downstream at read time.
+### Document shape validation (shipped)
+`#[derive(ConvexDocument)]` now emits
+`document_type: Some(DocumentSchema::Union(vec![ObjectValidator]))`
+— reflected at macro-expansion time from the struct's fields so the
+database layer rejects shape-violating writes up-front instead of
+relying on `from_convex_object` failing downstream at read time.
 
-**Effort**: medium. Requires reflecting struct fields through the
-proc macro into a concrete `DocumentSchema::Union(Vec<ObjectValidator>)`
-and handling the recursive `Validator` type for nested / enum /
-union fields.
+A new `ConvexSchema` trait (`convex_native::ConvexSchema`) carries
+the reflection: `fn validator() -> Validator` plus an
+`field_is_optional()` signal for `Option<T>`. Impls cover primitives
+(`String`, `i64`, `f64`, `bool`, `ConvexValue`), containers (`Vec<T>`,
+`Option<T>`, `BTreeMap<String, V>`), and `Id<T>`. The
+`#[derive(ConvexDocument)]`, `#[derive(ConvexNested)]`,
+`#[derive(ConvexEnum)]`, and `#[derive(ConvexUnion)]` macros emit
+`ConvexSchema` impls in addition to their `ToConvex`/`FromConvex`
+output, so nested types compose.
+
+`Vec<u8>` is special-cased inside the derive macros to emit
+`Validator::Bytes` rather than `Validator::Array(Int64)` — `u8`
+has no standalone `ConvexSchema` impl by design, so the bytes-vs-
+array distinction lives at the macro AST level.
 
 ### Mutation-scoped scheduling (shipped)
 `MutationCtx::scheduler()` now returns a

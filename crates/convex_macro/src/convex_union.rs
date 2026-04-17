@@ -179,6 +179,36 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let known_list: Vec<&str> = variants.iter().map(|v| v.wire.as_str()).collect();
 
+    let variant_object_validators = variants.iter().map(|v| {
+        let wire = &v.wire;
+        let tag_field_name = &tag_field;
+        let variant_field_entries = v.fields.iter().map(|(fid, ty)| {
+            let fname = fid.to_string();
+            let validator_expr = union_field_validator_expr(ty);
+            quote! {
+                (::std::string::String::from(#fname), #validator_expr)
+            }
+        });
+        quote! {
+            {
+                let mut __entries: ::std::vec::Vec<(
+                    ::std::string::String,
+                    ::convex_native::__private::FieldValidator,
+                )> = ::std::vec![#(#variant_field_entries,)*];
+                __entries.push((
+                    ::std::string::String::from(#tag_field_name),
+                    ::convex_native::__private::FieldValidator::required_field_type(
+                        ::convex_native::__private::string_literal_validator(#wire)
+                            .expect("literal string"),
+                    ),
+                ));
+                let __obj = ::convex_native::__private::build_object_validator(__entries)
+                    .expect("build_object_validator");
+                ::convex_native::__private::Validator::Object(__obj)
+            }
+        }
+    });
+
     Ok(quote! {
         impl ::convex_native::ToConvex for #ident {
             fn to_convex(self)
@@ -222,6 +252,93 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 }
             }
         }
+
+        impl ::convex_native::ConvexSchema for #ident {
+            fn validator() -> ::convex_native::__private::Validator {
+                let __variants: ::std::vec::Vec<
+                    ::convex_native::__private::Validator,
+                > = ::std::vec![#(#variant_object_validators,)*];
+                if __variants.len() == 1 {
+                    __variants.into_iter().next().expect("1 variant")
+                } else {
+                    ::convex_native::__private::Validator::Union(__variants)
+                }
+            }
+        }
+    })
+}
+
+/// Same special-cases as the document/nested macros: `Vec<u8>` becomes
+/// `Validator::Bytes` directly; everything else delegates to
+/// `field_validator_for`.
+fn union_field_validator_expr(ty: &syn::Type) -> TokenStream2 {
+    if is_vec_u8(ty) {
+        return quote! {
+            ::convex_native::__private::FieldValidator::required_field_type(
+                ::convex_native::__private::Validator::Bytes,
+            )
+        };
+    }
+    if let Some(inner) = option_inner(ty)
+        && is_vec_u8(inner)
+    {
+        return quote! {
+            ::convex_native::__private::FieldValidator::optional_field_type(
+                ::convex_native::__private::Validator::Union(::std::vec![
+                    ::convex_native::__private::Validator::Null,
+                    ::convex_native::__private::Validator::Bytes,
+                ]),
+            )
+        };
+    }
+    quote! {
+        ::convex_native::__private::field_validator_for::<#ty>()
+    }
+}
+
+fn is_vec_u8(ty: &syn::Type) -> bool {
+    let Some(inner) = vec_inner(ty) else {
+        return false;
+    };
+    matches!(inner, syn::Type::Path(p)
+        if p.path.segments.last().is_some_and(|s| s.ident == "u8" && s.arguments.is_empty()))
+}
+
+fn vec_inner(ty: &syn::Type) -> Option<&syn::Type> {
+    let path = match ty {
+        syn::Type::Path(p) => &p.path,
+        _ => return None,
+    };
+    let last = path.segments.last()?;
+    if last.ident != "Vec" {
+        return None;
+    }
+    let args = match &last.arguments {
+        syn::PathArguments::AngleBracketed(a) => a,
+        _ => return None,
+    };
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(t) => Some(t),
+        _ => None,
+    })
+}
+
+fn option_inner(ty: &syn::Type) -> Option<&syn::Type> {
+    let path = match ty {
+        syn::Type::Path(p) => &p.path,
+        _ => return None,
+    };
+    let last = path.segments.last()?;
+    if last.ident != "Option" {
+        return None;
+    }
+    let args = match &last.arguments {
+        syn::PathArguments::AngleBracketed(a) => a,
+        _ => return None,
+    };
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(t) => Some(t),
+        _ => None,
     })
 }
 

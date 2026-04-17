@@ -37,6 +37,7 @@ value = { workspace = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 bytes = { workspace = true }
+common = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

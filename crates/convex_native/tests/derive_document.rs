@@ -114,6 +114,82 @@ fn table_definition_includes_all_indexes() {
 }
 
 #[test]
+fn table_definition_emits_document_shape_validator() {
+    // Before: `document_type: None` — every write went through a
+    // permissive "Any" schema and invalid shapes only blew up on read
+    // via `from_convex_object`. After: the derive reflects each field
+    // into a `Validator` so the DB layer rejects shape-violating
+    // writes up-front.
+    use common::schemas::{
+        validator::{
+            FieldValidator,
+            ObjectValidator,
+            Validator,
+        },
+        DocumentSchema,
+    };
+    use value::IdentifierFieldName;
+
+    let def = User::table_definition();
+    let doc = def
+        .document_type
+        .as_ref()
+        .expect("document_type now populated");
+    let DocumentSchema::Union(objs) = doc else {
+        panic!("unexpected document_type {doc:?}")
+    };
+    assert_eq!(objs.len(), 1, "single-shape struct -> one ObjectValidator");
+    let ObjectValidator(fields) = &objs[0];
+
+    let get = |name: &str| -> &FieldValidator {
+        let key: IdentifierFieldName = name.parse().unwrap();
+        fields.get(&key).unwrap_or_else(|| panic!("missing {name}"))
+    };
+    // Plain fields: required, with the expected primitive validator.
+    assert_eq!(get("name").validator, Validator::String);
+    assert!(!get("name").optional);
+    assert_eq!(get("email").validator, Validator::String);
+    assert_eq!(get("created_at").validator, Validator::Float64);
+    // Option<String> -> optional field, union(null, string) when
+    // present. This is the crux of what lets derived structs round-
+    // trip through the database: without `optional: true`, any write
+    // that didn't include `avatar_url` would be rejected even though
+    // the Rust type permits `None`.
+    let avatar = get("avatar_url");
+    assert!(avatar.optional, "Option<T> field must be optional");
+    assert_eq!(
+        avatar.validator,
+        Validator::Union(vec![Validator::Null, Validator::String]),
+    );
+}
+
+#[test]
+fn table_definition_emits_id_validator_for_related_documents() {
+    use common::schemas::{
+        validator::{
+            ObjectValidator,
+            Validator,
+        },
+        DocumentSchema,
+    };
+    use value::IdentifierFieldName;
+
+    let def = Message::table_definition();
+    let DocumentSchema::Union(objs) = def.document_type.as_ref().expect("document_type populated")
+    else {
+        panic!("expected Union");
+    };
+    let ObjectValidator(fields) = &objs[0];
+    let author_key: IdentifierFieldName = "author".parse().unwrap();
+    let author = fields.get(&author_key).expect("author field present");
+    assert_eq!(
+        author.validator,
+        Validator::Id("users".parse().unwrap()),
+        "Id<User> reflects as Validator::Id(\"users\")",
+    );
+}
+
+#[test]
 fn schema_collection_picks_up_derived_tables() {
     let schema = NativeSchema::collect().expect("collect");
     let names: Vec<_> = schema.tables.keys().map(|t| t.to_string()).collect();

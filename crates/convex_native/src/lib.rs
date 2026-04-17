@@ -47,6 +47,13 @@ pub mod __private {
         },
         paths::FieldPath,
         schemas::{
+            validator::{
+                FieldValidator,
+                LiteralValidator,
+                ObjectValidator,
+                Validator,
+            },
+            DocumentSchema,
             IndexSchema,
             TableDefinition,
             TextIndexSchema,
@@ -58,7 +65,15 @@ pub mod __private {
         ConvexObject,
         ConvexValue,
         FieldName,
+        IdentifierFieldName,
         TableName,
+    };
+
+    pub use crate::schema_type::{
+        build_object_validator,
+        field_validator_for,
+        identifier_field,
+        string_literal_validator,
     };
 }
 
@@ -83,6 +98,7 @@ pub mod registry;
 pub mod runner;
 pub mod schema;
 pub mod schema_diff;
+pub mod schema_type;
 pub mod testing;
 pub mod warmup;
 
@@ -180,6 +196,7 @@ pub use schema_diff::{
     diff as diff_schemas,
     SchemaChange,
 };
+pub use schema_type::ConvexSchema;
 pub use warmup::{
     plan_warmup,
     WarmupEntry,

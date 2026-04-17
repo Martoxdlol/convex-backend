@@ -135,6 +135,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let registration = build_registration(struct_ident, &table_name);
 
     let convert_impls = build_convert_impls(struct_ident);
+    let schema_impl = build_schema_impl(struct_ident, &fields);
 
     Ok(quote! {
         #field_enum
@@ -143,6 +144,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         #with_id_struct
         #trait_impl
         #convert_impls
+        #schema_impl
         #registration
     })
 }
@@ -834,6 +836,11 @@ fn build_trait_impl(
         }
     });
 
+    // Document shape — (field_name, FieldValidator) tuples emitted
+    // once, shared between `table_definition()`'s `document_type` and
+    // the `ConvexSchema` impl.
+    let document_fields = field_entries_tokens(fields);
+
     // Vector index definitions -> VectorIndexSchema entries.
     let vector_index_entries = vector_indexes.iter().map(|v| {
         let name = &v.name;
@@ -898,6 +905,15 @@ fn build_trait_impl(
                         ::convex_native::__private::VectorIndexSchema,
                     > = ::std::collections::BTreeMap::new();
                     #(#vector_index_entries)*
+                    let __field_entries: ::std::vec::Vec<(
+                        ::std::string::String,
+                        ::convex_native::__private::FieldValidator,
+                    )> = #document_fields;
+                    let __obj_validator =
+                        ::convex_native::__private::build_object_validator(__field_entries)?;
+                    let __doc_schema = ::convex_native::__private::DocumentSchema::Union(
+                        ::std::vec![__obj_validator],
+                    );
                     ::std::result::Result::Ok(::convex_native::__private::TableDefinition {
                         table_name: <Self as ::convex_native::ConvexDocument>::table_name(),
                         indexes: __indexes,
@@ -906,7 +922,7 @@ fn build_trait_impl(
                         staged_text_indexes: ::std::default::Default::default(),
                         vector_indexes: __vector_indexes,
                         staged_vector_indexes: ::std::default::Default::default(),
-                        document_type: ::std::option::Option::None,
+                        document_type: ::std::option::Option::Some(__doc_schema),
                     })
                 };
                 __fn().expect("building table_definition")
@@ -934,6 +950,136 @@ fn build_trait_impl(
                 ::std::result::Result::Ok(Self {
                     #(#field_names,)*
                 })
+            }
+        }
+    }
+}
+
+/// Emit a `Vec<(String, FieldValidator)>` literal listing every
+/// struct field. The generated code hands it to
+/// `build_object_validator` to produce the `ObjectValidator`.
+///
+/// Shared between `#[derive(ConvexDocument)]` (for `document_type`) and
+/// the `ConvexSchema` impl on the struct itself.
+fn field_entries_tokens(fields: &[FieldSpec]) -> TokenStream2 {
+    let entries = fields.iter().map(|f| {
+        let name = &f.name;
+        let validator_expr = field_validator_expr(&f.ty);
+        quote! { (::std::string::String::from(#name), #validator_expr) }
+    });
+    quote! {
+        ::std::vec![#(#entries,)*]
+    }
+}
+
+/// Build the expression that yields a `FieldValidator` for a single
+/// struct field at codegen time.
+///
+/// Special-case: `Vec<u8>` — it round-trips as `Validator::Bytes` (not
+/// `Array<Int64>`), and there is no `ConvexSchema` impl for `u8`, so
+/// we can't route it through `field_validator_for`. Every other type
+/// delegates to the trait.
+fn field_validator_expr(ty: &syn::Type) -> TokenStream2 {
+    if is_vec_u8(ty) {
+        return quote! {
+            ::convex_native::__private::FieldValidator::required_field_type(
+                ::convex_native::__private::Validator::Bytes,
+            )
+        };
+    }
+    if let Some(inner) = option_of_vec_u8(ty) {
+        let _ = inner;
+        return quote! {
+            ::convex_native::__private::FieldValidator::optional_field_type(
+                ::convex_native::__private::Validator::Union(::std::vec![
+                    ::convex_native::__private::Validator::Null,
+                    ::convex_native::__private::Validator::Bytes,
+                ]),
+            )
+        };
+    }
+    quote! {
+        ::convex_native::__private::field_validator_for::<#ty>()
+    }
+}
+
+/// True when `ty` is syntactically `Vec<u8>` (any path prefix).
+fn is_vec_u8(ty: &syn::Type) -> bool {
+    vec_inner(ty).is_some_and(|inner| is_primitive_path(inner, "u8"))
+}
+
+fn option_of_vec_u8(ty: &syn::Type) -> Option<&syn::Type> {
+    option_inner(ty).filter(|inner| is_vec_u8(inner))
+}
+
+fn vec_inner(ty: &syn::Type) -> Option<&syn::Type> {
+    let path = match ty {
+        syn::Type::Path(p) => &p.path,
+        _ => return None,
+    };
+    let last = path.segments.last()?;
+    if last.ident != "Vec" {
+        return None;
+    }
+    let args = match &last.arguments {
+        syn::PathArguments::AngleBracketed(a) => a,
+        _ => return None,
+    };
+    for arg in &args.args {
+        if let syn::GenericArgument::Type(t) = arg {
+            return Some(t);
+        }
+    }
+    None
+}
+
+fn option_inner(ty: &syn::Type) -> Option<&syn::Type> {
+    let path = match ty {
+        syn::Type::Path(p) => &p.path,
+        _ => return None,
+    };
+    let last = path.segments.last()?;
+    if last.ident != "Option" {
+        return None;
+    }
+    let args = match &last.arguments {
+        syn::PathArguments::AngleBracketed(a) => a,
+        _ => return None,
+    };
+    for arg in &args.args {
+        if let syn::GenericArgument::Type(t) = arg {
+            return Some(t);
+        }
+    }
+    None
+}
+
+fn is_primitive_path(ty: &syn::Type, name: &str) -> bool {
+    match ty {
+        syn::Type::Path(p) => p
+            .path
+            .segments
+            .last()
+            .is_some_and(|seg| seg.ident == name && seg.arguments.is_empty()),
+        _ => false,
+    }
+}
+
+/// Emit `impl ConvexSchema` for the derived document struct. The
+/// schema is `Validator::Object(fields_as_object_validator)` so the
+/// struct can itself appear as a nested field.
+fn build_schema_impl(struct_ident: &Ident, fields: &[FieldSpec]) -> TokenStream2 {
+    let entries = field_entries_tokens(fields);
+    quote! {
+        impl ::convex_native::ConvexSchema for #struct_ident {
+            fn validator() -> ::convex_native::__private::Validator {
+                let __fields: ::std::vec::Vec<(
+                    ::std::string::String,
+                    ::convex_native::__private::FieldValidator,
+                )> = #entries;
+                let __obj = ::convex_native::__private::build_object_validator(__fields)
+                    .expect("build_object_validator");
+                ::convex_native::__private::Validator::Object(__obj)
             }
         }
     }

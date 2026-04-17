@@ -94,6 +94,13 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let variant_literals: Vec<&str> = variants.iter().map(|(_, w)| w.as_str()).collect();
     let known_list = quote! { &[ #(#variant_literals),* ] };
 
+    let literal_entries = variants.iter().map(|(_, wire)| {
+        quote! {
+            ::convex_native::__private::string_literal_validator(#wire)
+                .expect("literal string")
+        }
+    });
+
     Ok(quote! {
         impl ::convex_native::ToConvex for #ident {
             fn to_convex(self)
@@ -123,6 +130,19 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         other,
                         #known_list,
                     )),
+                }
+            }
+        }
+
+        impl ::convex_native::ConvexSchema for #ident {
+            fn validator() -> ::convex_native::__private::Validator {
+                let __literals: ::std::vec::Vec<
+                    ::convex_native::__private::Validator,
+                > = ::std::vec![#(#literal_entries,)*];
+                if __literals.len() == 1 {
+                    __literals.into_iter().next().expect("1 element")
+                } else {
+                    ::convex_native::__private::Validator::Union(__literals)
                 }
             }
         }
