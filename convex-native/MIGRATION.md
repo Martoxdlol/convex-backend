@@ -311,6 +311,16 @@ pub async fn stripe_webhook(
 }
 ```
 
+Response builders (JS → Rust):
+
+| JS                                                           | Rust                                             |
+|--------------------------------------------------------------|--------------------------------------------------|
+| `new Response(null, { status })`                             | `HttpResponse::new(status)`                      |
+| `Response.json(obj)` / `new Response(JSON.stringify(obj), …)`| `HttpResponse::json(status, value)`              |
+| `new Response("text", { headers: { "Content-Type": "text/plain"}})` | `HttpResponse::text(status, body)`        |
+| `Response.redirect(location, status)`                        | `HttpResponse::redirect(status, location)`       |
+| `.with_header`, `.with_body` for ad-hoc customisation        | same (chainable)                                 |
+
 ## Modifier translation
 
 | JS pattern | Rust |
