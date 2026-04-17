@@ -17,8 +17,8 @@ actions) in native Rust.
 
 **Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1–1.4.4, 1.5.1, 1.5.2,
 1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.1
-proto contract + 3.2 crate skeleton/conversions + 3.5 mode alias +
-executor trait stub), **Phase 4
+proto contract + 3.2 crate skeleton/conversions + 3.3 worker server
+partial + 3.5 mode alias + executor trait stub), **Phase 4
 partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3 graceful drain
 + 4.4 timeouts + 4.5 circuit breaker + 4.6 index-cache warmup plan),
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
@@ -416,10 +416,21 @@ shuts down every clone.
   Health}{Request,Response}` to/from the tonic-free
   `convex_native::distributed` types, plus helpers for
   `TableNamespace`, `ConvexObject` args, and `UdfType` round-trips.
-  Tests: 8 unit tests covering happy-path round-trips and protocol
-  errors (non-object args, missing result, malformed namespace).
-  Remaining Phase 3 work (worker server, conductor client, mode
-  switching, integration tests) stays on task 52.
+- **Phase 3.3 — worker-side gRPC server (partial, shipped):**
+  `FunctionExecutionServer` implements the generated tonic trait.
+  `Health` is fully wired: reports `registry_version` (defaults to
+  `convex_native::VERSION`, overridable via `.with_registry_version`),
+  `accepts_traffic` (flips off when the runner is draining),
+  `registered_functions`, and `in_flight`. `Execute` handles
+  `UdfType::Action` through `run_action_with_callbacks` (with
+  `NoopCallbacks` until the worker is wired to real ones); query
+  and mutation branches return `tonic::Code::Unimplemented`
+  pending a worker-local `Database<Rt>`. A Phase-4.7 version gate
+  at the top of `execute` rejects requests whose
+  `min_registry_version` exceeds the worker's own.
+  Tests: 13 unit tests total (8 conversions + 5 server).
+  Remaining: 3.4 conductor client + P2C + retry, 3.5 binary mode
+  switching, 3.6 integration tests. Tracked on task 52.
 
 ### New in Phase 5 (partial) — index validation + schema diff + get_many
 

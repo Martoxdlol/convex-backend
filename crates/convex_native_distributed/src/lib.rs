@@ -19,3 +19,6 @@
 //! test them without pulling in a real gRPC transport.
 
 pub mod conversions;
+pub mod server;
+
+pub use server::FunctionExecutionServer;

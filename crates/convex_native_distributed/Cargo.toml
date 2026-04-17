@@ -20,5 +20,8 @@ serde_json = { workspace = true }
 tonic = { workspace = true }
 value = { workspace = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints]
 workspace = true
