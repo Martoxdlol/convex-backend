@@ -374,13 +374,19 @@ async fn dispatch_native_action<RT: Runtime>(
 
     let args_obj = extract_single_object_arg(&arguments, "native action")?;
 
+    // Pin a read snapshot for the whole action so multiple query
+    // sub-calls (typed or by name) observe a consistent view of the
+    // database. Mutations commit at a fresh timestamp so this doesn't
+    // affect them.
+    let action_snapshot_ts = database.now_ts_for_reads();
     let mut callbacks_builder = BackendCallbacks::<RT>::with_native(
         action_callbacks,
         identity,
         context,
         native.clone(),
         database.clone(),
-    );
+    )
+    .with_snapshot_ts(action_snapshot_ts);
     if let Some(fs) = file_storage {
         callbacks_builder = callbacks_builder.with_file_storage(fs.clone());
     }

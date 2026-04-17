@@ -23,6 +23,7 @@ use common::{
         Runtime,
         UnixTimestamp,
     },
+    types::RepeatableTimestamp,
 };
 use convex_native::{
     NativeActionCallbacks,
@@ -77,6 +78,19 @@ pub struct BackendCallbacks<RT: Runtime> {
     /// raw bytes directly. When `None`, `storage_store` returns an
     /// error because there's no way to materialise the bytes.
     pub file_storage: Option<FileStorage<RT>>,
+    /// Snapshot timestamp shared across native query sub-calls inside
+    /// one action dispatch. When `Some`, every `run_query_by_name`
+    /// that lands on the native short-circuit opens its transaction
+    /// at this fixed timestamp so the action observes one read-time
+    /// view across multiple sub-calls (e.g. looking up a user, then
+    /// fetching their posts, sees the same world for both).
+    ///
+    /// Mutations deliberately do **not** honour this — committing at
+    /// a stale ts would lose writes — so the timestamp is queries-
+    /// only. If a mutation sub-call commits between two queries, the
+    /// second query still reads at the pinned snapshot and will not
+    /// see the new write.
+    pub snapshot_ts: Option<RepeatableTimestamp>,
 }
 
 impl<RT: Runtime> BackendCallbacks<RT> {
@@ -94,6 +108,7 @@ impl<RT: Runtime> BackendCallbacks<RT> {
             native: None,
             database: None,
             file_storage: None,
+            snapshot_ts: None,
         }
     }
 
@@ -117,6 +132,7 @@ impl<RT: Runtime> BackendCallbacks<RT> {
             native: Some(native),
             database: Some(database),
             file_storage: None,
+            snapshot_ts: None,
         }
     }
 
@@ -127,11 +143,27 @@ impl<RT: Runtime> BackendCallbacks<RT> {
         self.file_storage = Some(file_storage);
         self
     }
+
+    /// Pin every native query sub-call to `ts` instead of reading at
+    /// the latest timestamp. Set once per action dispatch so multiple
+    /// `ctx.run_query(...)` / `ctx.db().get(...)` calls inside one
+    /// action see a consistent snapshot. Mutations ignore this by
+    /// design (they must commit at a fresh timestamp).
+    pub fn with_snapshot_ts(mut self, ts: RepeatableTimestamp) -> Self {
+        self.snapshot_ts = Some(ts);
+        self
+    }
 }
 
-/// Run a native query inline against a fresh transaction at the
-/// latest snapshot. Returns `None` when RT ≠ Rt (caller should fall
-/// back to the JS path); returns `Some(result)` on native dispatch.
+/// Run a native query inline against a fresh transaction. Returns
+/// `None` when RT ≠ Rt (caller should fall back to the JS path);
+/// returns `Some(result)` on native dispatch.
+///
+/// When `snapshot_ts` is set (typical for sub-calls inside a native
+/// action) the transaction opens at that pinned timestamp so every
+/// query in the same action observes the same world. When `None`,
+/// falls back to `database.now_ts_for_reads()` (latest snapshot) —
+/// the shape top-level composite-runner queries use.
 ///
 /// Dropping the transaction discards any reads — queries are
 /// read-only by design, so that's the intended behaviour.
@@ -142,11 +174,12 @@ async fn try_run_native_query<RT: Runtime + 'static>(
     name: &str,
     namespace: TableNamespace,
     args: ConvexObject,
+    snapshot_ts: Option<RepeatableTimestamp>,
 ) -> anyhow::Result<Option<ConvexValue>> {
     if TypeId::of::<RT>() != TypeId::of::<Rt>() {
         return Ok(None);
     }
-    let ts = database.now_ts_for_reads();
+    let ts = snapshot_ts.unwrap_or_else(|| database.now_ts_for_reads());
     let usage = usage_tracking::FunctionUsageTracker::new();
     let mut tx = database.begin_with_ts(identity.clone(), *ts, usage).await?;
     // SAFETY: TypeId check above ensures RT == Rt.
@@ -226,9 +259,16 @@ impl<RT: Runtime + 'static> NativeActionCallbacks for BackendCallbacks<RT> {
         // run it natively and skip the JS module loader entirely.
         if let (Some(native), Some(database)) = (&self.native, &self.database)
             && native.has_function_of_type(name, common::types::UdfType::Query)
-            && let Some(v) =
-                try_run_native_query::<RT>(native, database, &self.identity, name, ns, args.clone())
-                    .await?
+            && let Some(v) = try_run_native_query::<RT>(
+                native,
+                database,
+                &self.identity,
+                name,
+                ns,
+                args.clone(),
+                self.snapshot_ts,
+            )
+            .await?
         {
             return Ok(v);
         }

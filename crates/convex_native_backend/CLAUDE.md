@@ -30,7 +30,9 @@ src/
   raw-byte upload support. Same pattern on `BackendCallbacks`:
   `new(inner, identity, context)` for JS-only fallback,
   `with_native(...)` for native short-circuit, chainable
-  `.with_file_storage(fs)` to enable `storage_store`.
+  `.with_file_storage(fs)` to enable `storage_store`, and
+  `.with_snapshot_ts(ts)` to pin every native query sub-call in one
+  action to the same read timestamp.
 - **`isolate` build dependency.** `function_runner` pulls in
   `isolate` / V8, which needs `rush install` in `npm-packages/`
   before this crate builds. That's a one-time setup cost; the

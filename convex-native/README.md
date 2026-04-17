@@ -819,7 +819,16 @@ registrations, no schema entries.
   has no tx today, so the returned `final_tx` is always `None`. JS
   actions behave the same way (no transaction writes), but the lack
   of a tx means native actions can't observe read-time consistency
-  without round-tripping to `run_query_by_name`.
+  from a direct `ctx.db().get(...)` call (you still have to route
+  through `ctx.run_query(...)` / `ctx.run_query_by_name(...)`).
+  Query sub-calls _do_ now share a snapshot: `dispatch_native_action`
+  pins `database.now_ts_for_reads()` once and threads it into
+  `BackendCallbacks::with_snapshot_ts(...)`, so every native query
+  sub-call inside one action opens its transaction at the same ts.
+  Mutations still commit at a fresh timestamp — committing at a
+  stale ts would lose writes — so interleaved mutations are visible
+  to later queries only if the caller explicitly re-reads through a
+  new action.
 
 ## Architecture (today)
 
