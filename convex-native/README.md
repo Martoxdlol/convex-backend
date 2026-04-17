@@ -11,9 +11,11 @@ registry machinery doing the glue.
 |---------------------------|---------------------------------------------------------------|
 | `QUICKSTART.md`           | A 10-minute walkthrough that ends at a running app.           |
 | `USAGE.md`                | The comprehensive per-topic feature reference.                |
+| `DEPLOYMENT.md`           | How to run it: topologies, env vars, observability, rolling updates. |
 | `MIGRATION.md`            | Side-by-side JS ↔ Rust porting examples.                     |
 | `STATUS.md`               | What's shipped vs. outstanding, with effort estimates.        |
 | `COMPOSITE_RUNNER.md`     | How the `convex_native_backend` adapter plugs into the backend. |
+| `examples/`               | Reading samples — `minimal_app/` shows a full deployer project shape. |
 | `IMPLEMENTATION_PLAN.md`  | Historical phase-by-phase plan.                               |
 | `native-rust-functions.md`| The original design doc (kept for rationale).                 |
 

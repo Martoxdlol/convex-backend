@@ -7,6 +7,8 @@ step-by-step walkthrough.
 
 - **Porting from JS?** `MIGRATION.md` has JS↔Rust side-by-sides.
 - **What's shipped vs. missing?** `STATUS.md`.
+- **How do I ship it?** `DEPLOYMENT.md` covers topologies,
+  env vars, observability sinks, and rolling updates.
 - **Internals of the adapter that bridges this crate onto the
   backend's `FunctionRunner` trait?** `COMPOSITE_RUNNER.md`.
 
