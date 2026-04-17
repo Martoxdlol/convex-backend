@@ -160,3 +160,99 @@ fn convex_union_rejects_missing_tag() {
     let err = NotificationChannel::from_convex(ConvexValue::Object(obj)).unwrap_err();
     assert!(err.to_string().contains("missing discriminant"));
 }
+
+// ── ConvexSchema validator shape ──────────────────────────────────
+
+#[test]
+fn convex_enum_emits_union_of_string_literals() {
+    // Every renamed / default-named variant becomes a
+    // `v.literal(...)` entry in a union. This is the shape that
+    // lets the database layer reject a write carrying an unknown
+    // role string before it hits `from_convex`.
+    use common::schemas::validator::{
+        LiteralValidator,
+        Validator,
+    };
+    use convex_native::ConvexSchema;
+
+    let v = Role::validator();
+    let Validator::Union(variants) = v else {
+        panic!("enum validator should be a union")
+    };
+    assert_eq!(variants.len(), 3);
+    let has_wire = |w: &str| {
+        variants.iter().any(|v| {
+            matches!(v, Validator::Literal(LiteralValidator::String(s)) if s.as_ref() == w)
+        })
+    };
+    assert!(has_wire("admin"));
+    assert!(has_wire("member"));
+    assert!(
+        has_wire("guest-account"),
+        "rename carried into the validator",
+    );
+}
+
+#[test]
+fn convex_nested_emits_object_validator_over_field_shapes() {
+    use common::schemas::validator::{
+        ObjectValidator,
+        Validator,
+    };
+    use convex_native::ConvexSchema;
+    use value::IdentifierFieldName;
+
+    let v = Address::validator();
+    let Validator::Object(ObjectValidator(fields)) = v else {
+        panic!("nested validator should be an object")
+    };
+    let street: IdentifierFieldName = "street".parse().unwrap();
+    let city: IdentifierFieldName = "city".parse().unwrap();
+    assert_eq!(fields[&street].validator, Validator::String);
+    assert_eq!(fields[&city].validator, Validator::String);
+}
+
+#[test]
+fn convex_union_emits_union_of_tagged_objects() {
+    // Each variant serialises as `{ "<tag_field>": <wire_name>,
+    // ...fields }`. The validator mirrors that: one
+    // `ObjectValidator` per variant, each carrying the exact tag
+    // literal + the variant's field shape. This is what lets a
+    // stale write ("type": "pager") fail at validation time rather
+    // than at read time.
+    use common::schemas::validator::{
+        LiteralValidator,
+        ObjectValidator,
+        Validator,
+    };
+    use convex_native::ConvexSchema;
+    use value::IdentifierFieldName;
+
+    let v = NotificationChannel::validator();
+    let Validator::Union(variants) = v else {
+        panic!("union validator should be a union")
+    };
+    assert_eq!(variants.len(), 3);
+
+    let tag: IdentifierFieldName = "type".parse().unwrap();
+    let tag_wires: Vec<String> = variants
+        .iter()
+        .map(|variant| {
+            let Validator::Object(ObjectValidator(fields)) = variant else {
+                panic!("variant should be an object");
+            };
+            let field = fields.get(&tag).expect("tag field present");
+            match &field.validator {
+                Validator::Literal(LiteralValidator::String(s)) => s.to_string(),
+                other => panic!("tag validator should be a string literal, got {other:?}"),
+            }
+        })
+        .collect();
+    // Order isn't a contract, so check containment.
+    assert!(tag_wires.iter().any(|w| w == "email"));
+    assert!(tag_wires.iter().any(|w| w == "sms"));
+    assert!(
+        tag_wires.iter().any(|w| w == "push_notification"),
+        "rename flows into the tag literal",
+    );
+}
