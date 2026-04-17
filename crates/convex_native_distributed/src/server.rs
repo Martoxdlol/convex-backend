@@ -134,7 +134,27 @@ impl FunctionExecutionService for FunctionExecutionServer {
 
         match udf_type {
             UdfType::Action => {
-                let callbacks = Arc::new(convex_native::callbacks::NoopCallbacks);
+                // Prefer WorkerActionCallbacks when the server has a
+                // Database attached — that way action sub-calls
+                // (`ctx.run_query(...)` / `ctx.run_mutation(...)` /
+                // `ctx.scheduler().run_after(...)`) actually work
+                // against native handlers. Without a database we
+                // fall back to NoopCallbacks for compatibility with
+                // the "pure dispatcher" topology.
+                let execution_context = native_req
+                    .execution_context
+                    .clone()
+                    .unwrap_or_else(crate::worker_callbacks::default_execution_context);
+                let callbacks: Arc<dyn convex_native::NativeActionCallbacks> =
+                    if let Some(db) = self.database.as_ref() {
+                        Arc::new(crate::WorkerActionCallbacks::new(
+                            self.native.clone(),
+                            db.clone(),
+                            execution_context,
+                        ))
+                    } else {
+                        Arc::new(convex_native::callbacks::NoopCallbacks)
+                    };
                 let log_buffer = convex_native::LogBuffer::new();
                 let result = self
                     .native

@@ -38,6 +38,7 @@ pub mod conversions;
 pub mod mode;
 pub mod server;
 pub mod tonic_client;
+pub mod worker_callbacks;
 
 pub use client::{
     CapturingConductorLogs,
@@ -61,3 +62,7 @@ pub use mode::{
 };
 pub use server::FunctionExecutionServer;
 pub use tonic_client::TonicWorkerClient;
+pub use worker_callbacks::{
+    default_execution_context,
+    WorkerActionCallbacks,
+};

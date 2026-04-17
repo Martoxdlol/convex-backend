@@ -2362,10 +2362,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "common",
  "convex_native",
+ "convex_sync_types",
  "database",
  "keybroker",
+ "model",
  "pb",
  "prost-types",
  "rand 0.9.4",

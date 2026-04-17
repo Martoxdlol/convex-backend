@@ -12,14 +12,17 @@ doctest = false
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 common = { workspace = true }
 convex_native = { workspace = true }
 database = { workspace = true }
 keybroker = { workspace = true }
+model = { workspace = true }
 pb = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
 serde_json = { workspace = true }
+sync_types = { workspace = true }
 tonic = { workspace = true }
 usage_tracking = { workspace = true }
 value = { workspace = true }
