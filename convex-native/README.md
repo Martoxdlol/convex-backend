@@ -406,7 +406,7 @@ shuts down every clone.
   handler invocation in `tokio::time::timeout` — runaway handlers
   abort with a clear error and record as `Outcome::Err`.
 
-### New in Phase 3 (partial) — distributed scaffolding
+### Phase 3 — distributed execution (shipped)
 
 - `ConvexMode::{Standalone, Conductor, Worker}` — the operating-mode
   enum described in the design doc §10, parseable from
@@ -562,7 +562,7 @@ shuts down every clone.
   A Phase-4.7 version gate at the top of `execute` rejects
   requests whose `min_registry_version` exceeds the worker's own.
 
-### New in Phase 5 (partial) — index validation + schema diff + get_many
+### Phase 5 — developer ergonomics (shipped: index validation + schema diff + search + get_many)
 
 - **Compile-time index-field validation (5.2).**
   `#[derive(ConvexDocument)]` now rejects `#[convex(index(... fields =
