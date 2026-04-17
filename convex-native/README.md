@@ -791,10 +791,11 @@ registrations, no schema entries.
 - `TypedQueryBuilder` type-checks against `T::Index` and `T::Field`.
   Terminals `.collect()` / `.first()` / `.unique()` / `.take(n)` /
   `.count()` execute via `database::DeveloperQuery`. Index-range
-  source when `.with_index()` was used, full-table-scan otherwise
-  (filters without an index still rejected at runtime for now).
-  Supports equality (`.eq`) and range comparators (`.gt` / `.gte` /
-  `.lt` / `.lte`). `.unique()` errors if more than one doc matches.
+  source when `.with_index()` was used, otherwise a full-table scan
+  with each `.eq` / `.gt` / `.gte` / `.lt` / `.lte` lowered to a
+  stacked `QueryOperator::Filter(Expression)` predicate — prefer an
+  indexed lookup when one exists; the filter path reads every row.
+  `.unique()` errors if more than one doc matches.
 
 ### What doesn't work yet
 
