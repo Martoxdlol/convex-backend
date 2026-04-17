@@ -382,6 +382,7 @@ mod tests {
     struct Widget;
 
     #[derive(Copy, Clone, Debug)]
+    #[allow(dead_code)]
     enum WidgetField {
         Owner,
         Count,

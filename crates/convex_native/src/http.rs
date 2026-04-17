@@ -275,3 +275,146 @@ impl HttpRouter {
         self.routes.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use http::{
+        HeaderMap,
+        HeaderValue,
+        Method,
+    };
+    use serde::Deserialize;
+    use serde_json::json;
+
+    use super::*;
+
+    fn request_with_body(body: impl Into<Bytes>) -> HttpRequest {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-test", HeaderValue::from_static("abc"));
+        HttpRequest {
+            method: Method::GET,
+            url: "http://example.com/foo".into(),
+            headers,
+            body: body.into(),
+            routed_path: "/foo".into(),
+        }
+    }
+
+    #[test]
+    fn request_header_returns_string_value_or_none() {
+        let req = request_with_body(Bytes::new());
+        assert_eq!(req.header("x-test"), Some("abc"));
+        // Header lookup is case-insensitive in `http::HeaderMap`.
+        assert_eq!(req.header("X-Test"), Some("abc"));
+        assert_eq!(req.header("missing"), None);
+    }
+
+    #[test]
+    fn request_body_text_roundtrips_utf8() {
+        let req = request_with_body("hello world".as_bytes().to_vec());
+        assert_eq!(req.body_text().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn request_body_text_rejects_non_utf8() {
+        // 0xFF is never valid in UTF-8.
+        let req = request_with_body(vec![0xFFu8, 0x00]);
+        let err = req.body_text().expect_err("non-UTF-8 must fail");
+        assert!(
+            format!("{err}").contains("not valid UTF-8"),
+            "error surfaces the cause: {err}",
+        );
+    }
+
+    #[test]
+    fn request_body_json_deserialises_into_target_type() {
+        #[derive(Deserialize)]
+        struct Payload {
+            name: String,
+            count: u32,
+        }
+        let req = request_with_body(b"{\"name\":\"alice\",\"count\":7}".to_vec());
+        let parsed: Payload = req.body_json().expect("decode");
+        assert_eq!(parsed.name, "alice");
+        assert_eq!(parsed.count, 7);
+    }
+
+    #[test]
+    fn request_body_json_rejects_malformed_input() {
+        let req = request_with_body(b"not-json".to_vec());
+        assert!(
+            req.body_json::<serde_json::Value>().is_err(),
+            "malformed JSON must not decode",
+        );
+    }
+
+    #[test]
+    fn request_path_remainder_exposes_the_routed_suffix() {
+        // path_remainder is the sub-path after the matched route prefix.
+        // For HttpRouter dispatch this is what user handlers see.
+        let req = request_with_body(Bytes::new());
+        assert_eq!(req.path_remainder(), "/foo");
+    }
+
+    #[test]
+    fn response_new_has_empty_headers_and_body() {
+        let resp = HttpResponse::new(204);
+        assert_eq!(resp.status, 204);
+        assert!(resp.headers.is_empty());
+        assert!(resp.body.is_empty());
+    }
+
+    #[test]
+    fn response_json_sets_content_type_and_serialises_body() {
+        let resp = HttpResponse::json(201, json!({"ok": true, "n": 1}));
+        assert_eq!(resp.status, 201);
+        assert_eq!(
+            resp.headers
+                .get("Content-Type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+        );
+        let body_str = std::str::from_utf8(&resp.body).expect("utf-8");
+        // Field order is stable in serde_json.
+        assert!(body_str.contains("\"ok\":true"));
+        assert!(body_str.contains("\"n\":1"));
+    }
+
+    #[test]
+    fn response_redirect_sets_location_header() {
+        let resp = HttpResponse::redirect(302, "/next");
+        assert_eq!(resp.status, 302);
+        assert_eq!(
+            resp.headers.get("Location").and_then(|v| v.to_str().ok()),
+            Some("/next"),
+        );
+    }
+
+    #[test]
+    fn response_with_header_adds_the_header() {
+        let resp = HttpResponse::new(200)
+            .with_header("x-extra", "one")
+            .expect("header");
+        assert_eq!(
+            resp.headers.get("x-extra").and_then(|v| v.to_str().ok()),
+            Some("one"),
+        );
+    }
+
+    #[test]
+    fn response_with_header_rejects_invalid_name() {
+        // Control characters aren't valid in header names.
+        let err = HttpResponse::new(200)
+            .with_header("bad name", "x")
+            .expect_err("must reject");
+        let _ = err;
+    }
+
+    #[test]
+    fn response_with_body_replaces_existing_body() {
+        let resp = HttpResponse::new(200)
+            .with_body("first")
+            .with_body("second");
+        assert_eq!(&resp.body[..], b"second");
+    }
+}
