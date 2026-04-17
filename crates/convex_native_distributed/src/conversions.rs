@@ -13,6 +13,7 @@ use convex_native::distributed::{
     ExecuteRequest,
     ExecuteResponse,
     FinalTxSummary,
+    TxReadSize,
 };
 use pb::function_execution as proto;
 use value::{
@@ -233,7 +234,23 @@ pub fn final_tx_to_proto(summary: FinalTxSummary) -> anyhow::Result<proto::Distr
         reads_count: summary.reads_count,
         rows_read_by_tablet: summary.rows_read_by_tablet.into_iter().collect(),
         writes,
+        user_tx_size: summary.user_tx_size.map(tx_read_size_to_proto),
+        system_tx_size: summary.system_tx_size.map(tx_read_size_to_proto),
     })
+}
+
+fn tx_read_size_to_proto(native: TxReadSize) -> proto::DistributedTxReadSize {
+    proto::DistributedTxReadSize {
+        total_document_size: native.total_document_size,
+        total_document_count: native.total_document_count,
+    }
+}
+
+fn tx_read_size_from_proto(p: &proto::DistributedTxReadSize) -> TxReadSize {
+    TxReadSize {
+        total_document_size: p.total_document_size,
+        total_document_count: p.total_document_count,
+    }
 }
 
 /// Inverse of `final_tx_to_proto`. Backend-side callers invoke this
@@ -257,6 +274,8 @@ pub fn final_tx_from_proto(proto: &proto::DistributedFinalTx) -> anyhow::Result<
             .map(|(k, v)| (k.clone(), *v))
             .collect(),
         writes,
+        user_tx_size: proto.user_tx_size.as_ref().map(tx_read_size_from_proto),
+        system_tx_size: proto.system_tx_size.as_ref().map(tx_read_size_from_proto),
     })
 }
 
@@ -439,6 +458,10 @@ mod tests {
             // Substep 2.3 `writes` content is exercised by
             // `response_final_tx_writes_roundtrip` below.
             writes: Vec::new(),
+            // Substep 2.2a tx-size content is exercised by
+            // `response_final_tx_tx_size_roundtrip` below.
+            user_tx_size: None,
+            system_tx_size: None,
         };
         let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
         let p = to_proto_response(&native).unwrap();
@@ -537,6 +560,8 @@ mod tests {
             reads_count: 0,
             rows_read_by_tablet: Default::default(),
             writes: vec![update.clone()],
+            user_tx_size: None,
+            system_tx_size: None,
         };
         let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
         let p = to_proto_response(&native).unwrap();
@@ -548,6 +573,46 @@ mod tests {
         assert_eq!(dft_native.writes[0].id, update.id);
         assert!(dft_native.writes[0].old_document.is_none());
         assert!(dft_native.writes[0].new_document.is_none());
+    }
+
+    #[test]
+    fn response_final_tx_tx_size_roundtrip() {
+        // Substep 2.2a: `user_tx_size` / `system_tx_size` carry
+        // the scalar read-size counters the backend rolls into
+        // usage tracking. Pin the round-trip so a future proto
+        // field-number bump or a sloppy conversion can't silently
+        // land zeros on one side.
+        let user = TxReadSize {
+            total_document_size: 4096,
+            total_document_count: 3,
+        };
+        let system = TxReadSize {
+            total_document_size: 128,
+            total_document_count: 1,
+        };
+        let summary = FinalTxSummary {
+            begin_timestamp: 9,
+            writes_count: 0,
+            reads_count: 2,
+            rows_read_by_tablet: Default::default(),
+            writes: Vec::new(),
+            user_tx_size: Some(user),
+            system_tx_size: Some(system),
+        };
+        let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
+        let p = to_proto_response(&native).unwrap();
+        let dft = p.final_tx.as_ref().expect("final_tx populated");
+        assert_eq!(
+            dft.user_tx_size.as_ref().map(|s| s.total_document_size),
+            Some(4096)
+        );
+        assert_eq!(
+            dft.system_tx_size.as_ref().map(|s| s.total_document_count),
+            Some(1)
+        );
+        let decoded_native = from_proto_response(&p).unwrap().final_tx.unwrap();
+        assert_eq!(decoded_native.user_tx_size, Some(user));
+        assert_eq!(decoded_native.system_tx_size, Some(system));
     }
 
     #[test]

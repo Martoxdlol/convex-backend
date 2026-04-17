@@ -208,6 +208,21 @@ pub struct FinalTxSummary {
     /// error / action paths and when the handler committed no
     /// writes.
     pub writes: Vec<common::document::DocumentUpdateWithPrevTs>,
+    /// Substep 2.2a: scalar read-size counters split by user-tablet
+    /// vs system-tablet origin. Mirrors
+    /// `database::TransactionReadSize`. `None` when the worker
+    /// didn't open a transaction (actions, handler errors).
+    pub user_tx_size: Option<TxReadSize>,
+    pub system_tx_size: Option<TxReadSize>,
+}
+
+/// Native-side mirror of `pb::function_execution::DistributedTxReadSize`
+/// (which in turn mirrors `database::TransactionReadSize`). Scalar
+/// counters the backend needs for usage tracking.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub struct TxReadSize {
+    pub total_document_size: u64,
+    pub total_document_count: u64,
 }
 
 /// Trait a worker implements to accept remote calls. The

@@ -206,6 +206,26 @@ message DistributedFinalTx {
   // produces no writes; a zero-length list of updates is a valid
   // state distinct from "no final_tx".
   repeated common.DocumentUpdateWithPrevTs writes = 5;
+
+  // Substep 2.2a: scalar read-size counters split by user-tablet
+  // vs system-tablet origin. Both are aggregates of
+  // `TransactionReadSize { total_document_size, total_document_count }`
+  // the in-process runner hands the Committer via
+  // `Transaction::apply_function_runner_tx`. The backend rolls
+  // these into its usage tracker so distributed and in-process
+  // dispatch produce identical billing numbers.
+  //
+  // Full `FunctionReads` (index intervals + search reads) lands
+  // in substep 2.2b; that enables the Committer's OCC-validation
+  // path to accept distributed results end-to-end.
+  optional DistributedTxReadSize user_tx_size = 6;
+  optional DistributedTxReadSize system_tx_size = 7;
+}
+
+// Scalar read-size counters. Mirrors `database::TransactionReadSize`.
+message DistributedTxReadSize {
+  uint64 total_document_size = 1;
+  uint64 total_document_count = 2;
 }
 
 message HealthRequest {

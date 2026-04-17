@@ -366,6 +366,17 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::Fi
         .collect();
     let (reads, writes) = tx.into_reads_and_writes();
     let reads_count = reads.num_intervals() as u64;
+    // Substep 2.2a: pull scalar read-size counters off the
+    // TransactionReadSet before moving its interval-set into the
+    // flat ReadSet. `usize → u64` is a lossless widening.
+    let user_tx_size = convex_native::distributed::TxReadSize {
+        total_document_size: reads.user_tx_size().total_document_size as u64,
+        total_document_count: reads.user_tx_size().total_document_count as u64,
+    };
+    let system_tx_size = convex_native::distributed::TxReadSize {
+        total_document_size: reads.system_tx_size().total_document_size as u64,
+        total_document_count: reads.system_tx_size().total_document_count as u64,
+    };
     let writes_vec: Vec<common::document::DocumentUpdateWithPrevTs> = writes
         .into_flat()
         .map(|flat| {
@@ -380,6 +391,8 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::Fi
         reads_count,
         rows_read_by_tablet,
         writes: writes_vec,
+        user_tx_size: Some(user_tx_size),
+        system_tx_size: Some(system_tx_size),
     }
 }
 

@@ -190,12 +190,25 @@ substep is checked and the integration test is green.
      form (UUID-shaped string) to keep the wire shape
      JSON-readable for Phase 6 consumers.
 
-2.2. **Wire `FunctionReads` content.**
-     Grow `DistributedFinalTx` with a nested `FunctionReads`
-     sub-message carrying `reads: ReadSet`, `num_intervals`,
-     `user_tx_size`, and `system_tx_size`. Requires new
-     proto encodings for `ReadSet` / `TransactionReadSize`.
-     Round-trip tests prove the encoding is lossless.
+2.2. **Wire `FunctionReads` content.** Split into two
+     sub-substeps:
+
+     2.2a. ✓ **Scalar counters (`user_tx_size` / `system_tx_size`).**
+     Landed. New proto message `DistributedTxReadSize`
+     (`{ total_document_size, total_document_count }`) and two
+     optional fields on `DistributedFinalTx`. Native
+     `FinalTxSummary` carries `Option<TxReadSize>` for each.
+     `summarise_tx` pulls them from the `TransactionReadSet`
+     before moving the interval-set out. Enables
+     distributed-dispatch usage tracking; does not yet enable
+     OCC validation.
+
+     2.2b. **`ReadSet` intervals per (tablet, index).**
+     Pending. Grows `DistributedFinalTx` with the full index
+     reads list (tablet id + descriptor + indexed fields +
+     interval set). Search-index reads deferred as their own
+     follow-up. Required before the backend's Committer can
+     validate OCC on a distributed-dispatched mutation.
 
 2.3. ✓ **Wire `FunctionWrites` content.**
      Landed. `repeated common.DocumentUpdateWithPrevTs writes`
