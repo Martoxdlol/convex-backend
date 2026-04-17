@@ -2362,6 +2362,8 @@ dependencies = [
  "async-trait",
  "common",
  "convex_native",
+ "database",
+ "keybroker",
  "pb",
  "prost-types",
  "rand 0.9.4",
@@ -2369,6 +2371,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "usage_tracking",
  "value",
 ]
 

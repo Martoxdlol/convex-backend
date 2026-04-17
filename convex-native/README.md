@@ -18,7 +18,7 @@ actions) in native Rust.
 **Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1–1.4.4, 1.5.1, 1.5.2,
 1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.1
 proto contract + 3.2 crate skeleton/conversions + 3.3 worker server
-partial + 3.4 conductor client + P2C + real transport + 3.5 mode
+full + 3.4 conductor client + P2C + real transport + 3.5 mode
 switching helpers + 3.6 multi-worker integration tests + executor
 trait stub), **Phase 4
 partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3 graceful drain
@@ -468,21 +468,23 @@ shuts down every clone.
   (endpoint parsing, default bind-address resolution, malformed
   input rejection, unreachable-worker rejection, service
   construction).
-- **Phase 3.3 — worker-side gRPC server (partial, shipped):**
+- **Phase 3.3 — worker-side gRPC server (shipped):**
   `FunctionExecutionServer` implements the generated tonic trait.
   `Health` is fully wired: reports `registry_version` (defaults to
   `convex_native::VERSION`, overridable via `.with_registry_version`),
   `accepts_traffic` (flips off when the runner is draining),
   `registered_functions`, and `in_flight`. `Execute` handles
   `UdfType::Action` through `run_action_with_callbacks` (with
-  `NoopCallbacks` until the worker is wired to real ones); query
-  and mutation branches return `tonic::Code::Unimplemented`
-  pending a worker-local `Database<Rt>`. A Phase-4.7 version gate
-  at the top of `execute` rejects requests whose
-  `min_registry_version` exceeds the worker's own.
-  Tests: 13 unit tests total (8 conversions + 5 server).
-  Remaining: 3.4 conductor client + P2C + retry, 3.5 binary mode
-  switching, 3.6 integration tests. Tracked on task 52.
+  `NoopCallbacks` until the worker is wired to real ones). With
+  `.with_database(db)`, queries and mutations dispatch inline
+  against a fresh `Transaction<Rt>` (queries drop the tx;
+  mutations commit locally via `commit_with_write_source`) — this
+  matches the "pure worker" topology where the worker owns its
+  own `Database<Rt>`. Without a database handle, query and
+  mutation requests return `Code::Unimplemented` so the conductor
+  learns the worker wasn't provisioned for transactional traffic.
+  A Phase-4.7 version gate at the top of `execute` rejects
+  requests whose `min_registry_version` exceeds the worker's own.
 
 ### New in Phase 5 (partial) — index validation + schema diff + get_many
 
