@@ -853,6 +853,7 @@ crates/convex_native/              -- framework crate (no isolate dep)
 │   ├── callbacks.rs               -- NativeActionCallbacks trait + NoopCallbacks
 │   ├── circuit_breaker.rs         -- CircuitBreaker + config
 │   ├── convert.rs                 -- ToConvex / FromConvex
+│   ├── cron.rs                    -- CronRegistration inventory + collect
 │   ├── ctx/
 │   │   ├── action.rs              -- ActionCtx
 │   │   ├── mutation.rs            -- MutationCtx + MutationDb
@@ -899,6 +900,21 @@ crates/convex_native_backend/      -- backend adapter (requires isolate dep)
 │   ├── lib.rs                     -- re-exports
 │   ├── composite_runner.rs        -- CompositeFunctionRunner<RT>: FunctionRunner impl
 │   └── callbacks_adapter.rs       -- BackendCallbacks: NativeActionCallbacks -> ActionCallbacks
+
+crates/convex_native_distributed/  -- split-topology gRPC (worker + conductor)
+├── src/
+│   ├── lib.rs                     -- module layout + re-exports
+│   ├── conversions.rs             -- pb::function_execution::* ↔ convex_native::distributed::*
+│   ├── server.rs                  -- FunctionExecutionServer (worker-side tonic impl)
+│   ├── client.rs                  -- DistributedFunctionRunner (conductor P2C) + WorkerClient
+│   ├── tonic_client.rs            -- TonicWorkerClient (real gRPC transport)
+│   └── mode.rs                    -- CONVEX_MODE env parsers + serve_worker_with_{database,shutdown}
+├── examples/
+│   ├── worker.rs                  -- runnable tonic server binary
+│   └── conductor.rs               -- runnable health-probe binary
+└── tests/
+    ├── multi_worker.rs            -- N-worker conductor + failover + version-gate tests
+    └── examples_smoke.rs          -- subprocess smoke test spawning worker + conductor
 
 crates/convex_macro/
 ├── src/
