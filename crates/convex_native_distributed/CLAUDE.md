@@ -18,7 +18,7 @@ src/
 ├── server.rs       -- FunctionExecutionServer (worker-side tonic impl)
 ├── client.rs       -- DistributedFunctionRunner (conductor P2C) + WorkerClient trait + MockWorkerClient
 ├── tonic_client.rs -- TonicWorkerClient (real gRPC transport impl of WorkerClient)
-└── mode.rs         -- CONVEX_MODE env-var parsers + build_worker_server/build_conductor_runner
+└── mode.rs         -- CONVEX_MODE env-var parsers + build_worker_server / build_conductor_runner / serve_worker_with_{database,shutdown}
 examples/
 ├── worker.rs       -- minimal tonic server binary a deployer can crib from
 └── conductor.rs    -- minimal health-probe binary a deployer can crib from
@@ -82,7 +82,13 @@ CONVEX_MODE=conductor CONVEX_WORKER_ENDPOINTS=http://127.0.0.1:45671 \
 Outstanding: only the conductor half of the unified binary. The
 worker half shipped: `convex-local-backend` now accepts
 `CONVEX_MODE=worker` and spawns a tonic `FunctionExecutionService`
-alongside the HTTP server via `serve_worker_with_database(addr,
-native, db)`. Conductor mode stays behind the
-`examples/conductor` binary because `convex-local-backend` always
-boots a local `Database`, which defeats the conductor topology.
+alongside the HTTP server via `serve_worker_with_shutdown(addr,
+native, db, shutdown_future)` — wired to the same `zombify_rx`
+the HTTP server drains on, so Ctrl-C / `/preempt` tears down
+both together. The `serve_worker_with_database` shim is the
+"bind and run forever" variant (forwards to
+`serve_worker_with_shutdown` with a `pending()` future) for
+callers that don't need coordinated drain. Conductor mode stays
+behind the `examples/conductor` binary because
+`convex-local-backend` always boots a local `Database`, which
+defeats the conductor topology.
