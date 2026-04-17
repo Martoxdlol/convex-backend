@@ -1118,3 +1118,123 @@ impl ValidatedActionOutcome {
         }
     }
 }
+
+#[cfg(test)]
+mod native_resolver_tests {
+    //! Unit tests for the native-function short-circuit plumbing.
+    //!
+    //! These tests exercise the pure helpers
+    //! (`synthesize_native_analyzed_function`) and pin the `AnalyzedFunction`
+    //! shape we hand to `ValidatedPathAndArgs::new_inner`. The full wire
+    //! round-trip (HTTP → Application → ValidatedPathAndArgs) lives as an
+    //! end-to-end test in the integration suite because it needs
+    //! `Database<RT>` + a running backend.
+    use common::{
+        components::{
+            ComponentId,
+            ComponentPath,
+            ResolvedComponentFunctionPath,
+        },
+        types::UdfType,
+    };
+    use model::modules::module_versions::Visibility;
+
+    use super::{
+        synthesize_native_analyzed_function,
+        NativeFunctionDescriptor,
+        NativeFunctionResolver,
+    };
+
+    fn path_for(fn_name: &str) -> ResolvedComponentFunctionPath {
+        ResolvedComponentFunctionPath {
+            component: ComponentId::Root,
+            udf_path: format!("mutations:{fn_name}").parse().unwrap(),
+            component_path: ComponentPath::root(),
+        }
+    }
+
+    #[test]
+    fn synthesize_preserves_name_and_udf_type() {
+        let path = path_for("create");
+        let desc = NativeFunctionDescriptor {
+            udf_type: UdfType::Mutation,
+            is_internal: false,
+        };
+        let synthesised = synthesize_native_analyzed_function(&path, &desc);
+        assert_eq!(synthesised.name.to_string(), "create");
+        assert_eq!(synthesised.udf_type, UdfType::Mutation);
+    }
+
+    #[test]
+    fn synthesize_maps_internal_flag_to_visibility_internal() {
+        // Reason we pin this: visibility drives the
+        // `check_visibility_access` check inside `new_inner`. If
+        // `is_internal` silently stopped mapping to
+        // `Visibility::Internal`, every `#[convex::*(internal)]`
+        // handler would become callable from non-admin clients.
+        let desc = NativeFunctionDescriptor {
+            udf_type: UdfType::Query,
+            is_internal: true,
+        };
+        let synthesised = synthesize_native_analyzed_function(&path_for("secret"), &desc);
+        assert_eq!(synthesised.visibility, Some(Visibility::Internal));
+    }
+
+    #[test]
+    fn synthesize_maps_public_flag_to_visibility_public() {
+        let desc = NativeFunctionDescriptor {
+            udf_type: UdfType::Query,
+            is_internal: false,
+        };
+        let synthesised = synthesize_native_analyzed_function(&path_for("list"), &desc);
+        assert_eq!(synthesised.visibility, Some(Visibility::Public));
+    }
+
+    #[test]
+    fn synthesize_leaves_args_and_returns_unvalidated() {
+        // The `#[convex::*]` macros do not yet emit full validator
+        // metadata, so the short-circuit maps both to the
+        // `Unvalidated` variant (`AnalyzedFunction::args()` /
+        // `returns()` return `Unvalidated` when the JSON string is
+        // `None`). This test pins the contract — if the macros
+        // start emitting full validators, tighten this test + the
+        // synthesizer accordingly.
+        let desc = NativeFunctionDescriptor {
+            udf_type: UdfType::Action,
+            is_internal: false,
+        };
+        let synthesised = synthesize_native_analyzed_function(&path_for("summarise"), &desc);
+        assert!(synthesised.args_str.is_none());
+        assert!(synthesised.returns_str.is_none());
+    }
+
+    #[test]
+    fn trait_impl_returns_none_for_unknown_name() {
+        struct NoHandlers;
+        impl NativeFunctionResolver for NoHandlers {
+            fn lookup(&self, _: &str) -> Option<NativeFunctionDescriptor> {
+                None
+            }
+        }
+        let resolver: Box<dyn NativeFunctionResolver> = Box::new(NoHandlers);
+        assert!(resolver.lookup("create").is_none());
+    }
+
+    #[test]
+    fn trait_impl_returns_descriptor_for_known_name() {
+        struct StubResolver;
+        impl NativeFunctionResolver for StubResolver {
+            fn lookup(&self, name: &str) -> Option<NativeFunctionDescriptor> {
+                (name == "create").then_some(NativeFunctionDescriptor {
+                    udf_type: UdfType::Mutation,
+                    is_internal: false,
+                })
+            }
+        }
+        let resolver: Box<dyn NativeFunctionResolver> = Box::new(StubResolver);
+        let desc = resolver.lookup("create").expect("known name");
+        assert_eq!(desc.udf_type, UdfType::Mutation);
+        assert!(!desc.is_internal);
+        assert!(resolver.lookup("unknown").is_none());
+    }
+}

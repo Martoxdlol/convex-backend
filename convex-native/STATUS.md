@@ -1095,6 +1095,26 @@ env-var parser, and the substep-2.8a end-to-end gRPC wire test.
 
 ---
 
+## Cross-phase fixes
+
+### Native HTTP validation (resolved 2026-04-17)
+
+Before this fix, every pure-native deployment (monolith +
+distributed) failed every HTTP/WebSocket request with the
+"Could not find public function — run `npx convex dev`" error
+because `ValidatedPathAndArgs::new` only consulted `_modules` and
+pure-native deployments never write those rows. Shipped via
+`udf::validation::NativeFunctionResolver` + a global install hook
+that `local_backend::make_app` populates from the native registry.
+See `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md` for the full
+diagnosis, option analysis, and resolution details.
+
+The fix crosses Phase boundaries — monolith (STANDALONE.md),
+distributed (DISTRIBUTED_PLAN.md Phase 2+), and legacy conductor
+topologies all consumed `ValidatedPathAndArgs` and therefore all
+saw this gap. The resolver is installed once per process from
+`make_app`, so every topology benefits without further wiring.
+
 ## Known non-goals for this project
 
 1. **Multi-tenancy.** One backend = one Convex deployment. Convex

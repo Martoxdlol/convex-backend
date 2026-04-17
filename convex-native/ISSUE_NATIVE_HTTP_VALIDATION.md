@@ -1,6 +1,11 @@
 # Issue: native handlers are invisible to the HTTP surface
 
-**Status:** open, discovered 2026-04-17 while smoke-testing
+**Status:** resolved 2026-04-17 via
+`fix(udf): teach ValidatedPathAndArgs about the native function
+registry` (commit `9521b91cf`). This file is retained as a postmortem;
+the follow-up work items in "Open questions before we implement" and
+"Immediate next steps" are tracked separately below.
+**Originally discovered:** 2026-04-17 while smoke-testing
 `convex-native/examples/standalone_todo_app`.
 **Severity:** blocks every pure-native deployment from answering
 client traffic, across both the monolith (`STANDALONE.md`) and the
@@ -399,16 +404,85 @@ tests, all of which are missing today:
 
 ---
 
-## Immediate next steps (not yet authorized)
+## Resolution (2026-04-17)
 
-1. Decision on A vs. B vs. hybrid — requires architect input.
-2. Once decided: a Phase entry in `DISTRIBUTED_PLAN.md` and a
-   matching `STATUS.md` row. This is a Phase-crossing fix, not a
-   feature of any single phase.
-3. Update the `standalone_todo_app` README + `HOW_TO_RUN.md` to
-   mark the HTTP examples as "blocked on native-module
-   publication" until the fix lands — prevent other developers
-   from hitting the same dead end.
+Shipped as **Option B — registry-backed fast path in validation**:
+
+- New trait `udf::validation::NativeFunctionResolver` + global
+  `install_native_function_resolver` install hook. Avoids a
+  circular `udf → convex_native_core` dep — the `udf` crate stays
+  storage-agnostic and the bridge lives in
+  `convex_native_backend::native_resolver`.
+- `ValidatedPathAndArgs::new_with_returns_validator` short-circuits
+  when the bare function name is in the resolver. Synthesizes an
+  `AnalyzedFunction { args_str: None, returns_str: None,
+  visibility: derived from is_internal, udf_type: from the
+  handler kind }` and runs `new_inner` with `npm_version: None`.
+- `validate_schedule_args` gets the same short-circuit — native
+  mutations can be `ctx.scheduler().schedule(...)`'d.
+- `missing_or_internal_error` now switches its hint based on
+  whether a native resolver is installed. Answers question 5
+  ("adjust the error text") from the original issue.
+- `local_backend::make_app` calls
+  `convex_native_backend::install_native_resolver` after the
+  native registry is collected. JS-only deployments still behave
+  exactly as before — the resolver is consulted only when the
+  name is actually in the native inventory.
+
+**Answers to the original open questions:**
+
+1. **Which option?** Option B. The monolith never writes
+   `_modules` rows for native handlers, so Option A's synthetic
+   rows would either force storage+migration churn or diverge
+   silently from the live registry. Option B reads from the
+   single source of truth (the `inventory` table) at validation
+   time and costs one `HashMap` lookup per request. The decision
+   remains reviewable — the synthesis helper is tight enough that
+   swapping in a persistent-module approach later would be a
+   localized change.
+2. **Arg validators.** `Unvalidated` is accepted for v1. Extending
+   the `#[convex::*]` macros to emit full `ArgsValidator` metadata
+   is a follow-up; the short-circuit code path is already ready to
+   carry it through (replace `args_str: None` with the emitted
+   JSON).
+3. **Canonical path format.** Irrelevant for Option B — the
+   registry keys on the bare function name and the validation
+   path accepts any module segment the client sends. Native
+   handlers do not appear in `_modules` or in the dashboard
+   module browser; that's documented as a known limitation of
+   Option B. Option A would have had to answer this question.
+4. **`CONVEX_REFUSE_JS_HANDLERS`.** Not needed for the
+   validation fix. Revisit if module-table hygiene becomes a
+   concern in mixed deployments.
+5. **Error message.** Adjusted (see above). When a native
+   resolver is installed, the hint steers users toward
+   `#[convex::*]` spelling + linking rather than `npx convex
+   dev`.
+
+**Test coverage shipped with the fix:**
+
+- `crates/udf/src/validation.rs` `native_resolver_tests::*` —
+  6 unit tests pinning the synthesizer + trait contract.
+- `crates/convex_native_backend/src/native_resolver.rs` —
+  `empty_runner_reports_none` pins the empty-registry path.
+
+**Follow-up work still outstanding:**
+
+- **HTTP-path integration test.** A real monolith e2e test that
+  boots `standalone_todo_app` in-process and POSTs `/api/mutation`
+  is blocked on the same `Database<Rt>` test fixture as substeps
+  2.8b and 4.6b in `STATUS.md`. A thin smoke harness will land
+  once that fixture exists. Until then, the fix has been
+  validated by running the example directly against its shipped
+  binary.
+- **Arg validators on the macro.** Extending `#[convex::*]` to
+  emit a `ConvexTypeOf`-backed `ArgsValidator` would close
+  question 2 above. Separate PR.
+- **Dashboard / introspection.** Option B leaves native handlers
+  invisible to `_modules`-backed browsers. If that becomes a UX
+  problem, revisit with a hybrid approach that publishes
+  synthetic module rows.
+
 
 ---
 
