@@ -267,4 +267,82 @@ mod tests {
         m.insert("b".into(), 2);
         roundtrip(m);
     }
+
+    #[test]
+    fn from_convex_string_rejects_non_string_types() {
+        // Primitives delegate through `TryFrom<ConvexValue>` (which
+        // owns the error message format); we only lock down "does
+        // this error rather than silently fall back to Default?".
+        assert!(String::from_convex(ConvexValue::Int64(5)).is_err());
+    }
+
+    #[test]
+    fn from_convex_i64_rejects_string_input() {
+        assert!(i64::from_convex(ConvexValue::try_from("oops".to_string()).unwrap()).is_err(),);
+    }
+
+    #[test]
+    fn from_convex_f64_rejects_int_input() {
+        // f64 impl specifically wants `ConvexValue::Float64`; an
+        // Int64 must bail rather than lossily coerce. This branch
+        // _does_ own its error message, so we pin it.
+        let err = f64::from_convex(ConvexValue::Int64(5)).expect_err("wrong type");
+        assert!(format!("{err}").contains("expected Float64"));
+    }
+
+    #[test]
+    fn from_convex_bool_rejects_null_input() {
+        assert!(bool::from_convex(ConvexValue::Null).is_err());
+    }
+
+    #[test]
+    fn from_convex_vec_rejects_non_array_input() {
+        let err =
+            <Vec<i64> as FromConvex>::from_convex(ConvexValue::Int64(1)).expect_err("wrong type");
+        assert!(format!("{err}").contains("expected Array"));
+    }
+
+    #[test]
+    fn from_convex_map_rejects_non_object_input() {
+        let err = <BTreeMap<String, i64> as FromConvex>::from_convex(ConvexValue::Int64(1))
+            .expect_err("wrong type");
+        assert!(format!("{err}").contains("expected Object"));
+    }
+
+    #[test]
+    fn roundtrip_empty_vec_and_empty_map() {
+        // Boundary case — empty containers must survive the trip.
+        roundtrip::<Vec<i64>>(vec![]);
+        roundtrip::<BTreeMap<String, i64>>(BTreeMap::new());
+    }
+
+    #[test]
+    fn nested_option_collapses_some_none_into_none() {
+        // Documented lossy behaviour: `Option<Option<T>>::Some(None)`
+        // and `Option<Option<T>>::None` both serialize to `Null`, so
+        // the round-trip collapses to `None`. Pin that so anyone
+        // adding specialisation or a wrapper doesn't silently change
+        // the shape without updating the docstring.
+        let inner_none: Option<Option<i64>> = Some(None);
+        let cv = inner_none.to_convex().unwrap();
+        assert!(matches!(cv, ConvexValue::Null));
+        let back: Option<Option<i64>> = FromConvex::from_convex(cv).unwrap();
+        assert_eq!(back, None, "Some(None) deserialises to None (lossy)");
+    }
+
+    #[test]
+    fn from_convex_vec_surfaces_inner_type_mismatch() {
+        // Typed `Vec<T>` must check each element — a mismatch on any
+        // element bubbles up as an error rather than silently
+        // dropping it or returning a partial vec.
+        let cv = ConvexValue::Array(
+            value::ConvexArray::try_from(vec![
+                ConvexValue::Int64(1),
+                ConvexValue::try_from("not-an-int".to_string()).unwrap(),
+                ConvexValue::Int64(3),
+            ])
+            .unwrap(),
+        );
+        assert!(<Vec<i64> as FromConvex>::from_convex(cv).is_err());
+    }
 }
