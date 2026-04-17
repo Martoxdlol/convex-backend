@@ -1,8 +1,11 @@
 # convex_native — agent notes
 
-Short guide for agents iterating on this crate. Read alongside
-`../../convex-native/README.md` (current state + features) and
-`../../convex-native/QUICKSTART.md` (developer-facing API).
+Short guide for agents iterating on this crate. Read alongside:
+
+- `../../convex-native/README.md` — landing page + architecture diagram.
+- `../../convex-native/USAGE.md` — comprehensive feature reference.
+- `../../convex-native/STATUS.md` — shipped-vs-outstanding (update this first when a gap closes).
+- `../../convex-native/QUICKSTART.md` — narrow 10-minute walkthrough.
 
 ## Crate layout
 
@@ -71,8 +74,11 @@ native_function.rs      -- #[convex::query/mutation/action(...)]
   behaviour, not a plan.
 - **Every significant change gets a commit.** Prefer small, focused
   commits with a conventional-commits subject (`feat(convex_native):
-  …`) and a body explaining *why*. Update
-  `../../convex-native/README.md` in the same commit.
+  …`) and a body explaining *why*. Doc updates land in the same
+  commit — in priority order: `STATUS.md` (gaps / shipped
+  transitions) → `USAGE.md` (new feature surface) → `README.md` (stays
+  short; only update if the architecture diagram changes or a
+  pointer breaks).
 
 ## Testing
 
@@ -110,13 +116,16 @@ the offending `quote! { ... }` block.
 
 ## What's actually shipped vs planned
 
-`README.md` tracks this authoritatively. One-line summary: Phase
-1/2/4/5 complete; Phase 3 shipped at the crate level (3.1–3.6)
-via `convex_native_distributed`, and `convex-local-backend` now
-accepts `CONVEX_MODE=standalone` (default) or
+`../../convex-native/STATUS.md` is authoritative. One-line summary:
+Phases 1 / 2 / 4 / 5 complete; Phase 3 shipped at the crate level
+(3.1–3.6) via `convex_native_distributed`, and
+`convex-local-backend` accepts `CONVEX_MODE=standalone` (default) or
 `CONVEX_MODE=worker` (adds a tonic `FunctionExecutionService`
-beside the HTTP server, sharing the same Database, draining on
-Ctrl-C together). Outstanding: `CONVEX_MODE=conductor` still
-requires the dedicated `convex_native_distributed::examples::conductor`
-binary — a conductor-only role doesn't fit a binary that always
-boots a local `Database`.
+beside the HTTP server, sharing the same Database, draining
+together on Ctrl-C). `CONVEX_MODE=conductor` stays behind the
+dedicated `convex_native_distributed::examples::conductor` binary.
+
+Outstanding work (see STATUS.md for effort estimates): end-to-end
+client smoke test, document-shape validation in
+`#[derive(ConvexDocument)]`, mutation-scoped scheduler wiring,
+native `ActionCtx` snapshot transaction.
