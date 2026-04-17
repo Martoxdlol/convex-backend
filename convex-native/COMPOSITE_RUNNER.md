@@ -30,9 +30,15 @@ let function_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(
         native_runner,
         js_runner,
         database.clone(),
-    ),
+    )
+    .with_file_storage(file_storage.clone()),
 );
 ```
+
+The `.with_file_storage(...)` chain lets native `ctx.storage().store(...)`
+uploads bypass the JS callback path and land directly in the backend's
+`FileStorage::store_file`; omit it and storage calls from native
+actions error at dispatch time.
 
 Every build of `convex-local-backend` therefore transparently picks
 up any `#[convex::query]` / `#[convex::mutation]` / `#[convex::action]`
@@ -44,7 +50,7 @@ statically registered via `inventory::submit!`.
 |---|---|
 | `run_function` (query/mutation, native name) | `dispatch_native`: open `Transaction<RT>` via `Database::begin_with_ts`, run native handler, convert to `FunctionFinalTransaction`, build synthetic `UdfOutcome`. |
 | `run_function` (query/mutation, non-native) | Delegate to wrapped JS runner. |
-| `run_function` (action, native name) | `dispatch_native_action`: resolve the cached `ActionCallbacks` via the `Weak` stored from `set_action_callbacks`, wrap it in a `BackendCallbacks`, call `NativeFunctionRunner::run_action_with_callbacks`, synthesize an `ActionOutcome`. Returns `final_tx = None` because native actions don't take a transaction. |
+| `run_function` (action, native name) | `dispatch_native_action`: resolve the cached `ActionCallbacks` via the `Weak` stored from `set_action_callbacks`, pin `database.now_ts_for_reads()` as the action's read snapshot, wrap everything in a `BackendCallbacks::with_native(...).with_snapshot_ts(ts)`, call `NativeFunctionRunner::run_action_with_callbacks`, synthesize an `ActionOutcome`. Returns `final_tx = None` because native actions don't take a transaction. |
 | `run_function` (action, non-native; http_action) | Delegate to wrapped JS runner. |
 | `analyze` | Delegate to JS. |
 | `evaluate_app_definitions` | Delegate to JS. |
@@ -116,6 +122,16 @@ on top of `udf::ActionCallbacks`:
   don't have transactions in the first place, so this matches the
   user-visible semantics; but a `#[convex::action]` that calls two
   mutations in a row will not see them as atomic.
+- **Per-action query snapshot.** `dispatch_native_action` pins
+  `database.now_ts_for_reads()` once per action and threads it into
+  `BackendCallbacks::with_snapshot_ts(ts)`. Every native query
+  sub-call inside that action therefore opens its `Transaction<Rt>`
+  at the same read timestamp — two `ctx.run_query(...)` calls see
+  one consistent world. Mutations deliberately **do not** honour the
+  snapshot (committing at a stale ts would lose writes), so a
+  mutation sub-call's writes are **not** visible to subsequent query
+  sub-calls in the same action; the caller re-observes them through
+  a fresh action or query.
 - **Write threading.** `begin_tx_with_writes` now forwards
   `existing_writes.updates` through `tx.merge_writes` after opening
   the transaction, mirroring the JS `FunctionRunnerCore::begin_tx`
