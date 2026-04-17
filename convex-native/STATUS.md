@@ -507,11 +507,36 @@ each substep ships as its own commit.
      flow, and retirement fires on drop. Three env-var parser
      tests cover unset / trimmed-value / rejected-empty.
 
-3.6. **`WorkerPool` as `FunctionRunner`.** The pool itself
-     (not a single runner) implements
-     `FunctionRunner<ProdRuntime>`. Routes each dispatch to a
-     worker that advertises the requested function; uses P2C
-     across the worker set that serves the name.
+3.6. ✓ **`WorkerPool` as `FunctionRunner`.** Landed. New
+     module `convex_native_distributed::pool_runner` with
+     `PoolFunctionRunner` wrapping an `Arc<WorkerPool>` and
+     implementing `FunctionRunner<ProdRuntime>`:
+
+     - Each dispatch asks the pool for `eligible_for(name)` —
+       the subset of workers advertising that function, already
+       floor-filtered (substep 3.3 semantics).
+     - Empty eligible set → `Status::unavailable` with the
+       dotted function name and pool size, so substep 3.7 can
+       map it to a 503 at the HTTP edge. `run_function`
+       surfaces that as `anyhow::Error`.
+     - Single eligible worker → direct dispatch, no P2C.
+     - ≥2 eligible workers → Power-of-2-Choices + single-retry
+       `Unavailable` failover over the eligible set.
+     - JS-only trait methods return descriptive errors mirroring
+       the substep-2.6b `DistributedFunctionRunner`.
+       `set_action_callbacks` is a no-op (Phase-4 territory).
+
+     Refactored `function_runner_impl.rs` to expose a reusable
+     `dispatch_query_or_mutation_via(dispatch_closure, ...)`
+     helper so both fixed-pool (Phase 2) and dynamic-pool
+     (Phase 3) runners share the request-build + outcome-assembly
+     path. Cargo deps: adds `semver` (direct — used in the
+     shared `PreparedRequest` struct's `udf_server_version`
+     field).
+
+     Tests: three unit tests — eligible-worker dispatch, loud
+     failure on missing function name (the substep 3.7 exit
+     criterion), and P2C failover across two workers.
 
 3.7. **No-workers 503 + worker-leaves handling.** Backend
      surfaces a clear error when no worker currently serves a

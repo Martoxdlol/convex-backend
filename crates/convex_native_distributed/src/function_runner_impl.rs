@@ -262,6 +262,72 @@ async fn dispatch_query_or_mutation(
     FunctionOutcome,
     FunctionUsageStats,
 )> {
+    let (function_name, exec_req, prepared) =
+        prepare_request(udf_type, identity, ts, existing_writes, meta, context)?;
+    let response = runner.execute(exec_req, udf_type).await.map_err(|status| {
+        anyhow::anyhow!(
+            "DistributedFunctionRunner::run_function: gRPC dispatch of {function_name} failed: \
+             {status}",
+        )
+    })?;
+    build_outcome_triple(udf_type, prepared, response).await
+}
+
+/// State shared between request-build and response-assembly. Only
+/// public for the benefit of sibling modules (substep 3.6's
+/// `PoolFunctionRunner`); the fields are implementation detail
+/// and will evolve as Phase 3 / Phase 4 grow the outcome shape.
+pub struct PreparedRequest {
+    path: udf::validation::ValidatedPathAndArgs,
+    arguments: sync_types::types::SerializedArgs,
+    inert_identity: common::identity::InertIdentity,
+    udf_server_version: Option<semver::Version>,
+    started: Instant,
+}
+
+/// Exposed helper so sibling modules can dispatch through their
+/// own transport without duplicating the request-build /
+/// outcome-assembly scaffolding. `dispatch` is a caller-provided
+/// async closure that performs the actual gRPC round-trip.
+pub async fn dispatch_query_or_mutation_via<F, Fut>(
+    mut dispatch: F,
+    udf_type: UdfType,
+    identity: Identity,
+    ts: RepeatableTimestamp,
+    existing_writes: FunctionWrites,
+    meta: FunctionMetadata,
+    context: ExecutionContext,
+) -> anyhow::Result<(
+    Option<FunctionFinalTransaction>,
+    FunctionOutcome,
+    FunctionUsageStats,
+)>
+where
+    F: FnMut(convex_native::distributed::ExecuteRequest, UdfType, String) -> Fut,
+    Fut: std::future::Future<
+        Output = Result<convex_native::distributed::ExecuteResponse, tonic::Status>,
+    >,
+{
+    let (function_name, exec_req, prepared) =
+        prepare_request(udf_type, identity, ts, existing_writes, meta, context)?;
+    let response = dispatch(exec_req, udf_type, function_name.clone())
+        .await
+        .map_err(|status| anyhow::anyhow!("gRPC dispatch of {function_name} failed: {status}"))?;
+    build_outcome_triple(udf_type, prepared, response).await
+}
+
+fn prepare_request(
+    udf_type: UdfType,
+    identity: Identity,
+    ts: RepeatableTimestamp,
+    existing_writes: FunctionWrites,
+    meta: FunctionMetadata,
+    context: ExecutionContext,
+) -> anyhow::Result<(
+    String,
+    convex_native::distributed::ExecuteRequest,
+    PreparedRequest,
+)> {
     let started = Instant::now();
     let (path, arguments, udf_server_version) = meta.path_and_args.clone().consume();
     let function_name = path.udf_path.function_name().to_string();
@@ -274,14 +340,14 @@ async fn dispatch_query_or_mutation(
     let args_obj = {
         let raw_args = arguments.clone().into_args()?;
         let first = raw_args.into_iter().next().ok_or_else(|| {
-            anyhow::anyhow!("DistributedFunctionRunner: {function_name}: missing args object")
+            anyhow::anyhow!("distributed dispatch: {function_name}: missing args object")
         })?;
         let cv: ConvexValue = first.try_into()?;
         match cv {
             ConvexValue::Object(obj) => obj,
-            _ => anyhow::bail!(
-                "DistributedFunctionRunner: {function_name}: args must be a single object",
-            ),
+            _ => {
+                anyhow::bail!("distributed dispatch: {function_name}: args must be a single object",)
+            },
         }
     };
 
@@ -297,13 +363,33 @@ async fn dispatch_query_or_mutation(
         existing_writes: existing_writes.updates,
     };
 
-    let response = runner.execute(exec_req, udf_type).await.map_err(|status| {
-        anyhow::anyhow!(
-            "DistributedFunctionRunner::run_function: gRPC dispatch of {function_name} failed: \
-             {status}",
-        )
-    })?;
+    let prepared = PreparedRequest {
+        path: meta.path_and_args,
+        arguments,
+        inert_identity,
+        udf_server_version,
+        started,
+    };
+    let _ = udf_type; // udf_type is used downstream in outcome building
+    Ok((function_name, exec_req, prepared))
+}
 
+async fn build_outcome_triple(
+    udf_type: UdfType,
+    prepared: PreparedRequest,
+    response: convex_native::distributed::ExecuteResponse,
+) -> anyhow::Result<(
+    Option<FunctionFinalTransaction>,
+    FunctionOutcome,
+    FunctionUsageStats,
+)> {
+    let PreparedRequest {
+        path,
+        arguments,
+        inert_identity,
+        udf_server_version,
+        started,
+    } = prepared;
     let duration = started.elapsed();
 
     // Build the backend-consumable FunctionFinalTransaction from
@@ -326,6 +412,8 @@ async fn dispatch_query_or_mutation(
     // Phase 4 or a follow-up extends the proto to carry observed
     // flags + rng seed, this constructor grows.
     let log_lines = render_log_lines(response.log_lines);
+    let (path, arguments_unused, _) = path.consume();
+    let _ = arguments_unused; // arguments already consumed above
     let outcome = UdfOutcome {
         path: path.for_logging(),
         arguments,
@@ -347,16 +435,10 @@ async fn dispatch_query_or_mutation(
     let wrapped = match udf_type {
         UdfType::Query => FunctionOutcome::Query(outcome),
         UdfType::Mutation => FunctionOutcome::Mutation(outcome),
-        _ => unreachable!("dispatch_query_or_mutation only handles Query/Mutation"),
+        _ => unreachable!("build_outcome_triple only handles Query/Mutation"),
     };
 
-    // Usage stats — currently empty because the distributed path
-    // doesn't accumulate syscall-level usage on the client side.
-    // The `rows_read_by_tablet` on `final_tx` carries the
-    // table-scoped read counts; per-call syscall usage lands in a
-    // follow-up substep.
     let usage_stats = FunctionUsageTracker::new().gather_user_stats();
-
     Ok((final_tx, wrapped, usage_stats))
 }
 
