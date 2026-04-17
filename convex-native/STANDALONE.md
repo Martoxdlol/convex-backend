@@ -1,4 +1,14 @@
-# Standalone as a library
+# Standalone as a library (monolith topology)
+
+> **This describes the monolith alternative.** The target
+> architecture is backend-coordinates / workers-execute, which
+> is the subject of `DISTRIBUTED_PLAN.md`. The monolith path
+> documented here works today and preserves every Convex
+> semantic (OCC, subscriptions, reactivity), but it requires the
+> deployer to rebuild the whole backend on every code change and
+> to pull the V8 / `isolate` stack. Use this path when you can't
+> wait for the distributed architecture to land, or when you
+> genuinely want single-process deployment.
 
 Run the full Convex backend in your own binary with your
 `#[convex::query]` / `#[convex::mutation]` / `#[convex::action]`

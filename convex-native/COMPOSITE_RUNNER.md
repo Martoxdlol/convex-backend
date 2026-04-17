@@ -1,4 +1,13 @@
-# CompositeFunctionRunner — integration reference
+# CompositeFunctionRunner — integration reference (monolith topology)
+
+> **This describes the monolith topology's dispatch path.** Under
+> the monolith (`local_backend` + native functions linked in —
+> see `STANDALONE.md`), the composite runner is how native
+> registrations reach the `Application` layer. The target
+> distributed architecture in `DISTRIBUTED_PLAN.md` replaces this
+> with a `WorkerPool` that implements `FunctionRunner` by
+> dispatching over gRPC; this file remains the reference for the
+> alternative monolith shape.
 
 **Shipped in-workspace** at
 `crates/convex_native_backend/src/composite_runner.rs`. This doc

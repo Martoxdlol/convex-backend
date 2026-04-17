@@ -1,29 +1,89 @@
 # Convex Native
 
-Framework crates for writing Convex server functions (queries,
-mutations, actions) in native Rust. Compile your handlers into the
-backend binary; skip V8; keep the typed schema and the `inventory`
-registry machinery doing the glue.
+Framework for writing Convex server functions (queries, mutations,
+actions, HTTP actions, crons) in native Rust. Developers compile
+their handlers into a worker binary; the backend coordinates
+transactions, subscriptions, and reactivity.
+
+## Status — planning reset
+
+The project is mid-architectural-pivot. The framework surface
+(derives, ctx, registry, schema reflection) is stable and reused.
+The distributed topology that was shipped previously has been
+removed because it was wrong against the actual goal — it
+committed on workers, which breaks OCC, subscriptions, and every
+other coordination property that defines Convex.
+
+`DISTRIBUTED_PLAN.md` is the new plan. `STATUS.md` is the shipped-
+vs-outstanding tracker. Nothing else describes the current state
+authoritatively.
+
+## Target architecture (summary)
+
+```
+Client ──WebSocket/HTTPS──► Backend ──gRPC──► Worker pool
+                              │
+                              ▼
+                          Persistence
+```
+
+- **Backend** is one binary, prebuilt by the Convex project and
+  published as a container image. It carries no deployer code.
+  It owns the `Database`, the `Committer`, the `SubscriptionManager`,
+  the sync protocol, scheduler + cron workers, and the public
+  HTTP / WebSocket surface.
+- **Workers** carry the deployer's code — every `#[convex::*]`
+  registration, the derived schema, HTTP routes, crons. They
+  register their inventory with the backend at startup. A "deploy"
+  is "roll the worker pool to a new image." The backend never
+  rebuilds.
+- **Client traffic lands on the backend only.** Workers are
+  internal gRPC. See `DISTRIBUTED_PLAN.md` §3 for why.
+- **Pool is dynamic.** Workers auto-scale. Backend tolerates
+  membership changes at any time.
+- **JS and Rust workers coexist** in the same pool (`WorkerKind`
+  in the admission envelope).
+
+Read `DISTRIBUTED_PLAN.md` cover to cover before contributing.
 
 ## Docs map
 
-| File                      | Read when you want…                                          |
-|---------------------------|---------------------------------------------------------------|
-| `QUICKSTART.md`           | A 10-minute walkthrough that ends at a running app.           |
-| `USAGE.md`                | The comprehensive per-topic feature reference.                |
-| `DEPLOYMENT.md`           | How to run it: topologies, env vars, observability, rolling updates. |
-| `STANDALONE.md`           | Build a standalone binary that depends on this repo as a library, without forking it. |
-| `MIGRATION.md`            | Side-by-side JS ↔ Rust porting examples.                     |
-| `STATUS.md`               | What's shipped vs. outstanding, with effort estimates.        |
-| `COMPOSITE_RUNNER.md`     | How the `convex_native_backend` adapter plugs into the backend. |
-| `examples/`               | Reading samples — `minimal_app/` shows a full deployer project shape. |
-| `IMPLEMENTATION_PLAN.md`  | Historical phase-by-phase plan.                               |
-| `native-rust-functions.md`| The original design doc (kept for rationale).                 |
+| File | Read when you want… |
+|------|---------------------|
+| `DISTRIBUTED_PLAN.md` | **The target architecture.** Phases, protocols, decisions. |
+| `STATUS.md` | What's present in the tree right now + which phase is active. |
+| `USAGE.md` | Per-feature reference for the developer surface (ctx, derives, etc.) — unchanged by the replan. |
+| `MIGRATION.md` | JS ↔ Rust cheatsheet. |
+| `STANDALONE.md` | Monolith alternative (`local_backend` library mode). Not the recommended topology going forward, but it works today. |
+| `COMPOSITE_RUNNER.md` | How the monolith dispatch path works inside `local_backend`. Implementation reference for the alternative topology. |
+| `DEPLOYMENT.md` | Operational guide — kept, will evolve per-phase. |
+| `IMPLEMENTATION_PLAN.md` | Superseded. Historical. |
+| `native-rust-functions.md` | Original design doc. Framework sections still accurate; distributed sections are superseded by `DISTRIBUTED_PLAN.md`. |
 
-If you're starting from scratch: `QUICKSTART.md` → `USAGE.md` → link
-back here when you need operational details.
+## Crate map
 
-## At a glance
+```
+crates/convex_native/            framework: derives, ctx, registry,
+                                 schema reflection. Compiled into
+                                 workers.
+
+crates/convex_macro/             proc macros backing the derives
+                                 and attribute macros.
+
+crates/convex_native_backend/    monolith-topology adapter.
+                                 CompositeFunctionRunner.
+                                 Plugs native into `local_backend`
+                                 (STANDALONE.md path).
+
+crates/convex_native_distributed/ distributed-topology plumbing.
+                                 Under active rebuild per
+                                 DISTRIBUTED_PLAN.md — today's
+                                 code still reflects the old
+                                 "worker-commits-locally" shape
+                                 until Phase 1 lands.
+```
+
+## At a glance (developer surface — unchanged)
 
 ```rust
 use convex_native::prelude::*;
@@ -31,7 +91,10 @@ use convex_native::prelude::*;
 #[derive(ConvexDocument, Debug, Clone)]
 #[convex(table = "users")]
 #[convex(index(name = "by_email", fields = ["email"]))]
-pub struct User { pub email: String, pub display_name: String }
+pub struct User {
+    pub email: String,
+    pub display_name: String,
+}
 
 #[convex::query]
 pub async fn get_by_email(
@@ -46,109 +109,9 @@ pub async fn get_by_email(
 }
 ```
 
-Link the crate into `convex-local-backend` (already wired) and the
-query is callable through the normal HTTP / websocket client path —
-no JS, no codegen, same `inventory::submit!` trick the rest of the
-crate uses.
-
-## Status snapshot
-
-Phases 1–5 of `IMPLEMENTATION_PLAN.md` are shipped. `STATUS.md`
-is authoritative. Test counts at HEAD:
-
-```
-cargo test -p convex_native              # 242 tests
-cargo test -p convex_native_backend      # 10 tests
-cargo test -p convex_native_distributed  # 57 tests
-```
-
-All green (309 total). Every item previously under "outstanding"
-in `STATUS.md` has been closed — mutation-scoped scheduling,
-document-shape validation, snapshot-pinned `ctx.db()` on
-`ActionCtx`, and an end-to-end gRPC client smoke test all ship.
-The residual gaps are external-toolchain or design-decision
-items documented in `STATUS.md`'s "Non-obvious caveats" section.
-
-## Architecture
-
-```
-crates/convex_native/              -- framework crate, no isolate dep
-├── src/
-│   ├── auth.rs                    -- AuthInfo (ctx.auth())
-│   ├── backend.rs                 -- ConvexBackend builder + BuiltBackend
-│   ├── callbacks.rs               -- NativeActionCallbacks trait + NoopCallbacks
-│   ├── circuit_breaker.rs         -- CircuitBreaker + config
-│   ├── convert.rs                 -- ToConvex / FromConvex
-│   ├── cron.rs                    -- CronRegistration inventory + collect
-│   ├── ctx/                       -- QueryCtx / MutationCtx / ActionCtx / ...
-│   ├── distributed.rs             -- ConvexMode + ExecuteRequest/Response
-│   ├── document.rs                -- ConvexDocument + FieldReference + IndexReference
-│   ├── errors.rs                  -- bad_request / unauthenticated / ... helpers
-│   ├── function_ref.rs            -- ConvexQueryFunction / Mutation / Action markers
-│   ├── http.rs                    -- HttpActionCtx + HttpRequest/Response + HttpRouter
-│   ├── id.rs                      -- Id<T: ConvexDocument>
-│   ├── introspect.rs              -- describe_json / describe_pretty
-│   ├── logging.rs                 -- LogBuffer + Logger
-│   ├── metrics.rs                 -- NativeMetricsSink + CountingMetrics
-│   ├── registry.rs                -- NativeFunctionRegistration + Registry
-│   ├── runner.rs                  -- NativeFunctionRunner (dispatch, timeout, drain)
-│   ├── schema.rs                  -- TableRegistration + NativeSchema::collect()
-│   ├── schema_diff.rs             -- diff(old, new) -> Vec<SchemaChange>
-│   ├── schema_type.rs             -- ConvexSchema trait — primitives / containers / Id<T>
-│   ├── testing.rs                 -- TestCallbacks + args! macro
-│   └── warmup.rs                  -- plan_warmup(schema)
-└── tests/                         -- integration tests; see CLAUDE.md for the per-file map
-
-crates/convex_native_backend/      -- backend adapter, pulls in isolate
-├── composite_runner.rs            -- CompositeFunctionRunner<RT>: FunctionRunner impl
-└── callbacks_adapter.rs           -- BackendCallbacks: NativeActionCallbacks -> ActionCallbacks
-
-crates/convex_native_distributed/  -- split-topology gRPC (worker + conductor)
-├── server.rs                      -- FunctionExecutionServer (worker-side tonic impl)
-├── client.rs                      -- DistributedFunctionRunner + ConductorMetricsSink + ConductorLogSink
-├── tonic_client.rs                -- TonicWorkerClient (real gRPC transport)
-├── worker_callbacks.rs            -- WorkerActionCallbacks: native-only sub-call/schedule adapter
-├── conversions.rs                 -- proto <-> native shape (carries ExecutionContext + log_lines)
-├── mode.rs                        -- CONVEX_MODE env parsers
-└── examples/                      -- runnable worker + conductor binaries
-
-crates/convex_macro/               -- proc macros
-├── convex_document.rs             -- #[derive(ConvexDocument)]
-├── convex_enum.rs                 -- #[derive(ConvexEnum)]
-├── convex_nested.rs               -- #[derive(ConvexNested)]
-├── convex_union.rs                -- #[derive(ConvexUnion)]
-├── cron.rs                        -- #[convex::cron(...)]
-├── http_action.rs                 -- #[convex::http_action(...)]
-└── native_function.rs             -- #[convex::query/mutation/action]
-```
-
-`inventory::collect!` is the collection backbone for both the schema
-(`TableRegistration`) and the function registry
-(`NativeFunctionRegistration`). Developers never touch the
-registration APIs directly — the derive / attribute macros emit the
-`submit!` calls. Generated code goes through
-`::convex_native::__private::...` absolute paths so callers only
-need `convex_native` in their `Cargo.toml`.
-
-`CompositeFunctionRunner` is instantiated inside
-`crates/local_backend/src/lib.rs` ahead of the `Application::new`
-call, so every `convex-local-backend` build transparently picks up
-statically-registered native functions. `CONVEX_MODE=worker`
-additionally spawns a tonic `FunctionExecutionService` that shares
-the same `Database<Rt>` and drains together with HTTP on Ctrl-C.
-`CONVEX_MODE=conductor` stays behind the dedicated
-`convex_native_distributed::examples::conductor` binary.
-
-## Runnable example
-
-```sh
-cargo run -p convex_native --example tiny_app
-```
-
-Prints `BuiltBackend::describe_pretty()` for a handful of derived
-types and functions — a quick sanity check of the full surface
-(schema, nested / enum / union, query, mutation, action, internal
-mutation, cron, HTTP action, builder, validation, introspection).
+Same code runs under either topology: linked into `local_backend`
+(monolith, STANDALONE.md) or packaged into a worker image against
+the future published backend (DISTRIBUTED_PLAN.md).
 
 ## Development
 
@@ -158,15 +121,20 @@ cargo test  -p convex_native
 cargo +nightly fmt -p convex_native -p convex_macro
 ```
 
+`STATUS.md` has current test tallies.
+
 ## For agents iterating here
 
-Keep the three docs honest, in this order of priority:
+Priority order when docs drift:
 
-1. `STATUS.md` — any gap closed / opened must land here first.
-2. `USAGE.md` — add new features to the right topic section, not a
-   dated "New in Phase X" blurb.
-3. This README — the landing page stays short. Resist adding
-   feature writeups; link to `USAGE.md` instead.
+1. **`DISTRIBUTED_PLAN.md`** — the source of truth for the target
+   architecture. Phase boundaries, protocol shapes, decision
+   rationale.
+2. **`STATUS.md`** — what actually landed, which phase is active.
+3. **`USAGE.md`** — per-feature reference for the surface a
+   deployer's worker crate will see.
+4. **This README** — landing page, stays short.
 
-When docs drift from code, code wins — fix the doc in the same
-commit, not later.
+Code-wise: everything under `convex_native_distributed` is
+provisional until `DISTRIBUTED_PLAN.md` Phase 1..3 land. Don't
+add features on top of the current shape — fix the shape first.

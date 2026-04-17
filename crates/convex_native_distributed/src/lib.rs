@@ -1,44 +1,42 @@
 //! Distributed execution for `convex_native`.
 //!
-//! Per `convex-native/IMPLEMENTATION_PLAN.md` Phase 3: this crate
-//! implements the worker-side gRPC server and conductor-side
-//! client generated from
-//! `crates/pb/protos/function_execution.proto`.
+//! **NOTE — topology change in progress.** The crate as currently
+//! shipped implements a "worker commits locally, no conductor
+//! coordination" shape that is being replaced. See
+//! `convex-native/DISTRIBUTED_PLAN.md` for the target architecture.
+//! Work is tracked through Phase 1..Phase 7 in that document.
+//! Until Phase 1 lands, this crate's mutation path does **not**
+//! preserve OCC / subscriptions when used standalone.
 //!
-//! ## Module layout
+//! ## What's in here today (pre-Phase-1)
 //!
-//! - [`conversions`] — the wire boundary: maps `pb::function_execution::*` ↔
-//!   `convex_native::distributed::*` (namespace, args, request, response,
-//!   duration, UdfType).
-//! - [`server`] — [`FunctionExecutionServer`] implements the tonic service
-//!   trait. Dispatches actions via
-//!   `NativeFunctionRunner::run_action_with_callbacks` and, when
-//!   `.with_database(db)` is wired, queries and mutations inline against a
-//!   `Transaction<Rt>` (queries drop the tx; mutations commit via
-//!   `commit_with_write_source`).
-//! - [`client`] — [`DistributedFunctionRunner`] dispatches over a pool of
-//!   workers using Power-of-2-Choices with single-retry failover. Tests use
-//!   `MockWorkerClient`.
-//! - [`tonic_client`] — [`TonicWorkerClient`] is the real gRPC implementation
-//!   of `WorkerClient`.
-//! - [`mode`] — env-var parsers (`CONVEX_MODE`, `CONVEX_WORKER_ENDPOINTS`,
-//!   `CONVEX_WORKER_BIND_ADDR`) and builder helpers ([`build_worker_server`],
-//!   [`build_conductor_runner`]) for Phase 3.5 binary-level wiring. Also
-//!   exposes the "consumer" worker helpers: [`serve_worker_with_database`]
-//!   (bind + run forever) and [`serve_worker_with_shutdown`] (bind + drain on a
-//!   caller-supplied future — the variant `convex-local-backend` uses under
-//!   `CONVEX_MODE=worker` so the tonic server drains together with HTTP on
-//!   Ctrl-C).
-//! - `examples/worker.rs` + `examples/conductor.rs` are runnable binaries a
-//!   deployer can crib from; `tests/examples_smoke.rs` spawns both and asserts
-//!   they talk over real gRPC.
+//! - [`conversions`] — proto ↔ native shape boundary.
+//! - [`server::FunctionExecutionServer`] — worker-side tonic
+//!   service. Currently commits locally on mutations (will change
+//!   in Phase 1 to return `FunctionFinalTransaction` instead).
+//! - [`client::DistributedFunctionRunner`] — worker pool client.
+//!   Will gain `impl FunctionRunner<RT>` in Phase 2 so the backend
+//!   can plug it in where `InProcessFunctionRunner` sits today.
+//! - [`tonic_client::TonicWorkerClient`] — real gRPC transport.
+//! - [`mode`] — env-var parsers + server-building helpers. The
+//!   `CONVEX_MODE=conductor` path goes away in Phase 3 (the
+//!   backend image replaces the standalone conductor concept).
+//!
+//! ## What was removed
+//!
+//! - `WorkerActionCallbacks` — committed sub-calls on the worker's
+//!   local database. Wrong semantics under the new plan; callbacks
+//!   will route back to the backend's Committer (Phase 4).
+//! - `examples/{conductor,conductor_dispatch,worker_with_functions}.rs` —
+//!   all relied on the pure-dispatcher / worker-commits shape.
+//! - `tests/{examples_smoke,client_e2e_smoke}.rs` — tested the
+//!   removed behaviour end-to-end.
 
 pub mod client;
 pub mod conversions;
 pub mod mode;
 pub mod server;
 pub mod tonic_client;
-pub mod worker_callbacks;
 
 pub use client::{
     CapturingConductorLogs,
@@ -62,7 +60,3 @@ pub use mode::{
 };
 pub use server::FunctionExecutionServer;
 pub use tonic_client::TonicWorkerClient;
-pub use worker_callbacks::{
-    default_execution_context,
-    WorkerActionCallbacks,
-};

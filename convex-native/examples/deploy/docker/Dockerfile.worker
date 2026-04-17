@@ -1,15 +1,21 @@
-# Distributed worker — no V8 dependency, just the native registry.
+# Worker image template — runs the deployer's native functions,
+# dispatches get delivered from the backend over gRPC.
+#
+# IMPORTANT: the env-var surface will evolve across phases. See
+# convex-native/DEPLOYMENT.md for the per-phase matrix.
+#
+# - Pre-Phase-3: worker exposes gRPC on CONVEX_WORKER_BIND_ADDR,
+#   backend connects out to it (fixed endpoint list on the backend
+#   side).
+# - After Phase 3: worker dials the backend at
+#   CONVEX_BACKEND_ENDPOINT and registers itself via the
+#   WorkerAdmissionService streaming RPC.
+#
 # Copy this file into your deployer-project root and adjust the
 # `cargo build` target to match your binary name.
 #
 # Build:
 #   docker build -f Dockerfile.worker -t myco/convex-worker:$(git rev-parse --short HEAD) .
-#
-# Run (standalone — pair with the conductor compose stanza below):
-#   docker run -p 4567:4567 \
-#     -e CONVEX_MODE=worker \
-#     -e CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567 \
-#     myco/convex-worker:latest
 
 # ── builder ────────────────────────────────────────────────────────
 FROM rust:1.82-slim AS builder

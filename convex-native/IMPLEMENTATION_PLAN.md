@@ -1,5 +1,21 @@
 # Implementation Plan: Native Rust Functions for Convex
 
+> **⚠️ SUPERSEDED — historical only.**
+>
+> This document describes the original phased plan that produced
+> the framework surface (derives, ctx, registry, schema
+> reflection). That surface is still in tree and correct.
+>
+> The **distributed-execution sections of this plan are
+> superseded by `DISTRIBUTED_PLAN.md`**. The topology delivered
+> under the original Phase 3 committed writes on workers, which
+> breaks OCC / subscriptions / reactivity. That code has been
+> removed from the tree; see `STATUS.md`.
+>
+> Don't follow this file for new work. It's kept for rationale
+> around Phases 1, 2, 4, 5 (framework-level work that remains
+> valid).
+
 ## Status (updated per commit)
 
 The plan below is chronological; for the current shipped-vs-planned

@@ -6,11 +6,14 @@ you're building something for the first time and want a narrow,
 step-by-step walkthrough.
 
 - **Porting from JS?** `MIGRATION.md` has JS↔Rust side-by-sides.
-- **What's shipped vs. missing?** `STATUS.md`.
-- **How do I ship it?** `DEPLOYMENT.md` covers topologies,
-  env vars, observability sinks, and rolling updates.
-- **Internals of the adapter that bridges this crate onto the
-  backend's `FunctionRunner` trait?** `COMPOSITE_RUNNER.md`.
+- **Target architecture** (the "where does this run" answer):
+  `DISTRIBUTED_PLAN.md`. The project is mid-pivot to a backend-
+  coordinates / workers-execute split; this file describes the
+  *developer surface*, which is stable across both topologies.
+- **Current state of the tree**: `STATUS.md`.
+- **Operational / deploy guide**: `DEPLOYMENT.md`.
+- **Monolith alternative** (`local_backend` as a library):
+  `STANDALONE.md`.
 
 ## Table of contents
 

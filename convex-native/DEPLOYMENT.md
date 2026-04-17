@@ -1,328 +1,186 @@
 # Deployment
 
-How to deploy a binary built against `convex_native` /
-`convex_native_distributed`. The framework supports three
-topologies — pick the one that matches your scale and
-operational model.
+## Current state — planning reset
 
-> **Scope.** This covers the deployer-facing surface:
-> `CONVEX_MODE`, worker / conductor wiring, rolling updates,
-> observability hooks, graceful shutdown. For the *framework*
-> internals (composite runner, gRPC proto, etc.) read
-> `COMPOSITE_RUNNER.md` and `native-rust-functions.md` §10.
+The project is mid-rebuild. The topologies that were documented
+here previously (standalone conductor + workers, worker-commits-
+locally) are gone because they conflicted with the coordination
+guarantees Convex requires.
 
-Cross-links: `QUICKSTART.md` (hello-world), `USAGE.md` (full
-developer surface), `STATUS.md` (shipped-vs-outstanding),
-`MIGRATION.md` (JS → Rust cheatsheet), `examples/README.md`
-(reading samples + runnable in-tree examples).
+**For the real target architecture read `DISTRIBUTED_PLAN.md`
+first.** This file describes the operational surface as it lands
+during each phase.
 
----
+## Topologies
 
-## 1. Topologies
+### Topology A — Monolith (`local_backend` with native functions linked in)
 
-### A. Standalone (development / small apps)
+**Available today.** All of Convex's semantics work (OCC,
+subscriptions, reactivity) because dispatch is in-process.
 
-One process: `convex-local-backend` with the composite runner
-linked in. HTTP sync + function dispatch + Database all live
-in the same binary.
+The path:
 
-```sh
-# No env vars needed — standalone is the default.
-convex-local-backend \
-  --port 3210 \
-  --instance-name mydeploy \
-  --instance-secret $SECRET \
-  --db mydeploy.sqlite
+1. Deployer depends on `local_backend` + `convex_native` as
+   library crates.
+2. Writes their `#[convex::query/...]` registrations.
+3. Builds their own binary that `use`s the registrations (forces
+   inventory linkage) and calls `make_app()`.
+
+See `STANDALONE.md` for the full recipe.
+
+Trade-off: monolithic binary, one process. Rebuild on every code
+change. Requires V8 / `rush install` because `local_backend`
+pulls in `isolate`. Fine for self-host of small-medium scale;
+doesn't meet the "prebuilt backend image + deploy = roll workers"
+requirement the new plan is built around.
+
+### Topology B — Backend + dynamic worker pool (DISTRIBUTED_PLAN.md)
+
+**In flight.** Phase 1 not yet started.
+
+Target shape:
+
+```
+Client ── Backend (prebuilt container image) ──gRPC──► Worker pool
+            │
+            ▼
+        Persistence
 ```
 
-Use when:
-- Development or CI.
-- Single-machine deployments with <100 QPS.
-- You don't want to operate a multi-process topology.
+- One **backend image** published by the Convex project; carries
+  no deployer code. Runs the public HTTP + WebSocket surface, owns
+  `Database<RT>` + Committer + SubscriptionManager + scheduler +
+  crons.
+- **Worker images** built by the deployer; carry every
+  `#[convex::*]` registration + derived schema. Register their
+  inventory with the backend on startup.
+- Clients hit the backend only. Workers are internal gRPC.
+- Worker pool is dynamic: pods join and leave under an
+  autoscaler's control. Backend tolerates churn.
+- Deploys: build a new worker image → roll the pool. Backend
+  never rebuilds.
 
-**To put your own `#[convex::query/mutation/action]` code into
-this mode without modifying this repo, see `STANDALONE.md`** —
-it covers depending on `local_backend` as a library, the
-`Cargo.toml` / `main.rs` template, and the load-bearing
-`use my_convex_app as _;` that keeps inventory submissions
-linked.
+See `DISTRIBUTED_PLAN.md` for the full protocol, phase breakdown,
+and decision rationale.
 
-Limitation: the binary requires the full build chain
-(including V8 / `isolate`, which needs `rush install` in
-`npm-packages/` once per checkout). The function runner inside
-is the **composite** — native queries / mutations / actions
-dispatch through the native registry, everything else falls
-through to the JS runtime.
+## Current worker-side env vars (pre-Phase-3)
 
-### B. Worker-in-one-binary (production, hybrid deploy)
-
-Same binary as Standalone, but with `CONVEX_MODE=worker`:
-alongside the HTTP server it also spawns a tonic
-`FunctionExecutionService` on `CONVEX_WORKER_BIND_ADDR`. A
-remote conductor (Topology C) can dispatch native function
-calls to this process over gRPC.
-
-```sh
-CONVEX_MODE=worker \
-  CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567 \
-  convex-local-backend \
-  --port 3210 \
-  --instance-name mydeploy \
-  --instance-secret $SECRET \
-  --db mydeploy.sqlite
-```
-
-Graceful shutdown: the worker's gRPC drain is tied to the HTTP
-server's `zombify_rx` — Ctrl-C / `POST /preempt` stops both
-together.
-
-### C. Pure worker + dedicated conductor (production, horizontal)
-
-Workers run a lean binary (the deployer's own build) exposing
-only the `FunctionExecutionService`. A dedicated conductor
-process pools the workers behind
-`DistributedFunctionRunner` and dispatches each call via
-Power-of-2-Choices. This is the shape `native-rust-functions.md`
-§10 describes.
-
-```sh
-# On each worker node:
-CONVEX_MODE=worker \
-  CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567 \
-  ./my-deployer-binary
-
-# Conductor:
-CONVEX_MODE=conductor \
-  CONVEX_WORKER_ENDPOINTS="http://worker-a:4567,http://worker-b:4567" \
-  ./my-conductor-binary
-```
-
-See `crates/convex_native_distributed/examples/conductor.rs`
-for a minimal conductor template a deployer can crib from.
-`convex-local-backend` does **not** accept
-`CONVEX_MODE=conductor` — a conductor-only role doesn't fit a
-binary that always boots a local `Database<RT>`. Build a
-standalone conductor binary for this topology.
-
----
-
-## 2. Environment variables
+These are the knobs the existing `convex_native_distributed`
+binary accepts. They will evolve in Phase 3 when
+`CONVEX_BACKEND_ENDPOINT` takes over from the endpoint-list
+model.
 
 | Var | Consumed by | Default | Effect |
 |-----|-------------|---------|--------|
-| `CONVEX_MODE` | all | `standalone` | `standalone` / `worker` / `conductor` (conductor only on custom binaries). |
-| `CONVEX_WORKER_BIND_ADDR` | worker | `0.0.0.0:4567` | Socket the gRPC `FunctionExecutionService` listens on. |
-| `CONVEX_WORKER_ENDPOINTS` | conductor | none | Comma-separated `http://host:port` endpoints for the worker pool. Conductors refuse to start on an empty list. |
+| `CONVEX_MODE` | worker | `standalone` | Today: `standalone` / `worker` / `conductor`. Phase 3 collapses this to just `worker`. |
+| `CONVEX_WORKER_BIND_ADDR` | worker | `0.0.0.0:4567` | gRPC bind address. |
 
-Parsers live in `convex_native_distributed::mode::{read_mode_from_env,
-read_worker_bind_addr_from_env, read_worker_endpoints_from_env}` — the
-custom binary calls them.
+## Phased operational evolution
 
----
+The operator experience changes phase by phase. Treat this as the
+roadmap you're signing up for.
 
-## 3. Rolling updates
+### Before Phase 1
 
-During a deploy you typically have two versions of the same
-binary running side-by-side. `convex_native::VERSION` is the
-default `registry_version` the worker reports in its `Health`
-response. The conductor gates on it:
+- `convex_native_distributed` exists but commits locally. Don't
+  run it for anything reactive. Fine for pure-RPC use if you
+  understand what you're giving up.
+- `local_backend` (Topology A) is the only working path.
 
-```rust
-let runner = DistributedFunctionRunner::new(workers)?
-    .with_min_registry_version("1.2.0");
-```
+### After Phase 1 (wire contract)
 
-Workers below the floor reject dispatch with
-`Code::FailedPrecondition` so the conductor can route around
-half-deployed nodes. Per-call `ExecuteRequest::min_registry_version`
-overrides the conductor-level floor when necessary.
+- Worker returns `FunctionFinalTransaction` instead of committing.
+- Backend-side integration not wired yet. No operational change
+  for deployers.
 
-Recommended sequence:
-1. Start new workers (new version) alongside old — the
-   conductor sees both in the pool but the version floor
-   excludes the old ones from new traffic.
-2. Wait for in-flight requests on old workers to drain —
-   `Health::in_flight` shows the count.
-3. Send `SIGTERM` to each old worker. The drain semantics on
-   `NativeFunctionRunner::begin_drain()` / `await_drain(timeout)`
-   stop accepting new invocations and let outstanding ones
-   finish (Phase 4.3).
-4. Remove old endpoints from `CONVEX_WORKER_ENDPOINTS` on
-   conductor restart.
+### After Phase 2 (FunctionRunner impl)
 
----
+- `local_backend` gains `CONVEX_NATIVE_WORKERS=grpc://worker-a:4567,...`
+  env var. With that set, the backend dispatches native
+  functions to remote workers. Without it, functions dispatch
+  in-process as today.
+- Functional: OCC + subscriptions preserved over gRPC with a
+  fixed worker list. No autoscale yet.
 
-## 4. Observability
+### After Phase 3 (dynamic pool + admission)
 
-Three pluggable sinks that deployers wire into their metrics
-stack:
+- Workers gain `CONVEX_BACKEND_ENDPOINT=grpc://backend:5678`.
+  On startup they dial the backend's admission service and
+  register their inventory.
+- Backend's `CONVEX_NATIVE_WORKERS` env var goes away; the pool
+  is discovered dynamically.
+- Autoscale works out of the box.
 
-### Worker-side: `NativeMetricsSink`
+### After Phase 4 (backend callbacks)
 
-Per-function latency + outcome. Installed on the
-`NativeFunctionRunner` at construction. Default
-`NoopMetrics`; in-memory `CountingMetrics` for tests.
+- Action sub-calls (`ctx.run_query(...)` etc.) work correctly
+  over the distributed path. The backend's Committer owns
+  every write, whether or not it originated inside an action.
 
-```rust
-let runner = NativeFunctionRunner::from_inventory()?
-    .with_metrics(Arc::new(MyPrometheusSink));
-```
+### After Phase 5 (prebuilt backend image)
 
-Drives `native_function_execution_seconds{fn_name}` +
-`native_function_errors_total{fn_name}` (design §12.3).
+- `getconvex/convex-backend:X.Y.Z` published to a public
+  registry. Deployers stop building `local_backend`; they
+  pull the image and run it.
+- Deployer effort reduces to "write functions, build worker
+  image, roll the pool."
 
-### Conductor-side: `ConductorMetricsSink`
+### After Phase 6 (JS interop)
 
-Per-dispatch worker label + `ConductorOutcome::{Ok, Retried,
-Error(tonic::Code)}` + total latency. Installed on the
-`DistributedFunctionRunner`. Default `NoopConductorMetrics`;
-in-memory `CountingConductorMetrics` for tests.
+- `WorkerKind::JAVASCRIPT` in the admission envelope. Deployers
+  with mixed Rust + JS codebases run both kinds of worker
+  against the same backend.
 
-```rust
-let runner = DistributedFunctionRunner::new(workers)?
-    .with_metrics(Arc::new(MyPrometheusSink));
-```
+### After Phase 7 (operator tools)
 
-Drives `native_funrun_requests_total{worker, type}` +
-`native_funrun_request_duration_seconds` +
-`native_funrun_errors_total{type, retryable}`.
+- Pool inspector, inventory diff, manual `min_registry_version`
+  floor bump over an admin RPC. Production-grade operations.
 
-`DistributedFunctionRunner::in_flight_per_worker()` exposes the
-`native_funrun_in_flight_per_worker` gauge snapshot for
-dashboards.
+## Rolling-update semantics
 
-### Conductor-side: `ConductorLogSink`
+Unchanged from `DISTRIBUTED_PLAN.md §9.2` once Phase 3 is live:
 
-Forwards the worker's `ExecuteResponse::log_lines` into the
-conductor's log stack. Default `NoopConductorLogs`; in-memory
-`CapturingConductorLogs` for tests. Only called when a
-response actually carries log lines.
+1. Build new worker image (v2).
+2. Push.
+3. Roll the worker Deployment (k8s / ECS / whatever).
+4. v2 workers register, sit in the pool alongside v1.
+5. Operator bumps `CONVEX_MIN_REGISTRY_VERSION=v2` on the backend.
+6. Backend routes new traffic to v2 only. v1 workers drain.
+7. Autoscaler scales v1 replica count to zero.
 
-```rust
-let runner = DistributedFunctionRunner::new(workers)?
-    .with_log_sink(Arc::new(MySyslogSink));
-```
+Backend never restarts. Clients feel zero impact.
 
-### Distributed tracing
+## Observability
 
-Every runner entry point carries a `#[fastrace::trace]` span.
-`ExecuteRequest.execution_context` propagates the request-id /
-execution-id chain across the gRPC boundary so worker-side
-spans correlate with the originating conductor request.
+Three sinks are already scaffolded in the distributed crate and
+will survive the rebuild unchanged in shape:
 
----
+- Worker-side per-function metrics (`NativeMetricsSink`).
+- Backend-side per-dispatch metrics (currently
+  `ConductorMetricsSink` — will be renamed
+  `WorkerPoolMetricsSink` in Phase 3).
+- Backend-side log forwarding (currently `ConductorLogSink` →
+  `WorkerPoolLogSink`).
 
-## 5. Graceful shutdown
+Plus new in Phase 3:
 
-Worker: the tonic server is built with a `shutdown_future`
-(`serve_worker_with_shutdown`). `convex-local-backend` wires
-that to the same `zombify_rx` the HTTP server drains on:
+- Pool size gauge, broken down by registry version.
+- Admission events sink (register / deregister / schema
+  mismatch).
+- Inventory diff log on registry-version changes.
 
-- Ctrl-C
-- `POST /preempt` on the backend
-- SIGTERM (when the deployer's process supervisor sends one)
+## What's not here yet
 
-The sequence inside a worker:
-1. Shutdown signal arrives → `zombify_rx` fires.
-2. `NativeFunctionRunner::begin_drain()` flips — new invocations
-   get `"runner is draining"` errors.
-3. In-flight invocations complete (or hit their per-function
-   timeout); drain state is visible via `in_flight()`.
-4. Tonic server finishes its serve future and exits.
+- A deployer-facing "bring up a minimal stack" tutorial. Coming
+  with Phase 3 when the admission protocol is real.
+- Dockerfile + k8s manifest for the *backend* image (Phase 5
+  deliverable).
+- Migration guide from Topology A to Topology B. Will land when
+  Topology B is stable (after Phase 4).
 
-Health reports `accepts_traffic = false` during drain so the
-conductor stops routing to the worker.
+## Cross-references
 
----
-
-## 6. Introspection
-
-Every binary built on top of `convex_native` has introspection
-baked in:
-
-```rust
-let built = ConvexBackend::new()
-    .with_native_functions()
-    .with_native_schema()
-    .with_http_routes()
-    .with_crons()
-    .build()?;
-
-println!("{}", built.describe_pretty());
-```
-
-The output is a stable JSON envelope (`version: 1`) covering:
-- `schema` — tables + indexes + `document_type` validators.
-- `functions` — name, kind, args, `internal`, `timeout_ms`.
-- `http_routes` — method + path + handler name.
-- `crons` — name + schedule + target + target kind.
-
-Tooling (code generation, deployment gates, CI checks) consumes
-this envelope without booting the full backend. See
-`convex_native::introspect::{describe_json, describe_pretty,
-describe_json_full, describe_pretty_full}`.
-
----
-
-## 7. Container / Kubernetes patterns
-
-- **Workers**: one per pod, horizontal via a `Deployment` +
-  `Service` targeting `CONVEX_WORKER_BIND_ADDR`. Liveness:
-  `Health.accepts_traffic`. Readiness: the same, AND the pod's
-  registry_version matches the floor the conductor expects.
-- **Conductor**: single replica (or an HA pair); reads
-  `CONVEX_WORKER_ENDPOINTS` from a configmap refreshed by a
-  sidecar watching the worker `Service`'s endpoints, or
-  re-resolves DNS periodically.
-- **Rolling deploy**: pin `min_registry_version` on the
-  conductor before starting the new worker rollout; old workers
-  reject new traffic but keep serving in-flight calls.
-- **Limits**: set a `terminationGracePeriodSeconds` longer than
-  the longest per-function timeout so the drain has time to
-  complete.
-
----
-
-## 8. Minimum-viable worker binary
-
-```rust
-use std::sync::Arc;
-
-use convex_native::{
-    distributed::ConvexMode,
-    NativeFunctionRunner,
-};
-use convex_native_distributed::{
-    build_worker_server,
-    read_mode_from_env,
-    read_worker_bind_addr_from_env,
-};
-
-// Include your `#[convex::query/mutation/action]` modules so
-// their inventory registrations are linked into this binary.
-mod my_app;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let mode = read_mode_from_env();
-    anyhow::ensure!(
-        matches!(mode, ConvexMode::Worker | ConvexMode::Standalone),
-        "expected CONVEX_MODE=worker, got {mode:?}"
-    );
-
-    let addr = read_worker_bind_addr_from_env()?;
-    let native = Arc::new(NativeFunctionRunner::from_inventory()?);
-    eprintln!(
-        "worker: listening on {addr}, {} fn(s) registered",
-        native.len(),
-    );
-    let (mut builder, service) = build_worker_server(native);
-    builder.add_service(service).serve(addr).await?;
-    Ok(())
-}
-```
-
-See `examples/minimal_app/` for the same shape extended with
-schema, mutations, an HTTP action, and a cron. See
-`crates/convex_native_distributed/examples/{worker,conductor}.rs`
-for the runnable in-tree references.
+- `DISTRIBUTED_PLAN.md` — target architecture.
+- `STATUS.md` — exact state of the tree.
+- `STANDALONE.md` — Topology A recipe (monolith).
+- `USAGE.md` — developer-facing feature reference.

@@ -2,7 +2,22 @@
 
 **Author:** Tomás Cichero  
 **Date:** 2026-04-15  
-**Status:** Draft  
+**Status:** Partially superseded — see note below.
+
+---
+
+> **Distributed execution sections (§10–13) are superseded by
+> `DISTRIBUTED_PLAN.md`.** The original §10 design had the
+> backend send function calls to workers and let the workers
+> commit locally; that breaks OCC, subscriptions, and every
+> coordination property this file's §3.3 ("Execute Remotely,
+> Commit Locally") argued for. The corrected architecture —
+> Funrun-parallel, backend-coordinates — is in
+> `DISTRIBUTED_PLAN.md`.
+>
+> §1–9 (framework surface, schema DSL, type-safe APIs, proc
+> macros, context wrappers) remain accurate and are the
+> foundation the new plan builds on.
 
 ---
 
