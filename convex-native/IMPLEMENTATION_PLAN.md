@@ -1,5 +1,44 @@
 # Implementation Plan: Native Rust Functions for Convex
 
+## Status (updated per commit)
+
+The plan below is chronological; for the current shipped-vs-planned
+breakdown, `README.md` is authoritative. One-line summary:
+
+- **Phase 1 (schema, types, single-node queries/mutations):** complete.
+  Crate surface in `crates/convex_native/`; proc macros in
+  `crates/convex_macro/`; composite backend integration in
+  `crates/convex_native_backend/`; wired into
+  `crates/local_backend/src/lib.rs` ahead of `Application::new`.
+- **Phase 2 (actions, scheduler, storage, HTTP actions):** complete.
+  Raw byte uploads land through `FileStorage::store_file` via
+  `BackendCallbacks::storage_store` when `.with_file_storage(fs)` is
+  wired; native-to-native cross-calls short-circuit via a
+  registry-aware resolver in `BackendCallbacks`.
+- **Phase 3 (distributed gRPC service):** 3.1–3.6 shipped as a crate
+  feature in `crates/convex_native_distributed/` (proto contract +
+  conversions + worker server with `.with_database(db)` for
+  queries/mutations + conductor P2C client + `TonicWorkerClient`
+  real gRPC transport + `CONVEX_MODE` env helpers + multi-worker
+  integration tests + runnable `examples/worker` / `examples/conductor`
+  + subprocess smoke test). Not yet shipped: convex-local-backend
+  binary-level switching on `CONVEX_MODE`.
+- **Phase 4 (operational hardening):** 4.1–4.7 shipped (fastrace
+  spans, per-function metrics sink, graceful drain, per-function
+  timeouts, circuit breaker, index-cache warmup plan, rolling
+  updates with version-aware routing via `min_registry_version`
+  floor + per-call override).
+- **Phase 5 (developer ergonomics extensions):** 5.1–5.4 shipped
+  (schema migration diff, compile-time index-field validation,
+  text/vector search indexes, bulk `get_many`).
+
+Outstanding items relative to this plan: Phase 3.5 binary-level
+`CONVEX_MODE` switch inside `convex-local-backend` itself (the
+reusable helpers and examples are shipped; the production binary
+still runs only in Standalone mode). Phase 5 doesn't have a
+concrete "fully complete" state — the plan lists four items, all
+shipped.
+
 ## Context
 
 This project adds support for writing Convex server functions (queries, mutations, actions) in native Rust. The design doc (`native-rust-functions.md`) is complete. This plan breaks implementation into incremental, session-sized steps -- each producing a compilable, testable increment.
