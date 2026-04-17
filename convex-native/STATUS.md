@@ -633,9 +633,33 @@ an action causes indirectly).
 4.2. **`BackendCallbackServer`.** Backend-side tonic impl
      wrapping an `Arc<dyn udf::ActionCallbacks>`.
 
-4.3. **`BackendCallbackClient`.** Worker-side impl of
-     `convex_native::NativeActionCallbacks`; translates each
-     callback into the matching RPC.
+4.3. ✓ **`BackendCallbackClient`.** Landed. New module
+     `convex_native_distributed::backend_callbacks_client`
+     implements `convex_native::NativeActionCallbacks` over
+     tonic `BackendCallbackServiceClient<Channel>`. Connect
+     once per running action; every callback translates into
+     the matching RPC with a `CallbackContext { identity,
+     execution_context, component_path }` attached.
+
+     - `run_query_by_name` / `run_mutation_by_name` →
+       `RunQuery` / `RunMutation` RPCs. The mutation path
+       relies on the backend's Committer for durability +
+       subscription invalidation.
+     - `schedule` → `Schedule` RPC; delay is resolved to a
+       `fire_at_unix_nanos` wall-clock timestamp on the worker.
+     - `storage_store` → `StorageStore` client-streaming RPC;
+       metadata first, then body in 64 KiB chunks.
+     - `storage_get_url` / `storage_delete` → one-shot RPCs.
+     - `cancel_scheduled`, `storage_get_metadata`,
+       `read_document_at_snapshot` stay on the trait's
+       default bail — a follow-up substep wires them when a
+       deployer action hits them.
+
+     Tests: four unit tests spin up a canned
+     `BackendCallbackService` on an ephemeral port and assert
+     each NativeActionCallbacks method translates into the
+     matching RPC (run_mutation, schedule, storage_store,
+     storage_get_url).
 
 4.4. **Worker wiring.** `FunctionExecutionServer` takes a
      `BackendCallbackClient` instead of `NoopCallbacks` when
