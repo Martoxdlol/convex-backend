@@ -11,7 +11,9 @@ actions) in native Rust.
   and high-level architecture).
 - **`IMPLEMENTATION_PLAN.md`** — phase-by-phase roadmap.
 - **`COMPOSITE_RUNNER.md`** — reference for the `convex_native_backend`
-  adapter crate and its `run_function` TODO list.
+  adapter crate: shipped method-by-method behaviour, the native
+  dispatch path, and the known limitations (log-line drain,
+  observed-* flags, etc.).
 
 ## Current state
 
@@ -27,16 +29,19 @@ partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3 graceful drain
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
 validation + 5.3 text/vector search + 5.4 bulk `get_many`).
 
-Remaining: end-to-end smoke test against a live backend, real
-distributed gRPC service (3.1–3.6), and production hardening (4.7
-rolling updates). Everything up to the `make_app()` wiring is now
-in-tree: `crates/convex_native_backend/` provides the
-`CompositeFunctionRunner` (native dispatch) and `BackendCallbacks`
-(native → `udf::ActionCallbacks` bridge), and
-`crates/local_backend/src/lib.rs` now instantiates the composite
-runner ahead of the `Application::new` call, so every build of
-`convex-local-backend` transparently picks up any statically
-registered native functions.
+Remaining: an end-to-end smoke test against a live backend driven
+from a real client, plus document-shape validation (today every
+derived type gets a `document_type: None`, i.e. the "any" schema
+shape). Everything up to the `make_app()` wiring is in-tree:
+`crates/convex_native_backend/` provides the `CompositeFunctionRunner`
+(native dispatch) and `BackendCallbacks` (native → `udf::ActionCallbacks`
+bridge), and `crates/local_backend/src/lib.rs` instantiates the
+composite runner ahead of the `Application::new` call, so every
+build of `convex-local-backend` transparently picks up any
+statically registered native functions — now under
+`CONVEX_MODE=standalone` (default) or `CONVEX_MODE=worker` (adds a
+tonic `FunctionExecutionService` that drains together with HTTP on
+Ctrl-C).
 
 ### What works
 
