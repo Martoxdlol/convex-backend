@@ -124,25 +124,29 @@ Dockerfile.worker, worker-deployment.yaml, convex-worker.service are kept — th
 
 **Phase 1 — wire contract.** See `DISTRIBUTED_PLAN.md` §15.
 
-Deliverables:
+Deliverables (✓ = shipped, ○ = outstanding):
 
-1. Extend `pb::function_execution::ExecuteRequest` with
-   `begin_timestamp` + `existing_writes`.
-2. Extend `pb::function_execution::ExecuteResponse` with
-   `final_tx: Option<FunctionFinalTransaction>`.
-3. Write proto ↔ native conversions for `FunctionReads` /
-   `FunctionWrites` / `FunctionFinalTransaction` (the
-   `pb::function_runner::*` types already exist for Funrun —
-   reuse).
-4. `FunctionExecutionServer::run_query_inline` /
+1. ✓ Extend `pb::function_execution::ExecuteRequest` with
+   `begin_timestamp_us` + `existing_writes_bytes`.
+2. ✓ Extend `pb::function_execution::ExecuteResponse` with
+   `final_tx_bytes`.
+3. ○ Encoding for the `_bytes` blobs. The Phase 1 commit
+   reserved the fields but deferred the encoding format.
+   `FunctionFinalTransaction` and its transitive types
+   (`FunctionReads`, `ReadSet`, `TransactionReadSize`,
+   `DocumentUpdateWithPrevTs`) don't carry `serde` derives
+   today, so "write a postcard blob" isn't a one-liner. Two
+   ways forward:
+   - Add `serde` derives across the type graph and postcard-
+     encode. Touches `database`, `common`, `value`.
+   - Define dedicated proto messages for the sub-types. More
+     work now but the right shape for Phase 6 (JS interop).
+4. ○ `FunctionExecutionServer::run_query_inline` /
    `run_mutation_inline` stop committing; return the
    `FunctionFinalTransaction` in the response.
-5. `DistributedFunctionRunner::execute` returns the
+5. ○ `DistributedFunctionRunner::execute` returns the
    `FunctionFinalTransaction` alongside the result.
-6. Round-trip tests: client encodes a request with a mocked
-   `begin_ts` + `existing_writes`; worker handler reads from
-   that ts; backend decodes the returned `final_tx` and asserts
-   its structure.
+6. ○ Round-trip test covering the full path.
 
 Exit criteria: the mechanical plumbing of "worker produces
 reads/writes, returns them over the wire" is verified by a
