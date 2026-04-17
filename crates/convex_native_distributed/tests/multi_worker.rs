@@ -73,6 +73,7 @@ fn empty_request() -> ExecuteRequest {
         args: ConvexObject::try_from(obj).unwrap(),
         timeout: None,
         min_registry_version: None,
+        execution_context: None,
     }
 }
 

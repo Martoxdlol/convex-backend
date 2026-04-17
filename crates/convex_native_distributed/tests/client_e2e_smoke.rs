@@ -131,6 +131,7 @@ async fn action_dispatches_end_to_end_through_real_grpc_client() {
                 args: args_obj,
                 timeout: None,
                 min_registry_version: None,
+                execution_context: None,
             },
             UdfType::Action,
         )
@@ -170,6 +171,7 @@ async fn execute_surfaces_unknown_function_error_cleanly() {
                 args: ConvexObject::try_from(empty).expect("empty"),
                 timeout: None,
                 min_registry_version: None,
+                execution_context: None,
             },
             UdfType::Action,
         )

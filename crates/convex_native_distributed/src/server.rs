@@ -344,6 +344,7 @@ mod tests {
             args: empty_object(),
             timeout: None,
             min_registry_version: None,
+            execution_context: None,
         };
         let proto_req = conversions::to_proto_request(&native, UdfType::Action).unwrap();
         let resp = server
@@ -366,6 +367,7 @@ mod tests {
             args: empty_object(),
             timeout: Some(Duration::from_millis(100)),
             min_registry_version: None,
+            execution_context: None,
         };
         let proto_req = conversions::to_proto_request(&native, UdfType::Query).unwrap();
         let status = server.execute(Request::new(proto_req)).await.unwrap_err();
@@ -381,6 +383,7 @@ mod tests {
             args: empty_object(),
             timeout: None,
             min_registry_version: None,
+            execution_context: None,
         };
         let mut proto_req = conversions::to_proto_request(&native, UdfType::Action).unwrap();
         proto_req.min_registry_version = Some("9.9.9".to_string());
@@ -461,6 +464,7 @@ mod tests {
             args: empty_object(),
             timeout: None,
             min_registry_version: None,
+            execution_context: None,
         };
         let proto_req = conversions::to_proto_request(&native, UdfType::HttpAction).unwrap();
         let status = server.execute(Request::new(proto_req)).await.unwrap_err();

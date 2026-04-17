@@ -26,6 +26,7 @@
 
 use std::time::Duration;
 
+use common::execution_context::ExecutionContext;
 use value::{
     ConvexObject,
     ConvexValue,
@@ -84,6 +85,14 @@ pub struct ExecuteRequest {
     /// the conductor can pin a floor to steer traffic away from
     /// stragglers. `None` means any worker is acceptable.
     pub min_registry_version: Option<String>,
+    /// Execution context to propagate across the gRPC boundary.
+    /// When set, the worker rebuilds a matching `ExecutionContext`
+    /// so request-id / execution-id / parent-scheduled-job chains
+    /// span both processes — the observable side of design §12.3's
+    /// "distributed tracing" hook. `None` means the worker
+    /// synthesizes a fresh context (appropriate for internal or
+    /// test dispatches).
+    pub execution_context: Option<ExecutionContext>,
 }
 
 /// Response a worker sends back. In the proto version this becomes

@@ -91,25 +91,33 @@ pub fn to_proto_request(
         args_json: encode_args(&native.args)?,
         identity: None,
         timeout: native.timeout.map(duration_to_proto),
-        execution_context: None,
+        execution_context: native.execution_context.clone().map(Into::into),
         min_registry_version: native.min_registry_version.clone(),
     })
 }
 
 /// Parse a proto `ExecuteRequest` into the native shape plus the
-/// `UdfType` the worker should dispatch to. Identity and execution
-/// context aren't reflected in the native type — the worker reads
-/// those directly off the proto when needed.
+/// `UdfType` the worker should dispatch to. Identity isn't
+/// reflected on the native type today — the worker reads that
+/// directly off the proto — but `execution_context` is rebuilt
+/// and carried through so request-id / execution-id / parent-job
+/// chains span both processes.
 pub fn from_proto_request(
     p: &proto::ExecuteRequest,
 ) -> anyhow::Result<(ExecuteRequest, common::types::UdfType)> {
     let udf_type = i32_to_udf_type(p.udf_type)?;
+    let execution_context = p
+        .execution_context
+        .clone()
+        .map(common::execution_context::ExecutionContext::try_from)
+        .transpose()?;
     let native = ExecuteRequest {
         name: p.name.clone(),
         namespace: decode_namespace(&p.namespace)?,
         args: decode_args(&p.args_json)?,
         timeout: p.timeout.as_ref().map(duration_from_proto),
         min_registry_version: p.min_registry_version.clone(),
+        execution_context,
     };
     Ok((native, udf_type))
 }
@@ -257,6 +265,7 @@ mod tests {
             args: sample_args(),
             timeout: Some(Duration::from_millis(1500)),
             min_registry_version: None,
+            execution_context: None,
         };
         let proto_req = to_proto_request(&native, common::types::UdfType::Query).unwrap();
         let (decoded, udf_type) = from_proto_request(&proto_req).unwrap();
@@ -282,6 +291,34 @@ mod tests {
         let p = to_proto_response(&native);
         let decoded = from_proto_response(&p).unwrap();
         assert!(matches!(decoded.result, Err(ref m) if m.contains("boom")));
+    }
+
+    #[test]
+    fn request_execution_context_roundtrips_through_proto() {
+        use common::execution_context::{
+            ExecutionContext,
+            RequestId,
+        };
+        // A caller-supplied ExecutionContext must survive the
+        // proto trip verbatim — request_id + is_root are the
+        // observable bits the conductor cares about for tracing.
+        let request_id = RequestId::new();
+        let ctx =
+            ExecutionContext::new_from_parts(request_id.clone(), Default::default(), None, true);
+        let native = ExecuteRequest {
+            name: "get".into(),
+            namespace: TableNamespace::Global,
+            args: sample_args(),
+            timeout: None,
+            min_registry_version: None,
+            execution_context: Some(ctx),
+        };
+        let proto_req = to_proto_request(&native, common::types::UdfType::Query).unwrap();
+        let (decoded, _) = from_proto_request(&proto_req).unwrap();
+        let decoded_ctx = decoded
+            .execution_context
+            .expect("execution context survives round-trip");
+        assert!(decoded_ctx.is_root());
     }
 
     #[test]
