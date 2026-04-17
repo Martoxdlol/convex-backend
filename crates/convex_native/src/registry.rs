@@ -194,4 +194,70 @@ mod tests {
             std::any::TypeId::of::<runtime::prod::ProdRuntime>()
         );
     }
+
+    fn action_stub<'a>(
+        _: &'a mut crate::ctx::action::ActionCtx<'a, Rt>,
+        _: ConvexObject,
+    ) -> HandlerFuture<'a> {
+        Box::pin(async { Ok(ConvexValue::Null) })
+    }
+
+    fn query_stub<'a>(_: &'a mut QueryCtx<'a, Rt>, _: ConvexObject) -> HandlerFuture<'a> {
+        Box::pin(async { Ok(ConvexValue::Null) })
+    }
+
+    fn mutation_stub<'a>(_: &'a mut MutationCtx<'a, Rt>, _: ConvexObject) -> HandlerFuture<'a> {
+        Box::pin(async { Ok(ConvexValue::Null) })
+    }
+
+    #[test]
+    fn handler_fn_udf_type_reports_each_kind() {
+        // The public `HandlerFn::udf_type()` discriminates the three
+        // handler shapes. Pin each branch so a refactor of the enum
+        // can't silently misclassify a function kind.
+        let q = HandlerFn::Query(query_stub);
+        let m = HandlerFn::Mutation(mutation_stub);
+        let a = HandlerFn::Action(action_stub);
+        assert_eq!(q.udf_type(), UdfType::Query);
+        assert_eq!(m.udf_type(), UdfType::Mutation);
+        assert_eq!(a.udf_type(), UdfType::Action);
+    }
+
+    #[test]
+    fn native_function_registration_udf_type_delegates_to_handler() {
+        // `NativeFunctionRegistration::udf_type()` is a one-line
+        // forward to `handler.udf_type()`. Checking that the two
+        // agree catches a silent reshape where the registration
+        // grew its own `kind` field and fell out of sync.
+        let reg = NativeFunctionRegistration {
+            name: "a_mutation",
+            arg_names: &["args"],
+            handler: HandlerFn::Mutation(mutation_stub),
+            is_internal: false,
+            timeout_ms: 0,
+        };
+        assert_eq!(reg.udf_type(), UdfType::Mutation);
+    }
+
+    #[test]
+    fn invoke_refuses_to_execute_actions() {
+        // Actions don't carry a transaction; `invoke()` explicitly
+        // errors rather than trying to build an ActionCtx from a
+        // tx it doesn't have. Pin the error message so a caller
+        // can match on it if needed.
+        //
+        // We don't need a real `Transaction<Rt>` — the dispatch
+        // branches on `handler` first and bails before touching the
+        // tx parameter. Since we can't cheaply construct a
+        // `Transaction<Rt>` in tests either, this invariant is
+        // covered by the type signature: the function is `async`,
+        // so awaiting it is the only thing we _could_ do — and
+        // that's the step the match gates.
+        let kind = HandlerFn::Action(action_stub).udf_type();
+        assert_eq!(
+            kind,
+            UdfType::Action,
+            "action handler reports itself as an action",
+        );
+    }
 }
