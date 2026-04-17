@@ -694,10 +694,30 @@ an action causes indirectly).
      matching RPC (run_mutation, schedule, storage_store,
      storage_get_url).
 
-4.4. **Worker wiring.** `FunctionExecutionServer` takes a
-     `BackendCallbackClient` instead of `NoopCallbacks` when
-     `CONVEX_BACKEND_CALLBACK_ENDPOINT` (or
-     `CONVEX_BACKEND_ENDPOINT` by convention) is set.
+4.4. ✓ **Worker wiring.** Landed.
+     `FunctionExecutionServer::with_backend_callback_endpoint(url)`
+     opts the worker into routing action sub-calls through a
+     `BackendCallbackClient`. When set, the action branch of
+     `execute` dials the URL, builds a fresh client per
+     action (carrying the request's `execution_context`), and
+     hands that to
+     `NativeFunctionRunner::run_action_with_callbacks_and_log_buffer`
+     in place of `NoopCallbacks`. Unset → the action still
+     runs but every sub-call bails via `NoopCallbacks`
+     (matches pre-Phase-4 behaviour).
+
+     The identity bytes sent on each callback are empty today —
+     the worker doesn't yet forward the acting principal. A
+     follow-up substep threads it through once the admission
+     handshake captures the principal.
+
+     Tests: new integration test
+     `tests/action_sub_calls::worker_sub_mutation_reaches_backend_action_callbacks`
+     pins the full cross-process path: worker-side
+     `BackendCallbackClient` → backend-side `BackendCallbackServer`
+     → recording `ActionCallbacks` stub → captures the dotted
+     function path + serialized args. Proves the wire is
+     hooked up end-to-end.
 
 4.5. **Enable `UdfType::Action` on the distributed runner.**
      `DistributedFunctionRunner::run_function` /

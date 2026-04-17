@@ -72,6 +72,18 @@ pub struct FunctionExecutionServer {
     /// `convex_native` crate version; callers can override if they
     /// want a finer-grained tag.
     registry_version: String,
+    /// Substep 4.4 of `convex-native/DISTRIBUTED_PLAN.md` — URL
+    /// of the backend's `BackendCallbackService`. When set,
+    /// actions on this worker use a `BackendCallbackClient` to
+    /// route sub-calls back to the backend (so
+    /// `ctx.run_mutation(...)` commits via the backend's
+    /// Committer, not the worker's local database). When unset,
+    /// actions fall back to `NoopCallbacks` — every sub-call
+    /// bails with a clear error, matching the pre-Phase-4
+    /// behaviour. Tests that exercise actions without sub-calls
+    /// leave this unset; production workers set it to the
+    /// backend's endpoint at registration time.
+    backend_callback_endpoint: Option<String>,
 }
 
 impl FunctionExecutionServer {
@@ -80,6 +92,7 @@ impl FunctionExecutionServer {
             native,
             database: None,
             registry_version: convex_native::VERSION.to_string(),
+            backend_callback_endpoint: None,
         }
     }
 
@@ -103,6 +116,17 @@ impl FunctionExecutionServer {
     /// per-deploy tagging during rolling updates (Phase 4.7).
     pub fn with_registry_version(mut self, v: impl Into<String>) -> Self {
         self.registry_version = v.into();
+        self
+    }
+
+    /// Substep 4.4: wire the worker's action dispatch path to
+    /// send sub-calls (`ctx.run_mutation`, `ctx.scheduler()`,
+    /// storage ops) back to the backend's
+    /// `BackendCallbackService` at `endpoint`. Without this,
+    /// actions still run but every sub-call bails via
+    /// `NoopCallbacks`.
+    pub fn with_backend_callback_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.backend_callback_endpoint = Some(endpoint.into());
         self
     }
 }
@@ -135,15 +159,45 @@ impl FunctionExecutionService for FunctionExecutionServer {
 
         match udf_type {
             UdfType::Action => {
-                // TODO(phase-4): route sub-calls back to the
-                // backend via BackendCallbackService so the
-                // backend's Committer owns every write the action
-                // causes. NoopCallbacks is the placeholder — it
-                // bails on every sub-call, which is loud and
-                // safe until the proper routing lands. See
-                // `convex-native/DISTRIBUTED_PLAN.md` §7.4.
+                // Substep 4.4: when a backend callback endpoint is
+                // configured, route action sub-calls back to the
+                // backend's `BackendCallbackService` so every
+                // write flows through the backend's Committer
+                // (OCC + subscription invalidation preserved).
+                // Fall back to `NoopCallbacks` when the endpoint
+                // isn't set — matches the pre-Phase-4 behaviour.
+                //
+                // The callback context (identity,
+                // execution_context, component_path) is captured
+                // here so sub-calls carry the same principal +
+                // trace chain as the enclosing action. Today the
+                // identity bytes are empty because the worker
+                // doesn't yet forward the acting principal in the
+                // native ctx; substep 4.4's follow-up wires
+                // identity through `CONVEX_BACKEND_ENDPOINT` +
+                // the admission handshake.
                 let callbacks: Arc<dyn convex_native::NativeActionCallbacks> =
-                    Arc::new(convex_native::callbacks::NoopCallbacks);
+                    match &self.backend_callback_endpoint {
+                        Some(endpoint) => {
+                            let execution_context = proto_req.execution_context.clone();
+                            let client =
+                                crate::backend_callbacks_client::BackendCallbackClient::connect(
+                                    endpoint.clone(),
+                                    Vec::new(),
+                                    execution_context,
+                                    String::new(),
+                                )
+                                .await
+                                .map_err(|e| {
+                                    Status::failed_precondition(format!(
+                                        "FunctionExecutionServer: failed to dial backend callback \
+                                         endpoint {endpoint:?}: {e}",
+                                    ))
+                                })?;
+                            Arc::new(client)
+                        },
+                        None => Arc::new(convex_native::callbacks::NoopCallbacks),
+                    };
                 let log_buffer = convex_native::LogBuffer::new();
                 let result = self
                     .native
