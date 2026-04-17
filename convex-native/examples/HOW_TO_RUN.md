@@ -6,7 +6,7 @@ A zero-to-running walkthrough. Three paths in order of speed:
 |------|-----------------|-------------------|
 | 1. Introspection smoke test | `cargo run --example tiny_app` | derives + schema + registry (no server) |
 | 2. Worker-only | `cargo run --example todo_worker` | `FunctionExecutionService` gRPC |
-| 3. End-to-end (backend + worker) | `convex-local-backend` + worker | full client traffic → OCC commit |
+| 3. End-to-end (backend + worker) | `convex-backend` + worker | full client traffic → OCC commit |
 
 All three run from a fresh clone with no external services.
 
@@ -81,7 +81,7 @@ grpcurl -plaintext \
 You'll get `Code::Unimplemented` back — expected without a
 `Database`. Swap this example for a real database wiring via
 `serve_worker_with_database(...)` once you have persistence
-(`convex-local-backend` does this for you under `CONVEX_MODE=worker`).
+(`standalone_todo_app` does this for you under `CONVEX_MODE=worker`).
 
 ### Shut down
 
@@ -106,33 +106,37 @@ protocol.
 cd npm-packages && rush install && cd -
 ```
 
-### Terminal A — backend
+### Terminal A — agnostic backend
 
 ```sh
-cargo run --bin convex-local-backend -- \
-  --port 3210 \
-  --instance-name mydeploy \
-  --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
-  --db-spec sqlite \
-  --local-storage ./_run/mydeploy_storage
+CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678 \
+  cargo run -p convex_native --bin convex-backend -- \
+    --port 3210 \
+    --instance-name mydeploy \
+    --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
+    --db-spec sqlite \
+    --local-storage ./_run/mydeploy_storage
 ```
 
-Wait for `Listening on 0.0.0.0:3210`.
+Wait for `Listening on 0.0.0.0:3210`. The `convex-backend` binary
+carries zero `#[convex::*]` registrations — handlers arrive from
+the worker pool.
 
-Add `CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678` to enable the
-distributed topology (`WorkerAdmissionService`). Omit it for the
-monolith topology — then the backend dispatches natively via
-`CompositeFunctionRunner` without needing a worker process.
+Omit `CONVEX_ADMISSION_BIND_ADDR` to boot the same binary as a
+standalone backend with an empty native registry (useful for
+testing the wire protocol without a worker).
 
-### Terminal B — worker
+### Terminal B — deployer worker
 
-If you've set `CONVEX_ADMISSION_BIND_ADDR` on the backend:
+Build a deployer crate that links its handlers and boots via
+`convex_native::run()` in worker mode. The shipped example is
+`convex-native/examples/standalone_todo_app` — launch it as:
 
 ```sh
 CONVEX_MODE=worker \
   CONVEX_WORKER_BIND_ADDR=127.0.0.1:4567 \
   CONVEX_BACKEND_ENDPOINT=http://127.0.0.1:5678 \
-  cargo run --bin convex-local-backend -- \
+  cargo run --release -p standalone_todo_app -- \
     --port 0 \
     --instance-name mydeploy-worker \
     --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \

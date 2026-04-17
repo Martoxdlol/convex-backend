@@ -158,16 +158,18 @@ roll whenever you change handler code.
 
 ### Step 1 — build the agnostic backend
 
-The **agnostic backend** is the already-shipped `convex-local-backend`
-binary, built **without any `#[convex::*]` registrations linked
-in**. It's called "agnostic" because it has no knowledge of
-deployer handlers; it only speaks admission + coordinates OCC +
-serves HTTP to clients.
+The **agnostic backend** comes from the `convex_native` crate's
+`convex-backend` binary, which links the framework + backend
+machinery but **zero `#[convex::*]` registrations**. It's called
+"agnostic" because it has no knowledge of deployer handlers; it
+only speaks admission + coordinates OCC + serves HTTP to clients.
+Deployer worker images provide the handler inventory at boot via
+gRPC registration.
 
 ```sh
-# From the repo root — builds crates/local_backend/src/main.rs.
-cargo build --release --bin convex-local-backend
-# Binary: target/release/convex-local-backend
+# From the repo root — builds crates/convex_native/src/bin/convex-backend.rs.
+cargo build --release -p convex_native --bin convex-backend
+# Binary: target/release/convex-backend
 ```
 
 For a container image, use the template in
@@ -191,7 +193,7 @@ shadowing the worker pool's handlers.
 CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678 \
   CONVEX_ADMIN_BIND_ADDR=127.0.0.1:9090 \
   CONVEX_REFUSE_NATIVE_HANDLERS=1 \
-  ./target/release/convex-local-backend \
+  ./target/release/convex-backend \
     --port 3210 \
     --instance-name mydeploy \
     --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \

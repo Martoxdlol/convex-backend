@@ -1,10 +1,12 @@
 # syntax=docker/dockerfile:1-labs
 #
 # Phase 5 of convex-native/DISTRIBUTED_PLAN.md: prebuilt
-# backend image. Same `convex-local-backend` binary the
-# self-hosted topology uses, but explicitly labelled and
-# configured as the **distributed-topology** backend that
-# workers dial into via `WorkerAdmissionService`.
+# agnostic backend image. Built from
+# `crates/convex_native/src/bin/convex-backend.rs`, which links
+# zero `#[convex::*]` code so the backend carries no
+# deployer-specific function inventory — workers dial in via
+# `WorkerAdmissionService` and ship the handler registry at
+# admission time.
 #
 # Why a distinct Dockerfile rather than reusing
 # `self-hosted/docker-build/Dockerfile.backend`:
@@ -43,7 +45,7 @@ WORKDIR /tmp
 COPY rust-toolchain .
 RUN rustup self update && rustup toolchain install
 COPY --parents crates* Cargo* ./
-RUN cargo chef prepare --recipe-path recipe.json --bin convex-local-backend
+RUN cargo chef prepare --recipe-path recipe.json --bin convex-backend
 
 # Build stage.
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS build
@@ -101,14 +103,14 @@ RUN --mount=type=cache,target=/convex/npm-packages/common/temp/,sharing=locked \
     --mount=type=cache,target=/convex/target/ \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry/ <<EOF
-cargo build --release -p local_backend --bin convex-local-backend
-cp target/release/convex-local-backend .
+cargo build --release -p convex_native --bin convex-backend
+cp target/release/convex-backend .
 cargo build --release -p keybroker --bin generate_key
 cp target/release/generate_key .
 EOF
 
 ARG debug
-RUN if [[ -z "$debug" ]]; then strip ./convex-local-backend; strip ./generate_key; fi
+RUN if [[ -z "$debug" ]]; then strip ./convex-backend; strip ./generate_key; fi
 
 # Runtime image.
 FROM ubuntu:noble
@@ -131,7 +133,7 @@ COPY --from=build /usr/lib/node_modules/npm /usr/lib/node_modules/npm
 RUN ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/bin/npm && chmod +x /usr/bin/npm
 RUN ln -sf /usr/lib/node_modules/npm/bin/npx-cli.js /usr/bin/npx && chmod +x /usr/bin/npx
 
-COPY --from=build --chmod=744 /convex/convex-local-backend .
+COPY --from=build --chmod=744 /convex/convex-backend .
 COPY --from=build --chmod=744 /convex/generate_key .
 
 VOLUME /convex/data
@@ -141,7 +143,7 @@ VOLUME /convex/data
 # override via `-e CONVEX_ADMISSION_BIND_ADDR=host:port`.
 ENV CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678
 
-ENTRYPOINT ["./convex-local-backend"]
+ENTRYPOINT ["./convex-backend"]
 
 # Public surfaces:
 # 3210 — HTTP + WebSocket (clients hit here).

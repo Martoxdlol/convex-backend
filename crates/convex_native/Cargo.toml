@@ -9,6 +9,14 @@ license = "LicenseRef-FSL-1.1-Apache-2.0"
 [lib]
 doctest = false
 
+# Agnostic backend entrypoint. Links zero `#[convex::*]` code;
+# deployers' worker images provide the handler inventory at boot
+# via gRPC registration. See
+# `convex-native/DISTRIBUTED_PLAN.md` Phase 5.
+[[bin]]
+name = "convex-backend"
+path = "src/bin/convex-backend.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 async-broadcast = { workspace = true }
