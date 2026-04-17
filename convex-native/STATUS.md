@@ -12,16 +12,20 @@ Phase 3 (distributed execution) is shipped at the crate level plus a
 `convex-local-backend` `CONVEX_MODE=worker` mode. Mutation-scoped
 scheduling wires through `VirtualSchedulerModel`, every derived
 document emits a concrete `DocumentSchema` for write-time shape
-validation, and native `ActionCtx::db()` now reads at a pinned
-snapshot via `NativeActionCallbacks::read_document_at_snapshot`. The
-only remaining outstanding item is an end-to-end client smoke test.
+validation, native `ActionCtx::db()` reads at a pinned snapshot via
+`NativeActionCallbacks::read_document_at_snapshot`, and an end-to-end
+client smoke test drives a registered native action through a real
+`TonicWorkerClient` over gRPC. The residual gap is a WebSocket/HTTP
+client smoke test driven from `convex-local-backend`, which is
+blocked on `rush install` rather than on native-dispatch behaviour
+(see "End-to-end smoke coverage" below).
 
 ## Test tallies
 
 ```
-cargo test -p convex_native              # 211 tests
+cargo test -p convex_native              # 227 tests
 cargo test -p convex_native_backend      # 10 tests
-cargo test -p convex_native_distributed  # 46 tests
+cargo test -p convex_native_distributed  # 48 tests
 ```
 
 All green at HEAD.
@@ -114,17 +118,26 @@ All green at HEAD.
 
 ## Missing / outstanding
 
-### No end-to-end smoke test driven from a real client
-The composite runner dispatches native queries/mutations, the
-`make_app()` wiring is in place, and `cargo build --bin
-convex-local-backend` completes cleanly. What's missing is a
-scripted test that boots the backend with a registered
-`#[convex::query]` and drives it through the websocket or HTTP
-client path. Integration today is verified by `cargo test -p
-convex_native` plus the successful binary build.
+### End-to-end smoke coverage (shipped for the gRPC client path)
+`crates/convex_native_distributed/tests/client_e2e_smoke.rs` boots
+a `FunctionExecutionServer` on an ephemeral port with an
+inventory-collected `#[convex::action]` registered, connects a real
+`TonicWorkerClient` over TCP, and round-trips typed args through the
+wire format into the registered handler and back. A companion test
+covers the "unknown function" path to pin that a handler miss
+surfaces as `ExecuteResponse::Err("...")` rather than as a
+transport-level failure — any regression in proto conversions,
+registry lookup, or tonic wiring is caught at the layer closest to
+the break.
 
-**Effort**: small-to-medium. Mechanics exist — needs a test harness
-that owns the backend lifecycle and a client reaching in.
+**Still outstanding**: HTTP/WebSocket client path. Exercising the
+`convex-local-backend` binary directly needs `rush install` under
+`npm-packages/` (the V8-backed `isolate` crate is a build-time
+dependency of `convex_native_backend`). The dispatch behaviour the
+gRPC smoke test validates is the same behaviour the composite
+runner exposes through HTTP/WebSocket, so the gap is the bundling
+(boot the full local backend and drive through the Convex client)
+rather than a dispatch correctness risk.
 
 ### Document shape validation (shipped)
 `#[derive(ConvexDocument)]` now emits
