@@ -226,6 +226,23 @@ pub async fn make_app(
             fetch_client.clone(),
         )?);
 
+    // convex-local-backend runs as an all-in-one (conductor + worker
+    // + database) binary, so the only supported CONVEX_MODE here is
+    // Standalone. If an operator explicitly sets conductor/worker,
+    // fail loud rather than silently running in the wrong topology
+    // — the dedicated distributed binaries (via
+    // convex_native_distributed::examples) are the right target for
+    // those modes.
+    let convex_mode = convex_native_distributed::read_mode_from_env();
+    tracing::info!("convex-local-backend CONVEX_MODE detected: {convex_mode:?}");
+    if !matches!(convex_mode, convex_native::distributed::ConvexMode::Standalone) {
+        anyhow::bail!(
+            "convex-local-backend only supports CONVEX_MODE=standalone (got {convex_mode:?}). \
+             Use the convex_native_distributed examples/worker + examples/conductor binaries for \
+             split-topology deployments, or unset CONVEX_MODE to accept the default."
+        );
+    }
+
     // Wrap in the composite runner so any statically-registered
     // native functions (#[convex::query/mutation/action]) intercept
     // before the request reaches V8. When the registry is empty the

@@ -33,11 +33,16 @@ breakdown, `README.md` is authoritative. One-line summary:
   text/vector search indexes, bulk `get_many`).
 
 Outstanding items relative to this plan: Phase 3.5 binary-level
-`CONVEX_MODE` switch inside `convex-local-backend` itself (the
-reusable helpers and examples are shipped; the production binary
-still runs only in Standalone mode). Phase 5 doesn't have a
-concrete "fully complete" state — the plan lists four items, all
-shipped.
+`CONVEX_MODE` switch inside `convex-local-backend` itself is
+**half-done**: the binary now *detects* `CONVEX_MODE` at startup,
+logs the detected mode, and refuses to boot when it's not
+`Standalone` — pointing the operator at the
+`convex_native_distributed::examples/worker` + `examples/conductor`
+binaries for split-topology deployments. A single `convex-local-backend`
+binary that actually switches into Worker or Conductor mode is
+still not wired; the two example binaries are the deployment path
+for split topologies today. Phase 5 doesn't have a concrete
+"fully complete" state — the plan lists four items, all shipped.
 
 ## Context
 
