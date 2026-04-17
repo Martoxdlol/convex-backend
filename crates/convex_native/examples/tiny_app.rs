@@ -7,10 +7,20 @@
 //! ```
 //!
 //! The binary prints the collected schema, functions, and cron
-//! registrations as JSON. It doesn't boot a real backend — standing
-//! up `make_app()` still needs the adapter crate blocked on the
-//! npm-packages build. But it demonstrates exactly what the backend
-//! adapter would see at startup.
+//! registrations as JSON. It doesn't boot a real backend — that
+//! requires linking the whole V8 + persistence stack via
+//! `convex-local-backend` — but it exercises the full developer
+//! surface (derive macros, attribute macros, ConvexBackend builder,
+//! validation, introspection) in isolation, which is useful both
+//! as a sanity check and as a runnable starting point a new user
+//! can crib from.
+//!
+//! To see the same registrations serve real traffic, link them
+//! into `convex-local-backend` (the
+//! `convex_native_backend::CompositeFunctionRunner` picks up any
+//! statically-registered native functions automatically) or into
+//! the `convex_native_distributed::examples/worker` binary for a
+//! split-topology deployment.
 
 use bytes::Bytes;
 use convex_native::{
