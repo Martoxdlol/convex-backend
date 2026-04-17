@@ -310,12 +310,31 @@ substep is checked and the integration test is green.
      Tests: `function_runner_impl::evaluate_schema_returns_clear_error`
      pins the "guidance error" contract on JS-only methods.
 
-2.7. **`local_backend` env-var switchover.**
-     `CONVEX_NATIVE_WORKERS=grpc://host-a:4567,grpc://host-b:4567`
+2.7. ✓ **`local_backend` env-var switchover.**
+     Landed. `CONVEX_NATIVE_WORKERS=grpc://host-a:4567,grpc://host-b:4567`
      (comma-separated) swaps the composite runner's native
-     branch from the in-process `NativeFunctionRunner` to
-     `DistributedFunctionRunner` built from the listed
-     endpoints. Undefined → keep in-process behaviour.
+     Query/Mutation branch from the in-process
+     `NativeFunctionRunner` to a `DistributedFunctionRunner`
+     built from the listed endpoints. Unset → keep in-process
+     behaviour (the Phase-2 default).
+
+     - `convex_native_distributed::read_native_workers_from_env()`
+       parses the env var; returns `None` when unset,
+       `Some(Vec<String>)` when set, or an error when set but
+       unusable.
+     - `CompositeFunctionRunner::with_remote_native_pool(pool)`
+       takes an `Arc<dyn FunctionRunner<RT>>` and routes native
+       Query/Mutation through it instead of
+       `dispatch_native_inner`. Native actions still run
+       in-process until Phase 4's `BackendCallbackService`.
+     - `local_backend::make_app` consults the env var, builds
+       the `DistributedFunctionRunner` via
+       `build_conductor_runner`, and wires it into the
+       composite. Log message records the endpoint count so
+       operators see the switchover in the boot log.
+
+     Tests: three `mode::tests::read_native_workers_from_env_*`
+     covering unset / parseable / rejected-empty.
 
 2.8. **Integration test: subscription invalidation across the
      wire.**

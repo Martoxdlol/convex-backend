@@ -231,14 +231,13 @@ pub async fn make_app(
     //
     //   - `standalone` (default): HTTP only.
     //   - `worker`: HTTP + a tonic `FunctionExecutionService` bound to
-    //     `CONVEX_WORKER_BIND_ADDR`, so a remote caller can dispatch native
-    //     calls to this process while still using the same Database as the HTTP
-    //     path. This is a pre-Phase-1 shape; see
-    //     convex-native/DISTRIBUTED_PLAN.md for the target architecture
-    //     (backend coordinates commits; worker stops committing locally).
-    //   - `conductor`: rejected. The standalone-conductor concept is
-    //     superseded by the prebuilt backend image described in
-    //     DISTRIBUTED_PLAN.md Phase 5.
+    //     `CONVEX_WORKER_BIND_ADDR`, so a remote caller can dispatch native calls
+    //     to this process while still using the same Database as the HTTP path.
+    //     This is a pre-Phase-1 shape; see convex-native/DISTRIBUTED_PLAN.md for
+    //     the target architecture (backend coordinates commits; worker stops
+    //     committing locally).
+    //   - `conductor`: rejected. The standalone-conductor concept is superseded by
+    //     the prebuilt backend image described in DISTRIBUTED_PLAN.md Phase 5.
     let convex_mode = convex_native_distributed::read_mode_from_env();
     tracing::info!("convex-local-backend CONVEX_MODE detected: {convex_mode:?}");
     use convex_native::distributed::ConvexMode;
@@ -260,14 +259,36 @@ pub async fn make_app(
         "Native function registry: {} registered",
         native_runner.len(),
     );
-    let function_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(
-        convex_native_backend::CompositeFunctionRunner::new(
-            native_runner.clone(),
-            js_runner,
-            database.clone(),
-        )
-        .with_file_storage(file_storage.clone()),
-    );
+    // Substep 2.7 of `convex-native/DISTRIBUTED_PLAN.md`: when
+    // `CONVEX_NATIVE_WORKERS=grpc://host-a:4567,grpc://host-b:4567`
+    // is set, route native Query/Mutation dispatch through a
+    // P2C-balanced remote worker pool instead of dispatching
+    // in-process. Actions still run locally until Phase 4's
+    // `BackendCallbackService` lands. Unset → keep in-process
+    // behaviour (the Phase-2 default).
+    let remote_native_pool: Option<Arc<dyn FunctionRunner<ProdRuntime>>> =
+        match convex_native_distributed::read_native_workers_from_env()? {
+            Some(endpoints) => {
+                tracing::info!(
+                    "CONVEX_NATIVE_WORKERS configured with {} endpoint(s); native Query/Mutation \
+                     dispatch will route through the remote pool",
+                    endpoints.len(),
+                );
+                let clients = convex_native_distributed::build_conductor_runner(&endpoints).await?;
+                Some(Arc::new(clients))
+            },
+            None => None,
+        };
+    let mut composite = convex_native_backend::CompositeFunctionRunner::new(
+        native_runner.clone(),
+        js_runner,
+        database.clone(),
+    )
+    .with_file_storage(file_storage.clone());
+    if let Some(remote) = remote_native_pool {
+        composite = composite.with_remote_native_pool(remote);
+    }
+    let function_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(composite);
 
     let application = Application::new(
         runtime.clone(),

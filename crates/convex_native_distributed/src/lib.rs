@@ -57,6 +57,7 @@ pub use mode::{
     build_conductor_runner,
     build_worker_server,
     read_mode_from_env,
+    read_native_workers_from_env,
     read_worker_bind_addr_from_env,
     read_worker_endpoints_from_env,
     serve_worker_with_database,

@@ -147,6 +147,17 @@ pub struct CompositeFunctionRunner<RT: Runtime> {
     /// cycle with `ApplicationFunctionRunner`. Used to construct a
     /// `BackendCallbacks` when dispatching native actions.
     action_callbacks: Arc<RwLock<Option<Weak<dyn ActionCallbacks>>>>,
+    /// Substep 2.7 of `convex-native/DISTRIBUTED_PLAN.md` (env-var
+    /// switchover). When set, native Query/Mutation dispatch
+    /// routes through this `FunctionRunner<RT>` — typically a
+    /// `DistributedFunctionRunner` talking to a pool of remote
+    /// workers over gRPC — instead of running against the
+    /// in-process `Database<RT>`. Actions still run locally under
+    /// Phase 2 (Phase 4 lands the
+    /// `BackendCallbackService` so they can be routed too).
+    /// When `None`, the composite behaves exactly as before —
+    /// native dispatch runs in-process against the owned database.
+    remote_native: Option<Arc<dyn FunctionRunner<RT>>>,
 }
 
 impl<RT: Runtime> CompositeFunctionRunner<RT> {
@@ -161,6 +172,7 @@ impl<RT: Runtime> CompositeFunctionRunner<RT> {
             database,
             file_storage: None,
             action_callbacks: Arc::new(RwLock::new(None)),
+            remote_native: None,
         }
     }
 
@@ -169,6 +181,15 @@ impl<RT: Runtime> CompositeFunctionRunner<RT> {
     /// from native actions return an error.
     pub fn with_file_storage(mut self, file_storage: FileStorage<RT>) -> Self {
         self.file_storage = Some(file_storage);
+        self
+    }
+
+    /// Route native Query/Mutation dispatch through `remote`
+    /// instead of running against the in-process database.
+    /// Substep 2.7 of `convex-native/DISTRIBUTED_PLAN.md`. See
+    /// `remote_native` field doc for semantics.
+    pub fn with_remote_native_pool(mut self, remote: Arc<dyn FunctionRunner<RT>>) -> Self {
+        self.remote_native = Some(remote);
         self
     }
 
@@ -537,6 +558,30 @@ where
             .is_some_and(|n| self.native.has_function(n));
 
         if is_native && matches!(udf_type, UdfType::Query | UdfType::Mutation) {
+            // Substep 2.7: when a remote native pool is configured,
+            // route native dispatch through it. The remote pool's
+            // `FunctionRunner` impl (DistributedFunctionRunner,
+            // substep 2.6b) handles the gRPC round-trip and
+            // `FinalTxSummary → FunctionFinalTransaction`
+            // conversion. Actions still run locally — Phase 4's
+            // BackendCallbackService lands before action dispatch
+            // is safe to route.
+            if let Some(remote) = self.remote_native.as_ref() {
+                return remote
+                    .run_function(
+                        udf_type,
+                        identity,
+                        ts,
+                        existing_writes,
+                        log_line_sender,
+                        function_metadata,
+                        http_action_metadata,
+                        default_system_env_vars,
+                        in_memory_index_last_modified,
+                        context,
+                    )
+                    .await;
+            }
             let meta = function_metadata.expect("is_native implies function_metadata is Some");
             return dispatch_native_inner::<RT>(
                 &self.database,

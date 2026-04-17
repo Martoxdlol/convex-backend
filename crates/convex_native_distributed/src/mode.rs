@@ -87,6 +87,32 @@ pub fn read_worker_endpoints_from_env() -> anyhow::Result<Vec<String>> {
     parse_worker_endpoints(&raw)
 }
 
+/// Substep 2.7 env-var: `CONVEX_NATIVE_WORKERS`. When set,
+/// `local_backend` builds a `DistributedFunctionRunner` from the
+/// comma-separated gRPC endpoints and passes it to the composite
+/// runner's `with_remote_native_pool(...)` so native Query /
+/// Mutation dispatch routes through the remote pool instead of
+/// the in-process `NativeFunctionRunner`.
+///
+/// Returns `Ok(None)` when the variable is unset (the Phase-2
+/// default — keep in-process behaviour).
+/// Returns `Ok(Some(Vec))` with a validated, non-empty endpoint
+/// list when set.
+/// Returns `Err` when the variable is set but empty or malformed.
+///
+/// Distinct from `CONVEX_WORKER_ENDPOINTS` — that pre-Phase-3 var
+/// points at a standalone-conductor binary's workers; this one is
+/// the local-backend-side hook for the Phase-2 replan where the
+/// backend itself speaks directly to the worker pool.
+pub fn read_native_workers_from_env() -> anyhow::Result<Option<Vec<String>>> {
+    match std::env::var("CONVEX_NATIVE_WORKERS") {
+        Ok(raw) => parse_worker_endpoints(&raw)
+            .map(Some)
+            .map_err(|e| anyhow::anyhow!("CONVEX_NATIVE_WORKERS set but unusable: {e}")),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Read the worker's bind address from `CONVEX_WORKER_BIND_ADDR`,
 /// falling back to [`DEFAULT_WORKER_BIND_ADDR`].
 pub fn read_worker_bind_addr_from_env() -> anyhow::Result<SocketAddr> {
@@ -221,6 +247,50 @@ mod tests {
     fn parse_worker_endpoints_rejects_empty() {
         assert!(parse_worker_endpoints("").is_err());
         assert!(parse_worker_endpoints("   ,  , ").is_err());
+    }
+
+    #[test]
+    fn read_native_workers_from_env_returns_none_when_unset() {
+        let _guard = env_guard();
+        // Make sure nothing leaked from a sibling test first.
+        // `remove_var` is called in an unsafe block on newer Rust
+        // editions; the safety argument is the same as the other
+        // env-mutating tests below — we serialize with env_guard.
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_NATIVE_WORKERS");
+        }
+        assert!(read_native_workers_from_env().unwrap().is_none());
+    }
+
+    #[test]
+    fn read_native_workers_from_env_parses_comma_separated() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_NATIVE_WORKERS", "http://a:4567,http://b:4567");
+        }
+        let endpoints = read_native_workers_from_env().unwrap().expect("set");
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0], "http://a:4567");
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_NATIVE_WORKERS");
+        }
+    }
+
+    #[test]
+    fn read_native_workers_from_env_rejects_empty_value() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_NATIVE_WORKERS", "  ");
+        }
+        assert!(read_native_workers_from_env().is_err());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_NATIVE_WORKERS");
+        }
     }
 
     #[test]
