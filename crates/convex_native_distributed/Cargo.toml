@@ -22,8 +22,14 @@ tonic = { workspace = true }
 value = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
+common = { workspace = true }
+convex_native = { workspace = true }
+pb = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread"] }
 tokio-stream = { workspace = true, features = ["net"] }
+tonic = { workspace = true }
+value = { workspace = true }
 
 [lints]
 workspace = true

@@ -19,7 +19,8 @@ actions) in native Rust.
 1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.1
 proto contract + 3.2 crate skeleton/conversions + 3.3 worker server
 partial + 3.4 conductor client + P2C + real transport + 3.5 mode
-switching helpers + executor trait stub), **Phase 4
+switching helpers + 3.6 multi-worker integration tests + executor
+trait stub), **Phase 4
 partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3 graceful drain
 + 4.4 timeouts + 4.5 circuit breaker + 4.6 index-cache warmup plan),
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
@@ -439,6 +440,20 @@ shuts down every clone.
   gRPC server on an ephemeral port, bring up a client, exercise
   health + action execute + unimplemented query path, and verify
   `in_flight_estimate` returns to zero after the call drains.
+- **Phase 3.6 — multi-worker integration tests (shipped):** a
+  dedicated integration-test binary at
+  `crates/convex_native_distributed/tests/multi_worker.rs` spins
+  up N real tonic servers on ephemeral ports, connects a
+  `TonicWorkerClient` per worker, and drives the conductor through
+  the full stack. Five scenarios:
+  `two_workers_both_reachable_dispatch_succeeds` (N=2 live pool),
+  `unreachable_worker_rejects_build` (asserts the conductor
+  refuses partial connectivity),
+  `version_gate_rejects_request_when_worker_is_older`,
+  `failover_from_unavailable_to_healthy_worker` (a `WorkerClient`
+  stub that returns `Unavailable` paired with a real tonic
+  client), and `health_probes_report_per_worker_versions`.
+  Total suite now 37/37 green (32 unit + 5 integration).
 - **Phase 3.5 — binary-level mode switching helpers (shipped):**
   `mode.rs` decodes `CONVEX_MODE`, `CONVEX_WORKER_ENDPOINTS`
   (comma-separated gRPC URLs), and `CONVEX_WORKER_BIND_ADDR`
