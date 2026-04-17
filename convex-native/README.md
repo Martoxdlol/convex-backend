@@ -882,14 +882,17 @@ crates/convex_native/              -- framework crate (no isolate dep)
 └── tests/
     ├── backend_builder.rs         -- ConvexBackend end-to-end
     ├── callbacks_wiring.rs        -- NativeActionCallbacks sub-calls / scheduler / storage
+    ├── crons.rs                   -- #[convex::cron(...)] registration + lookup
     ├── ctx_types.rs               -- compile-time surface tests for ctx wrappers
-    ├── drain.rs                   -- graceful shutdown drain
     ├── derive_document.rs         -- ConvexDocument integration
     ├── derive_enums_nested_unions.rs -- ConvexEnum / Nested / Union
     ├── derive_functions.rs        -- function attribute macros
+    ├── drain.rs                   -- graceful shutdown drain
     ├── function_refs.rs           -- marker types
     ├── golden_path.rs             -- full realistic app end-to-end
     ├── http_actions.rs            -- HTTP action registration
+    ├── introspect_json.rs         -- describe_json envelope
+    ├── logging_surface.rs         -- ctx.log() drain into LogBuffer
     ├── metrics_wiring.rs          -- runner metrics + timeout enforcement
     ├── runner_dispatch.rs         -- NativeFunctionRunner dispatch
     ├── search_indexes.rs          -- text/vector search indexes
