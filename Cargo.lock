@@ -2362,6 +2362,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "bytes",
  "common",
  "convex_native",
@@ -2377,14 +2378,19 @@ dependencies = [
  "prost-types",
  "rand 0.9.4",
  "runtime",
+ "semver",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",
  "tokio-stream",
  "tonic",
+ "tower 0.5.2",
+ "tracing",
  "udf",
  "usage_tracking",
  "value",
+ "vector",
 ]
 
 [[package]]
