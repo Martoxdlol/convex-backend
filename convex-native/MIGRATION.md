@@ -232,6 +232,48 @@ pub async fn send_welcome(
 }
 ```
 
+## Scheduler
+
+### JS
+
+```ts
+// Relative delay:
+await ctx.scheduler.runAfter(60_000, internal.users.send_welcome, { id });
+// Absolute timestamp (ms since epoch):
+await ctx.scheduler.runAt(Date.parse("2030-01-01T00:00:00Z"),
+    internal.users.send_welcome, { id });
+// Cancel:
+await ctx.scheduler.cancel(jobId);
+```
+
+### Rust
+
+```rust
+use std::time::Duration;
+use common::runtime::UnixTimestamp;
+
+// Relative delay (mutation or action):
+let job_id = ctx.scheduler()
+    .run_after(Duration::from_secs(60), SendWelcome, SendWelcomeArgs { id })
+    .await?;
+
+// Absolute wall-clock timestamp:
+let ts = UnixTimestamp::from_secs_f64(1_893_456_000.0).unwrap(); // 2030-01-01
+ctx.scheduler()
+    .run_at(ts, SendWelcome, SendWelcomeArgs { id })
+    .await?;
+
+// For scheduled actions, use `run_action_after` / `run_action_at`
+// with an `impl ConvexActionFunction` marker. Cancel is the same on
+// both: `ctx.scheduler().cancel(job_id).await?`.
+```
+
+Notes: Rust markers are PascalCase ZSTs (`SendWelcome`) — the
+function name (`send_welcome`) is still callable directly as plain
+Rust. `run_at` reads real wall-clock time via `SystemTime::now()`; in
+tests that mock the runtime clock, compute the delay from
+`ctx.unix_timestamp()` and use `run_after` instead.
+
 ## HTTP action
 
 ### JS
