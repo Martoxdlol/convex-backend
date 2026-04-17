@@ -342,4 +342,47 @@ mod tests {
             .expect_err("noop callbacks bail");
         assert!(format!("{err}").contains("cannot cancel"));
     }
+
+    /// End-to-end `run_at` → `delay_until` → `callbacks.schedule`
+    /// round-trip using `TestCallbacks`, which records the computed
+    /// delay. Proves the whole pipeline: a future timestamp one hour
+    /// out lands as a ~1h `Duration` at the callbacks layer.
+    ///
+    /// Written as a tolerance range so clock drift between
+    /// `SystemTime::now()` inside `delay_until` and the second read
+    /// in this test can't flake the assert.
+    #[tokio::test]
+    async fn run_at_computed_delay_reaches_callbacks_as_expected_duration() {
+        use crate::testing::{
+            CallRecord,
+            TestCallbacks,
+        };
+        let (callbacks, history) = TestCallbacks::new().build();
+        let sched = Scheduler::new_with_callbacks(
+            SchedulerScope::Mutation,
+            TableNamespace::Global,
+            callbacks,
+        );
+
+        let now = UnixTimestamp::from_system_time(SystemTime::now()).expect("clock after epoch");
+        let future = UnixTimestamp::from_secs_f64(now.as_secs_f64() + 3_600.0).unwrap();
+
+        sched
+            .run_at(future, ObjectMarker, ObjectArgs(7))
+            .await
+            .expect("stubbed callbacks succeed");
+
+        let records = history.snapshot();
+        assert_eq!(records.len(), 1, "exactly one schedule call recorded");
+        match &records[0] {
+            CallRecord::Schedule { name, delay } => {
+                assert_eq!(name, "object_mutation");
+                assert!(
+                    *delay >= Duration::from_secs(3_500) && *delay <= Duration::from_secs(3_700),
+                    "delay should be ~1h: {delay:?}",
+                );
+            },
+            other => panic!("unexpected record {other:?}"),
+        }
+    }
 }
