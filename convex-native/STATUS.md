@@ -23,11 +23,11 @@ blocked on `rush install` rather than on native-dispatch behaviour
 ## Test tallies
 
 ```
-cargo test -p convex_native              # 231 tests
+cargo test -p convex_native              # 235 tests
 cargo test -p convex_native_backend      # 10 tests
 cargo test -p convex_native_distributed  # 52 tests
 
-# total: 293
+# total: 297
 ```
 
 All green at HEAD.

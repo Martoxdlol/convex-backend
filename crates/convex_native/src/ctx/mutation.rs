@@ -115,6 +115,17 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
         self.tx.runtime().unix_timestamp()
     }
 
+    /// Deterministic RNG — see [`super::query::QueryCtx::rng_u64`].
+    /// Seeded from `UdfOutcome::rng_seed`, flips `observed_rng`.
+    pub fn rng_u64(&self) -> u64 {
+        self.observed.next_u64()
+    }
+
+    /// See [`super::query::QueryCtx::rng_fill`].
+    pub fn rng_fill(&self, buf: &mut [u8]) {
+        self.observed.fill_bytes(buf);
+    }
+
     /// Scheduler handle bound to the mutation's own transaction.
     ///
     /// Returns a [`super::scheduler::MutationScheduler`], which writes

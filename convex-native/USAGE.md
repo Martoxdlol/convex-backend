@@ -258,6 +258,12 @@ Shared methods across all ctxs:
   a line into the ctx's `LogBuffer`; the runner drains the buffer
   after the handler returns and surfaces it through the backend's
   log-streaming path.
+- `ctx.rng_u64() -> u64` / `ctx.rng_fill(&mut [u8])` — deterministic
+  randomness seeded from the outcome's `rng_seed`. Re-running with
+  the same seed produces the same sequence, so retried handlers
+  stay reproducible. Calling either flips `observed_rng` on the
+  ctx; the runner drains that bit into
+  `UdfOutcome::observed_rng`.
 
 ## 5. Typed queries
 

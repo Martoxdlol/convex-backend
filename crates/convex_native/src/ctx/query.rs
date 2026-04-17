@@ -1,12 +1,20 @@
 //! Read-only context for `#[convex::query]` functions.
 
-use std::sync::atomic::{
-    AtomicBool,
-    Ordering,
+use std::sync::{
+    atomic::{
+        AtomicBool,
+        Ordering,
+    },
+    Mutex,
 };
 
 use common::runtime::Runtime;
 use database::Transaction;
+use rand::{
+    Rng,
+    SeedableRng,
+};
+use rand_chacha::ChaCha20Rng;
 use value::TableNamespace;
 
 use super::query_builder::TypedQueryBuilder;
@@ -18,17 +26,53 @@ use crate::{
 
 /// Determinism-observation bits the runner drains into
 /// `UdfOutcome::observed_*`. Shared between the ctx and the outer
-/// dispatcher via `Arc<Observed>`. Uses `AtomicBool` so the ctx
-/// stays `Send`-able across the handler's `await` points.
-#[derive(Default, Debug)]
+/// dispatcher via `Arc<Observed>`. `AtomicBool` keeps the ctx
+/// `Send`-able across the handler's `await` points.
+///
+/// `rng` holds a deterministic `ChaCha20Rng` seeded from the
+/// runner-supplied `rng_seed`. Native handlers call `ctx.rng()` to
+/// produce deterministic randomness; the `observed_rng` bit flips
+/// whenever they do. The `Mutex` is single-threaded by the way the
+/// ctx is used (one handler, one task) but satisfies `Send` bounds
+/// on the handler future.
 pub struct Observed {
     identity: AtomicBool,
     unix_timestamp: AtomicBool,
+    rng_observed: AtomicBool,
+    rng: Mutex<ChaCha20Rng>,
+}
+
+impl Default for Observed {
+    fn default() -> Self {
+        Self::from_seed([0u8; 32])
+    }
+}
+
+impl std::fmt::Debug for Observed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Observed")
+            .field("identity", &self.identity())
+            .field("unix_timestamp", &self.unix_timestamp())
+            .field("rng", &self.rng_observed())
+            .finish()
+    }
 }
 
 impl Observed {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct with a caller-supplied RNG seed. The runner uses
+    /// this so every invocation gets a fresh deterministic stream
+    /// (the same seed it writes into `UdfOutcome::rng_seed`).
+    pub fn from_seed(seed: [u8; 32]) -> Self {
+        Self {
+            identity: AtomicBool::new(false),
+            unix_timestamp: AtomicBool::new(false),
+            rng_observed: AtomicBool::new(false),
+            rng: Mutex::new(ChaCha20Rng::from_seed(seed)),
+        }
     }
 
     pub(crate) fn note_identity(&self) {
@@ -39,12 +83,41 @@ impl Observed {
         self.unix_timestamp.store(true, Ordering::Relaxed);
     }
 
+    pub(crate) fn note_rng(&self) {
+        self.rng_observed.store(true, Ordering::Relaxed);
+    }
+
     pub fn identity(&self) -> bool {
         self.identity.load(Ordering::Relaxed)
     }
 
     pub fn unix_timestamp(&self) -> bool {
         self.unix_timestamp.load(Ordering::Relaxed)
+    }
+
+    pub fn rng_observed(&self) -> bool {
+        self.rng_observed.load(Ordering::Relaxed)
+    }
+
+    /// Draw a `u64` from the seeded deterministic stream and mark
+    /// `observed_rng`. Handlers typically go through
+    /// `ctx.rng_u64()` / `ctx.rng_fill(buf)` instead of reaching in
+    /// here directly.
+    pub(crate) fn next_u64(&self) -> u64 {
+        self.note_rng();
+        self.rng
+            .lock()
+            .expect("Observed rng mutex poisoned")
+            .random::<u64>()
+    }
+
+    /// Fill `buf` with deterministic bytes from the seeded stream.
+    pub(crate) fn fill_bytes(&self, buf: &mut [u8]) {
+        self.note_rng();
+        self.rng
+            .lock()
+            .expect("Observed rng mutex poisoned")
+            .fill(buf);
     }
 }
 
@@ -151,6 +224,26 @@ impl<'tx, RT: Runtime> QueryCtx<'tx, RT> {
     pub fn unix_timestamp(&self) -> common::runtime::UnixTimestamp {
         self.observed.note_unix_timestamp();
         self.tx.runtime().unix_timestamp()
+    }
+
+    /// Draw a deterministic `u64` from the ctx's seeded RNG.
+    ///
+    /// The stream is seeded from `UdfOutcome::rng_seed`, so repeat
+    /// invocations with the same seed produce the same sequence.
+    /// Calling this flips `observed_rng` on the ctx; the runner
+    /// reads that bit into `UdfOutcome::observed_rng` after the
+    /// handler returns, so the sync layer knows the output depends
+    /// on the seed.
+    pub fn rng_u64(&self) -> u64 {
+        self.observed.next_u64()
+    }
+
+    /// Fill `buf` with deterministic bytes from the same seeded
+    /// stream. Use this for id generation, nonce material, anything
+    /// that needs "random" but has to stay reproducible across
+    /// re-execution.
+    pub fn rng_fill(&self, buf: &mut [u8]) {
+        self.observed.fill_bytes(buf);
     }
 }
 
@@ -306,5 +399,59 @@ mod observed_tests {
         o.note_identity();
         o.note_identity();
         assert!(o.identity());
+    }
+
+    #[test]
+    fn observed_rng_flips_only_when_rng_accessor_used() {
+        // `note_identity` / `note_unix_timestamp` must not touch the
+        // rng bit, and vice versa — they're independent determinism
+        // signals the sync layer reads separately.
+        let o = Observed::from_seed([7u8; 32]);
+        assert!(!o.rng_observed());
+        o.note_identity();
+        assert!(
+            !o.rng_observed(),
+            "identity observation is separate from rng"
+        );
+        let _ = o.next_u64();
+        assert!(o.rng_observed(), "rng_u64 flips the bit");
+    }
+
+    #[test]
+    fn seeded_rng_is_deterministic() {
+        // Two `Observed` instances seeded identically must produce
+        // the same first `u64`. The sync layer relies on this for
+        // retried invocations to be reproducible.
+        let a = Observed::from_seed([42u8; 32]);
+        let b = Observed::from_seed([42u8; 32]);
+        assert_eq!(a.next_u64(), b.next_u64());
+    }
+
+    #[test]
+    fn seeded_rng_advances_between_draws() {
+        // Two draws from the same `Observed` must (almost always)
+        // differ — the stream has to advance, not return a fixed
+        // value. Using two draws keeps the test deterministic: a
+        // flaky implementation that returned the seed verbatim
+        // every time would fail here too.
+        let o = Observed::from_seed([1u8; 32]);
+        let a = o.next_u64();
+        let b = o.next_u64();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn fill_bytes_writes_into_provided_buffer_and_flips_observed() {
+        // `fill_bytes` is the "draw into a buffer" shape used for id
+        // generation / nonce material. Pin that it actually writes
+        // AND records the observation.
+        let o = Observed::from_seed([9u8; 32]);
+        let mut buf = [0u8; 16];
+        o.fill_bytes(&mut buf);
+        assert!(o.rng_observed());
+        assert!(
+            buf.iter().any(|b| *b != 0),
+            "the 16-byte buffer must not stay all-zero after a fill",
+        );
     }
 }

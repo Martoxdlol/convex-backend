@@ -310,12 +310,19 @@ async fn dispatch_native<RT: Runtime + 'static>(
     // Parse args into a ConvexObject the handler will deserialize.
     let args_obj = extract_single_object_arg(&arguments, "native function")?;
 
+    // Seed the ctx's deterministic RNG from the same bytes we
+    // surface on UdfOutcome::rng_seed. Sync / retry paths feed the
+    // same seed back in when re-executing; the handler's RNG stream
+    // is therefore reproducible.
+    let rng_seed: [u8; 32] = database.runtime().rng().random();
+
     // Share one LogBuffer + Observed-flags handle between the ctx
     // and the post-handler drain so `ctx.log()` output ends up in
     // the UdfOutcome's log_lines and `ctx.auth()` / `ctx.unix_timestamp()`
-    // observations land on `observed_identity` / `observed_time`.
+    // / `ctx.rng_*()` observations land on `observed_identity` /
+    // `observed_time` / `observed_rng`.
     let log_buffer = LogBuffer::new();
-    let observed: Arc<Observed> = Arc::new(Observed::new());
+    let observed: Arc<Observed> = Arc::new(Observed::from_seed(rng_seed));
     let result = match (udf_type, &registration.handler) {
         (UdfType::Query, HandlerFn::Query(handler)) => {
             let mut ctx = NativeQueryCtx::with_log_buffer_and_observed(
@@ -365,7 +372,6 @@ async fn dispatch_native<RT: Runtime + 'static>(
     };
 
     let runtime_for_rng = database.runtime();
-    let rng_seed: [u8; 32] = runtime_for_rng.rng().random();
     let now_ts = runtime_for_rng.unix_timestamp();
     let log_lines = drain_log_buffer(&log_buffer, now_ts);
     let outcome = UdfOutcome {
@@ -374,7 +380,7 @@ async fn dispatch_native<RT: Runtime + 'static>(
         identity: inert_identity,
         observed_identity: observed.identity(),
         rng_seed,
-        observed_rng: false,
+        observed_rng: observed.rng_observed(),
         unix_timestamp: now_ts,
         observed_time: observed.unix_timestamp(),
         log_lines,

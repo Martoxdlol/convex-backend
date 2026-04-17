@@ -154,13 +154,12 @@ on top of `udf::ActionCallbacks`:
   hands to the runner — matching the JS action path. When no
   sender is wired (e.g. dispatch from a test harness) the lines
   are dropped silently; the handler itself still succeeds.
-- **Observed flags.** `observed_identity` and `observed_time` are
-  now tracked per-invocation. The runner threads an
-  `Arc<convex_native::ctx::query::Observed>` through the ctx
-  constructor (`with_log_buffer_and_observed`); `ctx.auth()` and
-  `ctx.unix_timestamp()` set the matching `AtomicBool`, and the
-  runner drains those bits into `UdfOutcome::observed_identity` /
-  `observed_time` after the handler returns. `observed_rng`
-  remains hard-coded `false` because native ctx doesn't expose an
-  rng accessor — when that surface lands it'll plug into the same
-  `Observed` record.
+- **Observed flags.** `observed_identity`, `observed_time`, and
+  `observed_rng` are all tracked per-invocation. The runner seeds
+  an `Arc<convex_native::ctx::query::Observed>` (carrying a
+  ChaCha20Rng seeded from the same `rng_seed` written to
+  `UdfOutcome::rng_seed`) and threads it through the ctx
+  constructor (`with_log_buffer_and_observed`). `ctx.auth()`,
+  `ctx.unix_timestamp()`, and `ctx.rng_u64()` / `ctx.rng_fill(buf)`
+  each flip their matching bit; the runner drains all three into
+  the outcome after the handler returns.
