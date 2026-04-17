@@ -262,7 +262,7 @@ fn native_line_to_log_line(line: NativeLogLine, now: UnixTimestamp) -> LogLine {
     LogLine::new_developer_log_line(mapped, vec![message], now)
 }
 
-async fn dispatch_native<RT: Runtime + 'static>(
+async fn dispatch_native_inner<RT: Runtime + 'static>(
     database: &Database<RT>,
     native: &Arc<NativeFunctionRunner>,
     udf_type: UdfType,
@@ -270,6 +270,7 @@ async fn dispatch_native<RT: Runtime + 'static>(
     ts: RepeatableTimestamp,
     existing_writes: FunctionWrites,
     function_metadata: FunctionMetadata,
+    execution_context: Option<ExecutionContext>,
 ) -> anyhow::Result<(
     Option<FunctionFinalTransaction>,
     FunctionOutcome,
@@ -340,6 +341,9 @@ async fn dispatch_native<RT: Runtime + 'static>(
                 log_buffer.clone(),
                 observed.clone(),
             );
+            if let Some(caller_ctx) = execution_context.clone() {
+                ctx = ctx.with_execution_context(caller_ctx);
+            }
             handler(&mut ctx, args_obj).await
         },
         (got, reg) => {
@@ -531,7 +535,7 @@ where
 
         if is_native && matches!(udf_type, UdfType::Query | UdfType::Mutation) {
             let meta = function_metadata.expect("is_native implies function_metadata is Some");
-            return dispatch_native::<RT>(
+            return dispatch_native_inner::<RT>(
                 &self.database,
                 &self.native,
                 udf_type,
@@ -539,6 +543,7 @@ where
                 ts,
                 existing_writes,
                 meta,
+                Some(context.clone()),
             )
             .await;
         }

@@ -30,6 +30,12 @@ pub struct MutationCtx<'tx, RT: Runtime> {
     pub(crate) namespace: TableNamespace,
     pub(crate) log_buffer: crate::logging::LogBuffer,
     pub(crate) observed: std::sync::Arc<super::query::Observed>,
+    /// Optional inherited execution context (request-id / execution-id
+    /// chain). When set, the mutation's scheduler uses it instead of
+    /// synthesizing a fresh one, so jobs scheduled from a mutation
+    /// stay correlated with the enclosing request. `None` means
+    /// synthesize per-scheduling-call.
+    pub(crate) execution_context: Option<common::execution_context::ExecutionContext>,
 }
 
 impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
@@ -40,6 +46,7 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
             namespace,
             log_buffer: crate::logging::LogBuffer::new(),
             observed: std::sync::Arc::new(super::query::Observed::new()),
+            execution_context: None,
         }
     }
 
@@ -54,6 +61,7 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
             namespace,
             log_buffer,
             observed: std::sync::Arc::new(super::query::Observed::new()),
+            execution_context: None,
         }
     }
 
@@ -70,7 +78,21 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
             namespace,
             log_buffer,
             observed,
+            execution_context: None,
         }
+    }
+
+    /// Attach an inherited [`common::execution_context::ExecutionContext`].
+    /// The mutation's scheduler picks this up so scheduled jobs
+    /// chain off the enclosing request's id rather than a
+    /// freshly-minted one. Builder style so the runner can chain
+    /// after `with_log_buffer_and_observed(...)`.
+    pub fn with_execution_context(
+        mut self,
+        execution_context: common::execution_context::ExecutionContext,
+    ) -> Self {
+        self.execution_context = Some(execution_context);
+        self
     }
 
     #[doc(hidden)]
@@ -135,7 +157,11 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
     /// bails, the scheduled job is never persisted. This matches the
     /// JS `ctx.scheduler.runAfter` contract.
     pub fn scheduler(&mut self) -> super::scheduler::MutationScheduler<'_, RT> {
-        super::scheduler::MutationScheduler::new(self.tx, self.namespace)
+        let mut s = super::scheduler::MutationScheduler::new(self.tx, self.namespace);
+        if let Some(ctx) = self.execution_context.clone() {
+            s = s.with_execution_context(ctx);
+        }
+        s
     }
 }
 
