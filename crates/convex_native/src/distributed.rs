@@ -127,4 +127,75 @@ mod tests {
         assert!(!ConvexMode::Conductor.is_worker());
         assert!(ConvexMode::Conductor.is_conductor());
     }
+
+    #[test]
+    fn mode_parser_is_case_insensitive_and_trimmed() {
+        // Operators hand-type these env vars; a rogue space or capital
+        // letter should not land them in Standalone by accident.
+        for s in [
+            "Worker",
+            "WORKER",
+            "  worker",
+            "worker  ",
+            "\tworker\n",
+            "Worker ",
+        ] {
+            assert_eq!(
+                ConvexMode::from_env_str(s),
+                ConvexMode::Worker,
+                "should recognise worker in {s:?}",
+            );
+        }
+        for s in ["Conductor", "CONDUCTOR", " conductor "] {
+            assert_eq!(
+                ConvexMode::from_env_str(s),
+                ConvexMode::Conductor,
+                "should recognise conductor in {s:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn mode_parser_falls_back_to_standalone_for_unknown_values() {
+        // Unknown values fall through to Standalone — the default.
+        // Pin that so future refactors don't silently flip to an
+        // explicit error path.
+        for s in ["standalon", "worker-v2", "master", "primary", "1"] {
+            assert_eq!(
+                ConvexMode::from_env_str(s),
+                ConvexMode::Standalone,
+                "unknown {s:?} defaults to Standalone",
+            );
+        }
+    }
+
+    #[test]
+    fn execute_response_clones_and_debug_formats() {
+        // Clone + Debug are derived; callers pattern-match + clone
+        // responses across worker/conductor boundaries, so a silent
+        // derive drop would break consumers.
+        let resp = ExecuteResponse {
+            result: Ok(ConvexValue::Int64(42)),
+        };
+        let cloned = resp.clone();
+        assert!(matches!(&cloned.result, Ok(ConvexValue::Int64(42))));
+        assert!(!format!("{resp:?}").is_empty(), "Debug format non-empty");
+
+        let err_resp = ExecuteResponse {
+            result: Err("boom".into()),
+        };
+        let cloned = err_resp.clone();
+        assert_eq!(
+            cloned.result.as_ref().err().map(String::as_str),
+            Some("boom"),
+        );
+    }
+
+    #[test]
+    fn function_executor_is_object_safe() {
+        // The trait is used as `Arc<dyn FunctionExecutor>` by remote
+        // dispatch paths. Keep the object-safety assertion as a
+        // compile-time canary.
+        fn _assert_object_safe(_: std::sync::Arc<dyn FunctionExecutor>) {}
+    }
 }
