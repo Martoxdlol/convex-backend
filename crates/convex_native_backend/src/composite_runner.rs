@@ -406,6 +406,7 @@ async fn dispatch_native_action<RT: Runtime>(
     identity: Identity,
     function_metadata: FunctionMetadata,
     context: ExecutionContext,
+    log_line_sender: Option<mpsc::UnboundedSender<LogLine>>,
 ) -> anyhow::Result<(
     Option<FunctionFinalTransaction>,
     FunctionOutcome,
@@ -437,10 +438,30 @@ async fn dispatch_native_action<RT: Runtime>(
 
     let started = Instant::now();
     let name = path.udf_path.function_name().to_string();
+    let log_buffer = LogBuffer::new();
     let result = native
-        .run_action_with_callbacks(&name, TableNamespace::Global, args_obj, callbacks)
+        .run_action_with_callbacks_and_log_buffer(
+            &name,
+            TableNamespace::Global,
+            args_obj,
+            callbacks,
+            log_buffer.clone(),
+        )
         .await;
     let duration = started.elapsed();
+
+    // Stream ctx.log() output through the caller-supplied
+    // `log_line_sender` so action logs reach the backend's
+    // streaming path (same contract as the JS action runtime).
+    // Silently drop when no sender is wired — the action still
+    // succeeded.
+    if let Some(sender) = &log_line_sender {
+        let now = database.runtime().unix_timestamp();
+        for line in log_buffer.snapshot() {
+            let log_line = native_line_to_log_line(line, now);
+            let _ = sender.send(log_line);
+        }
+    }
 
     let (result_packed, error): (Option<JsonPackedValue>, Option<JsError>) = match result {
         Ok(v) => (Some(JsonPackedValue::pack(v)), None),
@@ -525,6 +546,7 @@ where
                 identity,
                 meta,
                 context,
+                log_line_sender,
             )
             .await;
         }

@@ -145,18 +145,15 @@ on top of `udf::ActionCallbacks`:
   writes inside one `ApplicationFunctionRunner` call. Empty update
   sets skip the merge to avoid a round-trip through `tx.writes`.
 - **Log lines.** The composite threads a shared `LogBuffer` into
-  the native ctx for queries / mutations, drains it after the
-  handler returns, and maps each `NativeLogLine` to a
-  `common::log_lines::LogLine` stamped with the runtime's current
-  `UnixTimestamp` before populating `UdfOutcome::log_lines`. So
-  `ctx.log()` output does reach the backend's log-streaming path
-  for queries and mutations. **Action log lines are still
-  outstanding**: the JS action path uses an
-  `mpsc::UnboundedSender<LogLine>` passed through `run_function`,
-  and threading that through
-  `run_action_with_callbacks_and_log_buffer` requires more
-  surgery; today native action `ctx.log()` writes land only in
-  the buffer owned by the ctx, which the runner doesn't forward.
+  the native ctx and drains it after the handler returns, mapping
+  each `NativeLogLine` to a `common::log_lines::LogLine` stamped
+  with the runtime's current `UnixTimestamp`. For queries and
+  mutations the drained lines populate `UdfOutcome::log_lines`.
+  For actions they're streamed through the
+  `log_line_sender: mpsc::UnboundedSender<LogLine>` `run_function`
+  hands to the runner — matching the JS action path. When no
+  sender is wired (e.g. dispatch from a test harness) the lines
+  are dropped silently; the handler itself still succeeds.
 - **Observed flags.** `observed_identity`, `observed_rng`,
   `observed_time` are hard-coded `false`. The JS path tracks whether
   the UDF actually looked at identity/rng/time; native code could do
