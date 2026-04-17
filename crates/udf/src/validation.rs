@@ -1,5 +1,8 @@
 use std::{
-    sync::LazyLock,
+    sync::{
+        LazyLock,
+        OnceLock,
+    },
     time::Duration,
 };
 
@@ -96,6 +99,92 @@ pub const SUSPENDED_ERROR_MESSAGE: &str = "Cannot run functions while this deplo
 static MIN_NPM_VERSION_FOR_BETTER_AUTH: LazyLock<Version> =
     LazyLock::new(|| Version::new(1, 28, 2));
 
+/// Metadata a validation short-circuit needs to synthesize an
+/// `AnalyzedFunction` for a name that's registered as a native
+/// Rust handler (see `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md`).
+///
+/// Native handlers are registered via `inventory` at link time and
+/// never flow through `ModuleModel::apply` / `_modules` rows. Without
+/// this short-circuit the HTTP validation path refuses every
+/// pure-native deployment's request because no analyzed row exists
+/// for the name.
+#[derive(Debug, Clone)]
+pub struct NativeFunctionDescriptor {
+    /// Kind of handler (query / mutation / action). HTTP actions
+    /// don't flow through `ValidatedPathAndArgs` so they're not
+    /// represented here.
+    pub udf_type: UdfType,
+    /// `true` when the function was declared with the
+    /// `#[convex::*(internal)]` modifier. Maps to
+    /// `Visibility::Internal`; otherwise `Visibility::Public`.
+    pub is_internal: bool,
+}
+
+/// A trait the native-runtime layer implements to expose its
+/// `inventory::collect!`ed registry to `udf::validation` without
+/// forcing the `udf` crate to depend on `convex_native_core`.
+///
+/// Installed once at backend boot via
+/// [`install_native_function_resolver`].
+pub trait NativeFunctionResolver: Send + Sync + 'static {
+    /// Return metadata for a native function by bare function name
+    /// (e.g. `"create"` for a `#[convex::mutation] fn create(...)`).
+    ///
+    /// The module path component of the user-facing path
+    /// (`mutations:create`, `queries:create`, ...) is ignored
+    /// because native registrations are keyed by bare identifier.
+    /// Two native handlers can't share an identifier — the
+    /// registry enforces that at collection time, so a match is
+    /// unambiguous.
+    fn lookup(&self, function_name: &str) -> Option<NativeFunctionDescriptor>;
+}
+
+static NATIVE_FUNCTION_RESOLVER: OnceLock<std::sync::Arc<dyn NativeFunctionResolver>> =
+    OnceLock::new();
+
+/// Install the global native-function resolver. Idempotent: a
+/// second call is a no-op. Called from `local_backend::make_app`
+/// after the native registry is collected from inventory.
+pub fn install_native_function_resolver(
+    resolver: std::sync::Arc<dyn NativeFunctionResolver>,
+) -> bool {
+    NATIVE_FUNCTION_RESOLVER.set(resolver).is_ok()
+}
+
+/// Best-effort lookup against the installed resolver. Returns
+/// `None` when no resolver was installed (either because the
+/// backend is JS-only or because `make_app` hasn't run yet — tests
+/// that bypass `make_app` fall into the latter).
+fn resolve_native_function(function_name: &str) -> Option<NativeFunctionDescriptor> {
+    NATIVE_FUNCTION_RESOLVER
+        .get()
+        .and_then(|resolver| resolver.lookup(function_name))
+}
+
+/// Build a synthetic `AnalyzedFunction` from a native-registry
+/// descriptor. Args + returns validators are left `None`
+/// (deserialised by `AnalyzedFunction::args` / `returns` as
+/// `Unvalidated`) because the `#[convex::*]` macros do not emit
+/// full validator metadata today — extending them is tracked in
+/// `ISSUE_NATIVE_HTTP_VALIDATION.md` question 2.
+fn synthesize_native_analyzed_function(
+    path: &ResolvedComponentFunctionPath,
+    descriptor: &NativeFunctionDescriptor,
+) -> AnalyzedFunction {
+    AnalyzedFunction {
+        name: path.udf_path.function_name().clone(),
+        pos: None,
+        udf_type: descriptor.udf_type,
+        visibility: Some(if descriptor.is_internal {
+            Visibility::Internal
+        } else {
+            Visibility::Public
+        }),
+        args_str: None,
+        returns_str: None,
+    }
+}
+
 /// Fails with an error if the backend is not running. We have to return a
 /// result of a result of () and a JSError because we use them to
 /// differentiate between system and user errors.
@@ -163,6 +252,16 @@ pub async fn validate_schedule_args<RT: Runtime>(
         ));
     }
     let udf_args = parse_udf_args(&path.udf_path, udf_args)?;
+
+    // Native-handler short-circuit: a scheduled `#[convex::mutation]`
+    // has no `_modules` row, so `get_metadata_for_function` would
+    // flag it as "nonexistent path". Ask the native resolver first;
+    // on a hit the UDF is known-registered and no further checks are
+    // needed here (arg validators live in the registry, but the
+    // macros don't emit them yet — see ISSUE_NATIVE_HTTP_VALIDATION).
+    if resolve_native_function(path.udf_path.function_name()).is_some() {
+        return Ok((path, udf_args));
+    }
 
     // Even though we might use different version of modules when executing,
     // we do validate that the scheduled function exists at time of scheduling.
@@ -297,10 +396,26 @@ fn require_admin_data_op(
 
 fn missing_or_internal_error(path: PublicFunctionPath) -> anyhow::Result<String> {
     let path = path.debug_into_component_path();
+    // The hint at the end of the error message used to be
+    // unconditional ("Did you forget to run `npx convex dev`?"), which
+    // misled pure-native deployments whose functions live in Rust via
+    // `#[convex::*]` macros (no `npx convex dev` involved). When a
+    // native resolver is installed we adjust the hint so the
+    // troubleshooting trail points at the native-handler plumbing
+    // instead. See `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md`
+    // question 5.
+    let hint = if NATIVE_FUNCTION_RESOLVER.get().is_some() {
+        "Double-check the `#[convex::query/mutation/action]` spelling and that the handler module \
+         is linked into the backend binary. If this deployment also uses JavaScript, run `npx \
+         convex dev` to push the JS side."
+    } else {
+        "Did you forget to run `npx convex dev`?"
+    };
     Ok(format!(
-        "Could not find public function for '{}'{}. Did you forget to run `npx convex dev`?",
+        "Could not find public function for '{}'{}. {}",
         String::from(path.udf_path.clone().strip()),
-        path.component.in_component_str()
+        path.component.in_component_str(),
+        hint,
     ))
 }
 
@@ -481,6 +596,34 @@ impl ValidatedPathAndArgs {
             PublicFunctionPath::ResolvedComponent(path) => path,
         };
 
+        // Native-handler short-circuit. When a native resolver is
+        // installed (see `install_native_function_resolver`) and the
+        // bare function name matches a `#[convex::*]` registration,
+        // synthesize an `AnalyzedFunction` from the registry instead
+        // of reading `_modules`. A pure-native deployment never
+        // writes those rows — without this short-circuit every HTTP
+        // request would hit the `missing_or_internal_error` branch
+        // below. See `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md`.
+        if let Some(native) = resolve_native_function(path.udf_path.function_name()) {
+            let analyzed_function = synthesize_native_analyzed_function(&path, &native);
+            let returns_validator = ReturnsValidator::Unvalidated;
+            // Pass `None` npm_version through `new_inner_with_version`
+            // — native handlers are not published via the npm SDK so
+            // `udf_server_version` has no meaningful value for them.
+            return match ValidatedPathAndArgs::new_inner(
+                allowed_visibility,
+                tx,
+                path,
+                args,
+                expected_udf_type,
+                analyzed_function,
+                None,
+            )? {
+                Ok(validated) => Ok(Ok((validated, returns_validator))),
+                Err(js_err) => Ok(Err(js_err)),
+            };
+        }
+
         let udf_version = match udf_version(&path, tx).await? {
             Ok(udf_version) => udf_version,
             Err(e) => return Ok(Err(e)),
@@ -522,7 +665,7 @@ impl ValidatedPathAndArgs {
             args,
             expected_udf_type,
             analyzed_function,
-            udf_version,
+            Some(udf_version),
         )? {
             Ok(validated_udf_path_and_args) => {
                 Ok(Ok((validated_udf_path_and_args, returns_validator)))
@@ -538,7 +681,7 @@ impl ValidatedPathAndArgs {
         args: SerializedArgs,
         expected_udf_type: UdfType,
         analyzed_function: AnalyzedFunction,
-        version: Version,
+        version: Option<Version>,
     ) -> anyhow::Result<Result<ValidatedPathAndArgs, JsError>> {
         if let Err(js_error) = check_visibility_access(
             allowed_visibility,
@@ -588,7 +731,7 @@ impl ValidatedPathAndArgs {
         Ok(Ok(ValidatedPathAndArgs {
             path,
             args,
-            npm_version: Some(version),
+            npm_version: version,
         }))
     }
 

@@ -259,6 +259,16 @@ pub async fn make_app(
         "Native function registry: {} registered",
         native_runner.len(),
     );
+    // Install the global native-function resolver that
+    // `udf::validation` consults at the HTTP / WebSocket / sync entry
+    // points. Without this, `ValidatedPathAndArgs::new` can't find
+    // any `#[convex::*]` handler that lives only in the binary's
+    // `inventory` table — every pure-native deployment's client
+    // traffic would 404 with a "run `npx convex dev`" error. See
+    // `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md` for the full
+    // diagnosis. Idempotent: repeated `make_app` calls in the same
+    // process (integration tests) keep the first resolver.
+    convex_native_backend::install_native_resolver((*native_runner).clone());
     // Substep 5.2 of `convex-native/DISTRIBUTED_PLAN.md`: when
     // `CONVEX_REFUSE_NATIVE_HANDLERS=1` is set, the backend
     // binary must carry no `#[convex::*]` registrations. The
