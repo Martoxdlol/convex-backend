@@ -1,82 +1,131 @@
 # convex-native examples
 
-Most of what was in this directory has been removed because it
-described the "standalone worker commits locally" topology that
-the `DISTRIBUTED_PLAN.md` replan supersedes. Only artifacts that
-remain approximately correct under the target architecture are
-kept here; everything else comes back once Phase 3 (dynamic
-worker pool + admission) lands.
+Deployment artifacts for the distributed topology. All phases
+of `DISTRIBUTED_PLAN.md` have shipped; these examples are the
+ready-to-deploy templates a deployer starts from.
 
-## What's here now
+## What's here
 
 ```
 examples/
-├── README.md                       this file
+├── README.md                        this file
 └── deploy/
     ├── docker/
-    │   └── Dockerfile.worker       multi-stage build for a worker
-    │                                (still approximately right —
-    │                                 needs CONVEX_BACKEND_ENDPOINT
-    │                                 once Phase 3 is live)
+    │   ├── Dockerfile.backend       prebuilt backend image
+    │   │                             (Phase 5). Publishes as
+    │   │                             `getconvex/convex-backend`
+    │   │                             once CI/release lands;
+    │   │                             build locally today.
+    │   └── Dockerfile.worker        per-deployer worker image.
+    │                                 Links the deployer's
+    │                                 `#[convex::*]` handlers
+    │                                 + sets CONVEX_BACKEND_ENDPOINT.
     ├── kubernetes/
-    │   └── worker-deployment.yaml  Deployment + headless Service
-    │                                for worker pods (same caveat)
+    │   ├── backend-deployment.yaml  Namespace + PVC + single-
+    │   │                             replica Deployment + two
+    │   │                             Services (public-HTTP +
+    │   │                             internal-admission).
+    │   └── worker-deployment.yaml   Deployment + headless
+    │                                 Service for the worker
+    │                                 pool; auto-registers
+    │                                 against the backend.
     └── systemd/
-        └── convex-worker.service   plain-VM worker unit
+        └── convex-worker.service    plain-VM worker unit
 ```
 
-## What was removed
+## Two-image deploy
 
-| File | Why |
-|------|-----|
-| `minimal_app/` | Reading sample for the old library-mode + local_backend shape. Superseded by the prebuilt-backend-image path in `DISTRIBUTED_PLAN.md` Phase 5. |
-| `full_app/` | Workspace-member example that tangled worker + standalone modes around the old topology. Will return as a pure worker template after Phase 3. |
-| `deploy/docker/Dockerfile.conductor` | The "standalone conductor" concept is gone. The backend image (Phase 5) replaces it. |
-| `deploy/docker/docker-compose.yml` | Wired a conductor + worker stack. Will come back wired against the published backend image. |
-| `deploy/kubernetes/conductor-deployment.yaml` | Same. |
-| `deploy/systemd/convex-conductor.service` | Same. |
+```
+                  ┌──────────────────────────────────┐
+ Client ─HTTPS/WS─┤  getconvex/convex-backend:X.Y.Z  │◀── admin CLI
+                  │  (no deployer code)              │    (loopback only)
+                  └──────────┬───────────────────────┘
+                             │ gRPC ·5678
+                             │ (WorkerAdmissionService +
+                             │  BackendCallbackService)
+                   ┌─────────┴─────────┐
+                   ▼                   ▼
+          ┌─────────────────┐  ┌─────────────────┐
+          │ myco/my-worker  │  │ myco/my-worker  │   … (scales dynamically)
+          │ (links handlers)│  │ (same image)    │
+          └─────────────────┘  └─────────────────┘
+```
 
-## What still builds + runs
+Backend rolls on its own cadence (rare; maintenance-window-grade
+since it's stateful). Worker image rolls whenever deployer code
+changes — the backend doesn't restart.
 
-Nothing standalone from the distributed crate today. The
-previous example binaries (`conductor`, `conductor_dispatch`,
-`worker_with_functions`) have been removed because they all
-relied on the worker-commits-locally shape; the one remaining
-`worker.rs` in `crates/convex_native_distributed/examples/`
-still builds but it has no functions registered so it's a
-no-op smoke test, not a demo.
+## Quick local smoke-test
 
-For a complete, runnable Convex native app today, the path is
-**Topology A — monolith**: `local_backend` as a library, with
-your functions linked in. See `STANDALONE.md`.
+```sh
+# 1. Build the backend image.
+docker build \
+  -f convex-native/examples/deploy/docker/Dockerfile.backend \
+  -t getconvex/convex-backend:dev .
 
-## When does a proper deploy example come back?
+# 2. Build your worker image.
+docker build \
+  -f convex-native/examples/deploy/docker/Dockerfile.worker \
+  -t myco/my-worker:dev .
 
-Per `DISTRIBUTED_PLAN.md` §15, the phased delivery puts usable
-operator artifacts in view at the following points:
+# 3. Docker network so the worker can dial the backend by name.
+docker network create convex-net
 
-- **After Phase 2**: a `local_backend` binary with
-  `CONVEX_NATIVE_WORKERS=grpc://...` set will dispatch to
-  remote workers. A docker-compose that demonstrates this
-  lands with Phase 2.
-- **After Phase 3**: dynamic worker pool. Workers register via
-  `CONVEX_BACKEND_ENDPOINT`. Full example stack (backend + N
-  workers + autoscale manifest) lands with Phase 3.
-- **After Phase 5**: prebuilt backend image
-  (`getconvex/convex-backend`). Deployers stop building the
-  backend; the examples directory gets a README that reads
-  "pull the image + copy this Dockerfile.worker."
+# 4. Boot the backend. Defaults bind admission to 0.0.0.0:5678.
+docker run -d --name convex-backend --network convex-net \
+  -e CONVEX_ADMIN_BIND_ADDR=127.0.0.1:9090 \
+  -p 3210:3210 -p 5678:5678 \
+  getconvex/convex-backend:dev
 
-## Interim guidance
+# 5. Boot the worker pointing at the backend.
+docker run -d --name worker-a --network convex-net \
+  -e CONVEX_BACKEND_ENDPOINT=http://convex-backend:5678 \
+  -e CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567 \
+  myco/my-worker:dev
 
-If you need to deploy anything right now and can't wait:
+# 6. Admin probe (pool snapshot).
+docker exec convex-backend curl -s http://127.0.0.1:9090/admin/pool | jq .
+```
 
-1. Follow `STANDALONE.md`. The monolith path works today, all
-   Convex semantics intact.
-2. Use `Dockerfile.worker` + `worker-deployment.yaml` as a
-   future-compatible starting point for a worker image, but
-   expect to swap env vars (`CONVEX_WORKER_ENDPOINTS` goes
-   away; `CONVEX_BACKEND_ENDPOINT` takes over) when Phase 3
-   lands.
-3. Treat `DISTRIBUTED_PLAN.md` as the north star for what the
-   surface will look like.
+Scale workers with more `docker run` invocations; `kubectl
+apply` the manifests in `deploy/kubernetes/` for a real cluster.
+
+## Rolling-update flow
+
+1. Build worker image at version `v2`. Push.
+2. `kubectl set image deployment/convex-worker worker=myco/my-worker:v2`
+   — v2 pods come up alongside v1.
+3. Bump the pool floor:
+   ```sh
+   curl -X POST http://127.0.0.1:9090/admin/pool/floor \
+     -d '{"min_registry_version":"v2"}'
+   ```
+4. Backend stops routing new dispatches to v1 workers. Inventory
+   diff logs to `tracing::info!(target="convex_admission", …)`
+   on each new version admitted.
+5. Optionally trigger drains on specific workers:
+   ```sh
+   curl -X POST http://127.0.0.1:9090/admin/pool/drain \
+     -d '{"worker_id":3,"reason":"v1 retirement"}'
+   ```
+6. The backend never restarts. Clients feel zero impact.
+
+## Monolith alternative
+
+For small deployments or local development without Docker, the
+monolith topology (`local_backend` as a library, with your
+handlers linked in, no worker pool) is still fully supported.
+See `STANDALONE.md`. The native + distributed crates are
+additive; you opt into the distributed path by setting
+`CONVEX_ADMISSION_BIND_ADDR` on the backend + running separate
+worker binaries.
+
+## Cross-references
+
+- `DISTRIBUTED_PLAN.md` — full architecture + phase breakdown.
+- `STATUS.md` — per-substep shipped-vs-outstanding tracker.
+- `DEPLOYMENT.md` — operational guide (env vars, rolling
+  updates, observability).
+- `USAGE.md` §19 — developer-facing deployment reference with
+  complete env-var matrix.
+- `STANDALONE.md` — monolith topology recipe.

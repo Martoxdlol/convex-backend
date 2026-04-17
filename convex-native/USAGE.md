@@ -7,9 +7,9 @@ step-by-step walkthrough.
 
 - **Porting from JS?** `MIGRATION.md` has JS↔Rust side-by-sides.
 - **Target architecture** (the "where does this run" answer):
-  `DISTRIBUTED_PLAN.md`. The project is mid-pivot to a backend-
-  coordinates / workers-execute split; this file describes the
-  *developer surface*, which is stable across both topologies.
+  `DISTRIBUTED_PLAN.md` — all phases shipped in source.
+  This file describes the *developer surface*, which is stable
+  across the monolith + distributed topologies.
 - **Current state of the tree**: `STATUS.md`.
 - **Operational / deploy guide**: `DEPLOYMENT.md`.
 - **Monolith alternative** (`local_backend` as a library):
@@ -713,45 +713,124 @@ collection happens at link time — nothing you need to call.
 
 ## 19. Distributed topology
 
-> **Target architecture**: see `DISTRIBUTED_PLAN.md`. One prebuilt
-> `getconvex/convex-backend` image coordinates OCC, subscriptions,
-> committing; a pool of worker binaries executes native handlers
-> and returns reads / writes over gRPC. `STATUS.md` tracks which
-> phase is currently shipped.
+> **All phases shipped in source.** See `DISTRIBUTED_PLAN.md`
+> for the full architecture; `STATUS.md` for the per-substep
+> tracker. Below is the deployer-facing reference.
 
-Two operating modes are first-class today:
+The backend coordinates OCC, subscriptions, and committing;
+workers execute handlers and return transaction summaries over
+gRPC; action sub-calls route back through
+`BackendCallbackService` so every write still lands in the
+backend's Committer.
 
-```
-CONVEX_MODE=standalone  # default — HTTP only, native + JS in one process (monolith)
-CONVEX_MODE=worker      # HTTP + tonic FunctionExecutionService (pre-Phase-1 worker)
-```
+### Env-var matrix
 
-(A third value, `CONVEX_MODE=conductor`, parses for backwards
-compatibility but is rejected by `convex-local-backend` — the
-standalone-conductor concept is replaced by the backend image.)
+| Var | Side | When to set | Effect |
+|-----|------|-------------|--------|
+| `CONVEX_MODE` | worker binary | always in a worker | `worker` opts a `convex-local-backend` into serving `FunctionExecutionService`; `standalone` (default) is monolith HTTP-only. `conductor` is rejected — the Phase-5 backend image replaces it. |
+| `CONVEX_WORKER_BIND_ADDR` | worker | always | `host:port` the worker serves gRPC dispatch on. Default `0.0.0.0:4567`. |
+| `CONVEX_BACKEND_ENDPOINT` | worker | Phase-3+ workers | `grpc://backend:5678` — worker dials this on startup, registers via `WorkerAdmissionService`, stays connected for its lifetime. Unset → worker runs in the pre-Phase-3 fixed-pool shape (backend dials it instead). |
+| `CONVEX_ADMISSION_BIND_ADDR` | backend | distributed topology | `host:port` the backend binds `WorkerAdmissionService` on. Workers dial here. Unset → no dynamic admission; backend uses `CONVEX_NATIVE_WORKERS` instead. |
+| `CONVEX_NATIVE_WORKERS` | backend | Phase-2 fixed pool | Comma-separated `grpc://host:port,…` worker URLs. The Phase-2 fallback shape when the admission service isn't running. |
+| `CONVEX_ADMIN_BIND_ADDR` | backend | operator tooling | `host:port` (typically `127.0.0.1:9090`) for the admin HTTP router. Phase-7 operator surface. |
+| `CONVEX_REFUSE_NATIVE_HANDLERS` | backend | Phase-5 image CI | `1` → backend boot fails if it has any `#[convex::*]` registrations linked in. Catches "worker code accidentally ended up in the backend image" in CI. |
 
-### Worker (from `convex-local-backend`)
+### Worker binary boot
 
 ```sh
+# Worker dials the backend's admission port on startup; the
+# backend dials back to CONVEX_WORKER_BIND_ADDR for dispatch.
 CONVEX_MODE=worker \
   CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567 \
-  ./target/debug/convex-local-backend
+  CONVEX_BACKEND_ENDPOINT=http://convex-backend:5678 \
+  ./target/release/my-convex-worker
 ```
 
-Boots the HTTP Application and additionally spawns a tonic
-`FunctionExecutionService` on `CONVEX_WORKER_BIND_ADDR`, sharing
-its `Database<Rt>` with the HTTP path. Ctrl-C / `/preempt` drains
-HTTP and the worker gRPC server together. Phase 1 of
-`DISTRIBUTED_PLAN.md` changes this to return
-`FunctionFinalTransaction` to the backend instead of committing
-locally.
+Boots the worker's `FunctionExecutionService` and registers
+against the backend's `WorkerAdmissionService` with a
+`RegistrationEnvelope` built from the crate's
+`collect_inventory()` (every `#[convex::*]`-decorated handler,
+`NativeSchema::collect()`, `HttpRouter::collect()`,
+`CronRegistry::collect()`). Closing the admission stream (SIGTERM,
+process exit) retires the worker from the pool cleanly.
 
-### Version-aware rolling updates
+Actions that call `ctx.run_mutation(...)` /
+`ctx.scheduler().run_after(...)` / `ctx.storage().store(...)`
+etc. route back to the backend via
+`BackendCallbackService`. Wire with
+`FunctionExecutionServer::with_backend_callback_endpoint(url)`
+or use the bundled worker binary which sets it from
+`CONVEX_BACKEND_ENDPOINT` by convention.
 
-`DistributedFunctionRunner::with_min_registry_version(v)` sets a
-cluster-wide floor every dispatch inherits; per-call
-`ExecuteRequest::min_registry_version` overrides it. Workers
-below the floor reject with `tonic::Code::FailedPrecondition`.
+### Backend binary boot
+
+```sh
+# Prebuilt backend image, distributed topology.
+docker run -d --name convex-backend \
+  -e CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678 \
+  -e CONVEX_ADMIN_BIND_ADDR=127.0.0.1:9090 \
+  -p 3210:3210 -p 5678:5678 \
+  getconvex/convex-backend:X.Y.Z
+```
+
+The image at
+`convex-native/examples/deploy/docker/Dockerfile.backend`
+defaults `CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678` so the above
+`-e` line is optional; `CONVEX_ADMIN_BIND_ADDR` is opt-in and
+loopback-only so operator tooling isn't exposed on the public
+network.
+
+### Admin HTTP surface
+
+With `CONVEX_ADMIN_BIND_ADDR` set, the backend mounts:
+
+- `GET /admin/pool` — JSON snapshot (total workers, by_version,
+  by_kind, kind_preferences, per-worker detail with
+  `in_flight`).
+- `POST /admin/pool/floor` body
+  `{"min_registry_version":"X.Y.Z"}` — set rolling-update
+  floor; `null` clears.
+- `POST /admin/pool/kind_preference` body
+  `{"function_name":"compute","kind":"native-rust"}` — pin
+  per-function Rust vs JS routing (soft hint — falls back to
+  any-kind if the preferred kind is absent).
+- `POST /admin/pool/drain` body
+  `{"worker_id":N,"reason":"…"}` — operator-initiated drain;
+  the worker's `drain_signaled()` future wakes and it retires
+  cleanly.
+
+### Rolling-update shape
+
+1. Build new worker image (v2). Push.
+2. Roll the worker Deployment. v2 workers register; they
+   coexist with v1 in the pool.
+3. Operator bumps the floor:
+   ```sh
+   curl -X POST http://127.0.0.1:9090/admin/pool/floor \
+     -d '{"min_registry_version":"v2"}'
+   ```
+   Backend stops routing dispatches to v1 workers.
+4. Either wait for v1 autoscaler to scale down, or
+   explicitly drain:
+   ```sh
+   curl -X POST http://127.0.0.1:9090/admin/pool/drain \
+     -d '{"worker_id":3,"reason":"v1 retirement"}'
+   ```
+5. Backend logs the inventory diff on each new
+   `registry_version` join via
+   `tracing::info!(target="convex_admission", …)` so the
+   rollout reads as "v2 added [foo, bar], removed [legacy]".
+
+### Reference deployment artifacts
+
+- Dockerfile.backend — `convex-native/examples/deploy/docker/`
+- Dockerfile.worker — same directory
+- `backend-deployment.yaml` + `worker-deployment.yaml` —
+  `convex-native/examples/deploy/kubernetes/` (Namespace,
+  PVC, Deployment, two Services: public-HTTP +
+  internal-admission)
+- Bringing-up-locally recipe — `DEPLOYMENT.md` §"Bringing up
+  Topology B locally"
 
 ## 20. Where the crate stops
 

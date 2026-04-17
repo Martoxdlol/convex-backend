@@ -1,21 +1,29 @@
 # Worker image template — runs the deployer's native functions,
 # dispatches get delivered from the backend over gRPC.
 #
-# IMPORTANT: the env-var surface will evolve across phases. See
-# convex-native/DEPLOYMENT.md for the per-phase matrix.
+# Env-var contract (production / Phase-3+):
+#   CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567
+#       Port the worker serves `FunctionExecutionService` on.
+#   CONVEX_BACKEND_ENDPOINT=http://convex-backend:5678
+#       Backend admission port. Worker dials here on startup,
+#       sends a `RegistrationEnvelope`, stays connected for
+#       its lifetime. Closing the stream retires the worker
+#       from the pool.
 #
-# - Pre-Phase-3: worker exposes gRPC on CONVEX_WORKER_BIND_ADDR,
-#   backend connects out to it (fixed endpoint list on the backend
-#   side).
-# - After Phase 3: worker dials the backend at
-#   CONVEX_BACKEND_ENDPOINT and registers itself via the
-#   WorkerAdmissionService streaming RPC.
+# Action sub-calls (`ctx.run_mutation`, `ctx.scheduler().run_after`,
+# storage ops) route back to the backend via
+# `BackendCallbackService` when
+# `CONVEX_BACKEND_ENDPOINT` is set — the worker's
+# `FunctionExecutionServer::with_backend_callback_endpoint(...)`
+# is wired to it by the worker binary boot glue.
 #
 # Copy this file into your deployer-project root and adjust the
 # `cargo build` target to match your binary name.
 #
 # Build:
 #   docker build -f Dockerfile.worker -t myco/convex-worker:$(git rev-parse --short HEAD) .
+#
+# See also: convex-native/DEPLOYMENT.md + USAGE.md §19.
 
 # ── builder ────────────────────────────────────────────────────────
 FROM rust:1.82-slim AS builder

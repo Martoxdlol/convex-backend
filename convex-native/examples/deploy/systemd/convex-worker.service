@@ -24,6 +24,9 @@ ExecStart=/usr/local/bin/convex-worker
 # Environment — adjust the bind address / log level per host.
 Environment=CONVEX_MODE=worker
 Environment=CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567
+# Phase-3+ admission: dial the backend + auto-register. Point
+# at the backend's CONVEX_ADMISSION_BIND_ADDR.
+Environment=CONVEX_BACKEND_ENDPOINT=http://convex-backend.internal:5678
 Environment=RUST_LOG=info,convex_native=debug
 
 # Graceful shutdown: give the worker's drain loop time to finish

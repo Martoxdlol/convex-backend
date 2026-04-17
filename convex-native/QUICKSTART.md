@@ -349,23 +349,38 @@ when the composite is built with `.with_file_storage(fs)`.
 
 ## Deploying in a distributed topology
 
-The target distributed architecture is described in
-`DISTRIBUTED_PLAN.md` (read that first). In short: one prebuilt
-**backend** image coordinates OCC, subscriptions, committing; a
-pool of **workers** (the image you build from your crate) executes
-your native handlers and returns reads / writes to the backend
-over gRPC.
+Prebuilt **backend** image coordinates OCC, subscriptions, and
+committing; a pool of **workers** (the image you build from
+your crate) executes your native handlers and routes reads /
+writes / action sub-calls back over gRPC.
 
-**Status (this file is a quickstart, not a status tracker).**
-The phase roadmap in `DISTRIBUTED_PLAN.md` §15 is being delivered
-top-down; see `STATUS.md` for which pieces are actually shipped.
-Until the roadmap lands, the canonical way to run a complete
-native Convex app is **Topology A — monolith** (`local_backend`
-linked as a library with your functions). See `STANDALONE.md`.
+All phases of `DISTRIBUTED_PLAN.md` are shipped in source.
+Pull the two ready-to-deploy Dockerfiles:
 
-For the worker-side binary template (already approximately the
-right shape for the target architecture), see
-`examples/deploy/docker/Dockerfile.worker`.
+```sh
+# Backend (carries no deployer code — one-time build).
+docker build -f convex-native/examples/deploy/docker/Dockerfile.backend \
+  -t getconvex/convex-backend:dev .
+
+# Worker (links your #[convex::*] handlers; rebuild on code change).
+docker build -f convex-native/examples/deploy/docker/Dockerfile.worker \
+  -t myco/my-worker:dev .
+```
+
+Then follow the 6-step docker-compose-style bring-up recipe in
+`DEPLOYMENT.md` §"Bringing up Topology B locally" (worker auto-
+registers via `CONVEX_BACKEND_ENDPOINT`; admin HTTP surface on
+a loopback port exposes pool snapshot / floor / drain /
+kind_preference). For kubernetes, apply both
+`backend-deployment.yaml` + `worker-deployment.yaml` from
+`convex-native/examples/deploy/kubernetes/`.
+
+The monolith topology (`local_backend` linked as a library
+with your handlers) still works for local development / small
+deployments — see `STANDALONE.md`.
+
+See `USAGE.md` §19 for the complete env-var matrix across both
+sides.
 
 ## What's not yet wired
 
@@ -381,9 +396,12 @@ right shape for the target architecture), see
   `ctx.run_query(...)`. Query sub-calls inside one action already
   share a pinned read timestamp.
 
-At the distributed level: Phase 1 of `DISTRIBUTED_PLAN.md` (wire
-contract — worker returns `FunctionFinalTransaction` instead of
-committing) is the active work; Phases 2–7 are not started.
+At the distributed level: all phases of `DISTRIBUTED_PLAN.md`
+have shipped in source; `STATUS.md` lists the four remaining
+items (two live-DB test-fixture assertions, the CI/release
+push pipeline, the reference JS worker binary) which are
+blocked on infrastructure outside this repo rather than
+in-flight plan work.
 
 Non-indexed filters (`.eq(Field, v)` without a preceding
 `.with_index(...)`) **are** supported: they lower to a
