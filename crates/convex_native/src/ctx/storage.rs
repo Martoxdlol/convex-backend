@@ -1,7 +1,5 @@
 //! File storage handle exposed to actions and HTTP actions.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` step 2.6 + 2.8 wiring.
-//!
 //! Methods route through the attached [`NativeActionCallbacks`]. In
 //! unit tests that use `NoopCallbacks`, every method returns a clear
 //! "no callbacks attached" error.

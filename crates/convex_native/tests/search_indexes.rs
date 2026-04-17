@@ -1,6 +1,4 @@
 //! Tests `#[convex(text_index(...))]` and `#[convex(vector_index(...))]`.
-//!
-//! Per `IMPLEMENTATION_PLAN.md` step 5.3.
 
 #[allow(unused_imports)]
 use convex_native::document::ConvexDocument as _;

@@ -1,6 +1,4 @@
 //! Tests that the runner records function-level metrics.
-//!
-//! Per `IMPLEMENTATION_PLAN.md` Phase 4 step 4.2.
 
 use std::sync::Arc;
 

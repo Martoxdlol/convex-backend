@@ -1,6 +1,4 @@
 //! Integration test for the `ConvexBackend` builder.
-//!
-//! Per `IMPLEMENTATION_PLAN.md` step 1.5.2.
 
 use std::sync::Arc;
 

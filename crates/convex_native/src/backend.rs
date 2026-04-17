@@ -1,7 +1,5 @@
 //! Developer-facing builder for assembling a native Convex app.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` step 1.5.2.
-//!
 //! ```ignore
 //! use convex_native::{ConvexBackend, NativeActionCallbacks};
 //! use std::sync::Arc;

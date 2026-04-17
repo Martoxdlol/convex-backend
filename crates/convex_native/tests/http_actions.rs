@@ -1,6 +1,4 @@
 //! Tests `#[convex::http_action]` registration + request/response types.
-//!
-//! Per `IMPLEMENTATION_PLAN.md` step 2.7.
 
 use bytes::Bytes;
 use convex_native::{

@@ -1,10 +1,10 @@
 //! Distributed execution protocol — tonic-free Rust shapes.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` Phase 3.
-//!
-//! The full design in `native-rust-functions.md` §10 calls for a gRPC
-//! protocol where a **conductor** dispatches function calls to a pool
-//! of identical **worker** binaries, each running the native registry.
+//! See `convex-native/DISTRIBUTED_PLAN.md` for the target
+//! architecture: the backend process coordinates OCC and
+//! subscriptions, and dispatches function execution over gRPC to
+//! a pool of identical worker binaries that run the native
+//! registry.
 //!
 //! This module keeps the runner-facing shape visible in one place:
 //! [`ConvexMode`] (operating-mode enum parsed from `CONVEX_MODE`),

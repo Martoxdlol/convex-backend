@@ -1,7 +1,5 @@
 //! `#[derive(ConvexEnum)]` — string-valued Rust enums.
 //!
-//! Per `convex-native/IMPLEMENTATION_PLAN.md` step 1.6.1.
-//!
 //! Given an enum like
 //!
 //! ```ignore

@@ -1,7 +1,5 @@
 //! `#[derive(ConvexUnion)]` — tagged unions.
 //!
-//! Per `convex-native/IMPLEMENTATION_PLAN.md` step 1.6.3.
-//!
 //! Given an enum where each variant is a struct-variant with named
 //! fields:
 //!

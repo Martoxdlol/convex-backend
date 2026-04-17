@@ -1,8 +1,6 @@
 //! `#[derive(ConvexDocument)]` — generates the glue required to use a Rust
 //! struct as a Convex table row.
 //!
-//! Per `convex-native/IMPLEMENTATION_PLAN.md` steps 1.2.1 / 1.2.2 / 1.2.3.
-//!
 //! Emitted for a struct `Foo { .. }` with `#[convex(table = "foos")]`:
 //! - `impl ::convex_native::ConvexDocument for Foo`
 //! - `pub enum FooField` (one variant per struct field, `impl FieldReference`)

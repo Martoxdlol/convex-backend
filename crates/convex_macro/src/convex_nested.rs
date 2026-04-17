@@ -1,7 +1,5 @@
 //! `#[derive(ConvexNested)]` — embedded objects.
 //!
-//! Per `convex-native/IMPLEMENTATION_PLAN.md` step 1.6.2.
-//!
 //! For types that live **inside** a document but aren't tables of their own
 //! (nested `address: Address` on a `User` doc, say). The derive emits
 //! `ToConvex` / `FromConvex` impls that round-trip the struct through a

@@ -1,7 +1,5 @@
 //! Startup warm-up surface.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` Phase 4 step 4.6.
-//!
 //! The backend adapter calls [`plan_warmup`] at startup to get a list
 //! of every (table, index) pair the native schema declared. It then
 //! loads each one into its in-memory index cache so the first request

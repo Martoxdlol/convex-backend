@@ -1,8 +1,6 @@
 //! Tests `NativeActionCallbacks` wiring through `ActionCtx`,
 //! `Scheduler`, and `StorageCtx`.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` step 2.8.
-//!
 //! The tests implement a `MockCallbacks` that captures incoming calls
 //! and returns canned results, then verify that typed sub-calls,
 //! scheduler calls, and storage calls round-trip through the callback.

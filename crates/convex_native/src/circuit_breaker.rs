@@ -1,7 +1,5 @@
 //! Per-function circuit breaker.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` Phase 4 step 4.5.
-//!
 //! Simple one-shot breaker: each function gets a window of allowed
 //! consecutive failures; past that it opens and rejects new calls for
 //! `cooldown` before letting one probe call through (half-open). A

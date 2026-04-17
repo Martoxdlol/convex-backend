@@ -1,7 +1,5 @@
 //! Pluggable per-function metrics sink.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` Phase 4 step 4.2.
-//!
 //! The `NativeFunctionRunner` exposes hooks to report function-level
 //! latency and outcome (ok vs err) without pulling a specific metrics
 //! backend into the crate. Implementors can wire this to `prometheus`,

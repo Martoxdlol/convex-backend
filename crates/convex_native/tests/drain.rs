@@ -1,6 +1,4 @@
 //! Tests graceful-shutdown drain on `NativeFunctionRunner`.
-//!
-//! Per `IMPLEMENTATION_PLAN.md` Phase 4 step 4.3.
 
 use std::{
     sync::Arc,

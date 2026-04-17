@@ -1,7 +1,5 @@
 //! `#[convex::http_action(method = "...", path = "...")]`.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` step 2.7.
-//!
 //! Expands to:
 //!
 //! - The original async fn, unchanged.

@@ -1,7 +1,5 @@
 //! Backend-injected callbacks used by `ActionCtx` / `HttpActionCtx`.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` step 2.8.
-//!
 //! The problem: an `#[convex::action]` (or HTTP action) running natively
 //! may need to call **queries** or **mutations**, which require a fresh
 //! database transaction per call. It may also need to schedule future

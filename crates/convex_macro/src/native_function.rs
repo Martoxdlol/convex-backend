@@ -1,7 +1,5 @@
 //! `#[convex::query]` and `#[convex::mutation]` attribute macros.
 //!
-//! Per `convex-native/IMPLEMENTATION_PLAN.md` steps 1.2.4 / 1.2.5.
-//!
 //! Given an async fn shaped like
 //!
 //! ```ignore

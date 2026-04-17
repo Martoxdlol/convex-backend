@@ -1,7 +1,5 @@
 //! HTTP action surface — request, response, context, registration.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` step 2.7.
-//!
 //! Handlers look like:
 //!
 //! ```ignore

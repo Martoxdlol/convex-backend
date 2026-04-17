@@ -1,7 +1,5 @@
 //! Marker traits identifying native function references.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` step 2.3.
-//!
 //! Each `#[convex::query]` / `#[convex::mutation]` / `#[convex::action]`
 //! proc macro also generates a ZST marker type (PascalCase of the
 //! function name) implementing the matching trait. Downstream,

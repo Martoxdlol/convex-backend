@@ -1,7 +1,5 @@
 //! Typed scheduler for native functions.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` step 2.5 + 2.8 wiring.
-//!
 //! Obtained via `MutationCtx::scheduler()` / `ActionCtx::scheduler()` /
 //! `HttpActionCtx::scheduler()`. When the context was built with
 //! [`NativeActionCallbacks`] attached the `run_after` /

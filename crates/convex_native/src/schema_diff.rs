@@ -1,7 +1,5 @@
 //! Schema-to-schema diff for migration planning.
 //!
-//! Per `IMPLEMENTATION_PLAN.md` step 5.1.
-//!
 //! Compare two `DatabaseSchema` values (typically the currently-deployed
 //! one vs the one the current binary's `#[derive(ConvexDocument)]` set
 //! would produce) and emit a list of [`SchemaChange`]s. Intended use is
