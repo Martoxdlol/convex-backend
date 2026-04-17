@@ -49,9 +49,20 @@ and 5.1–5.4 is in-tree and covered by tests.
 
 This project adds support for writing Convex server functions (queries, mutations, actions) in native Rust. The design doc (`native-rust-functions.md`) is complete. This plan breaks implementation into incremental, session-sized steps -- each producing a compilable, testable increment.
 
-**Two new crates:** `convex_native` (core types, context wrappers, NativeFunctionRunner) and extensions to existing `convex_macro` (proc macros). A third crate `convex_native_distributed` comes in Phase 3.
+**Crates that shipped:** `convex_native` (core types, context wrappers,
+`NativeFunctionRunner`), extensions to `convex_macro` (derive + attribute
+procs), `convex_native_backend` (the `FunctionRunner` adapter), and
+`convex_native_distributed` (Phase 3 gRPC worker/conductor).
 
-**Key integration point:** The `FunctionRunner` trait at `crates/function_runner/src/lib.rs:84` is the core abstraction. `InProcessFunctionRunner` at `crates/function_runner/src/in_process_function_runner.rs:98` is the reference implementation. The new `NativeFunctionRunner` will implement this same trait, and be wired into `make_app()` at `crates/local_backend/src/lib.rs:214`.
+**Key integration point:** The `FunctionRunner` trait at
+`crates/function_runner/src/lib.rs` is the backend's core dispatch
+abstraction. `InProcessFunctionRunner` is the V8 reference
+implementation. `NativeFunctionRunner` is deliberately the *narrow*
+dispatch surface — it doesn't implement `FunctionRunner` directly;
+`CompositeFunctionRunner` (in `crates/convex_native_backend/`) does,
+by wrapping a JS runner and intercepting native names on
+`run_function`. The composite is instantiated inside `make_app()` at
+`crates/local_backend/src/lib.rs` ahead of `Application::new`.
 
 ---
 
