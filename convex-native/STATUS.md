@@ -18,15 +18,15 @@ active phase is.
 
 Framework-level pieces (derives, ctx surface, schema reflection,
 registry, introspection) are solid and reused. The distributed
-dispatch layer is being rebuilt per `DISTRIBUTED_PLAN.md` —
-**Phase 1 (wire contract) has shipped** and **Phase 2
-(backend-side `FunctionRunner` impl) is substantially complete**:
-every substep except 2.8b (full SubscriptionManager assertion)
-has landed. `DistributedFunctionRunner` implements
-`FunctionRunner<ProdRuntime>`, and `local_backend` routes native
-Query/Mutation through a remote pool when
-`CONVEX_NATIVE_WORKERS` is set. **Phase 3 (dynamic pool +
-admission service)** is the next major step.
+dispatch layer is rebuilt per `DISTRIBUTED_PLAN.md` — **Phases
+1, 2, and 3 have shipped** (except substep 2.8b's full
+SubscriptionManager assertion, which is blocked on in-repo DB
+fixtures). Workers auto-register against the backend's
+`WorkerAdmissionService` and the backend dispatches native
+Query/Mutation through a dynamic, churn-tolerant `WorkerPool` —
+no backend restart needed to change the worker set. **Phase 4
+(action sub-call callbacks — `BackendCallbackService`)** is
+the next major step.
 
 ---
 
@@ -565,13 +565,41 @@ each substep ships as its own commit.
      (`admission_churn.rs`) + three env-var parser unit tests
      (`mode::tests::read_admission_bind_addr_*`).
 
-3.8. **Drain + retire flow.** `DrainNotice` plumbing; the
-     operator-facing "retire this worker" path triggers a
-     notice, waits for in-flight to clear, closes the stream.
-     `CONVEX_WORKER_ENDPOINTS` is retired in favor of
-     `CONVEX_BACKEND_ENDPOINT` (worker-outbound);
-     `CONVEX_NATIVE_WORKERS` on the backend is replaced by the
-     admission service's dynamic pool.
+3.8. ✓ **Drain + retire flow + `local_backend` admission wiring.**
+     Landed.
+
+     - `WorkerAdmissionServer::request_drain(worker_id, reason)`
+       pushes a `DrainNotice` on the worker's outbound stream.
+       The worker's `drain_signaled()` future (substep 3.5)
+       wakes; dropping the `WorkerRegistration` retires the
+       worker. Double-drain is a no-op (returns `Ok(false)`).
+     - New public helper
+       `admission_server::spawn_admission_server(bind_addr) ->
+       Arc<WorkerPool>` so `local_backend` can stand up the
+       admission service without pulling `tonic` / `pb` as
+       direct dependencies.
+     - `local_backend::make_app` now reads
+       `CONVEX_ADMISSION_BIND_ADDR`. When set, it calls
+       `spawn_admission_server(bind_addr)`, wraps the returned
+       pool in `PoolFunctionRunner`, and hands that to the
+       composite as the remote-native branch.
+     - Env-var precedence: `CONVEX_ADMISSION_BIND_ADDR` (dynamic
+       pool, Phase 3) > `CONVEX_NATIVE_WORKERS` (fixed pool,
+       Phase 2) > in-process (default). `CONVEX_WORKER_ENDPOINTS`
+       stays around for pre-Phase-3 tests.
+
+     Tests: one new integration test
+     (`admission_churn::operator_triggered_drain_retires_worker`)
+     covers the full backend → worker DrainNotice round-trip +
+     retirement + double-drain-no-op contract.
+
+     Phase 3 exit criteria met: workers auto-register on start,
+     the backend dispatches through the dynamic pool, operators
+     don't need to restart the backend to change the worker set,
+     the admission service tolerates churn (join / leave /
+     rejoin) without dropping in-flight state. Total delta on
+     `convex_native_distributed`: **98 tests green** (83 lib +
+     5 churn + 3 e2e + 7 multi-worker).
 
 Exit criteria: workers auto-register on start; the backend
 dispatches through the dynamic pool; operators don't need to

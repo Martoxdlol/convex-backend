@@ -220,6 +220,76 @@ async fn worker_leave_retires_from_pool() {
 }
 
 #[tokio::test]
+async fn operator_triggered_drain_retires_worker() {
+    // Substep 3.8: the backend can push a `DrainNotice` to a
+    // specific worker via `WorkerAdmissionServer::request_drain`.
+    // The worker's drain-signalled future fires (substep 3.5);
+    // once the worker drops its registration, the admission
+    // server's retirement task removes it from the pool.
+    let pool = Arc::new(WorkerPool::new());
+    let admission_service = WorkerAdmissionServer::new(pool.clone());
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let admission_addr = listener.local_addr().unwrap();
+    {
+        let service = admission_service.clone();
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(WorkerAdmissionServiceServer::new(service))
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+    }
+    tokio::task::yield_now().await;
+
+    let exec_addr = spawn_worker_exec().await;
+    let reg = WorkerRegistration::register(
+        format!("http://{admission_addr}"),
+        format!("http://{exec_addr}"),
+        "churn-1.0.0".to_string(),
+    )
+    .await
+    .expect("register");
+    assert!(wait_for(|| pool.len() == 1).await);
+
+    // Find the admitted WorkerId. The pool doesn't expose an
+    // iterator for safety; use the version-grouping snapshot to
+    // confirm the worker is there, then call `request_drain`
+    // with `WorkerId(0)` (monotonically-allocated; first
+    // registration in this test).
+    use convex_native_distributed::pool::WorkerId;
+    let delivered = admission_service
+        .request_drain(WorkerId(0), "operator-triggered drain test")
+        .await
+        .expect("drain delivered");
+    assert!(delivered, "drain notice reached the active worker stream",);
+
+    // The worker's `drain_signaled()` future should fire.
+    // `select!`-poll it with a short timeout to keep the test
+    // bounded.
+    let drained = tokio::time::timeout(Duration::from_secs(1), reg.drain_signaled()).await;
+    assert!(drained.is_ok(), "worker received DrainNotice");
+
+    // Dropping the handle closes the stream and triggers
+    // retirement. In production the worker's binary would drain
+    // in-flight work first; here the stream close is the full
+    // lifecycle exit.
+    drop(reg);
+    assert!(
+        wait_for(|| pool.is_empty()).await,
+        "worker retired from pool after drain + stream close",
+    );
+
+    // Double-drain is a no-op — the worker is already gone.
+    let redundant = admission_service
+        .request_drain(WorkerId(0), "already gone")
+        .await
+        .unwrap();
+    assert!(!redundant, "drain on an absent worker is a no-op");
+}
+
+#[tokio::test]
 async fn worker_rejoin_gets_fresh_id() {
     // Substep 3.3 semantics confirmed end-to-end: a worker
     // restarting (retire → register again) gets a fresh

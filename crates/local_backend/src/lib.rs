@@ -259,26 +259,48 @@ pub async fn make_app(
         "Native function registry: {} registered",
         native_runner.len(),
     );
-    // Substep 2.7 of `convex-native/DISTRIBUTED_PLAN.md`: when
-    // `CONVEX_NATIVE_WORKERS=grpc://host-a:4567,grpc://host-b:4567`
-    // is set, route native Query/Mutation dispatch through a
-    // P2C-balanced remote worker pool instead of dispatching
-    // in-process. Actions still run locally until Phase 4's
-    // `BackendCallbackService` lands. Unset → keep in-process
-    // behaviour (the Phase-2 default).
-    let remote_native_pool: Option<Arc<dyn FunctionRunner<ProdRuntime>>> =
+    // Native-dispatch routing:
+    //
+    // - Substep 3.8: when `CONVEX_ADMISSION_BIND_ADDR=host:port` is set, spawn a
+    //   `WorkerAdmissionService` on that port and use a dynamic
+    //   `PoolFunctionRunner` for native dispatch. Takes precedence over
+    //   `CONVEX_NATIVE_WORKERS`.
+    // - Substep 2.7: when `CONVEX_NATIVE_WORKERS` is set (and
+    //   `CONVEX_ADMISSION_BIND_ADDR` isn't), use the fixed-pool
+    //   `DistributedFunctionRunner`.
+    // - Neither set: keep in-process behaviour (the Phase-2 default), native
+    //   Query/Mutation dispatches locally.
+    //
+    // Actions still run locally until Phase 4's
+    // `BackendCallbackService` lands, regardless of which
+    // remote-pool mode is active.
+    let admission_bind_addr = convex_native_distributed::read_admission_bind_addr_from_env()?;
+    let remote_native_pool: Option<Arc<dyn FunctionRunner<ProdRuntime>>> = if let Some(bind_addr) =
+        admission_bind_addr
+    {
+        tracing::info!(
+            "CONVEX_ADMISSION_BIND_ADDR={bind_addr:?} — spawning WorkerAdmissionService; native \
+             Query/Mutation dispatch will route through the dynamic pool",
+        );
+        let pool =
+            convex_native_distributed::admission_server::spawn_admission_server(bind_addr).await?;
+        Some(Arc::new(
+            convex_native_distributed::pool_runner::PoolFunctionRunner::new(pool),
+        ))
+    } else {
         match convex_native_distributed::read_native_workers_from_env()? {
             Some(endpoints) => {
                 tracing::info!(
                     "CONVEX_NATIVE_WORKERS configured with {} endpoint(s); native Query/Mutation \
-                     dispatch will route through the remote pool",
+                     dispatch will route through the fixed remote pool",
                     endpoints.len(),
                 );
                 let clients = convex_native_distributed::build_conductor_runner(&endpoints).await?;
                 Some(Arc::new(clients))
             },
             None => None,
-        };
+        }
+    };
     let mut composite = convex_native_backend::CompositeFunctionRunner::new(
         native_runner.clone(),
         js_runner,

@@ -18,8 +18,12 @@
 //! `WorkerPool::eligible_for`-driven `FunctionRunner` impl
 //! (substep 3.6).
 
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::Arc,
+};
 
+use parking_lot::Mutex;
 use pb::worker_admission as proto;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -45,18 +49,97 @@ use crate::{
 /// admits into / retires from. The server is cheap to clone
 /// (just `Arc`s) so a tonic `Server::builder()` can wrap it in a
 /// `Routes`.
+/// Spawn a tonic `WorkerAdmissionService` on `bind_addr`. The
+/// returned pool is shared between the admission server (which
+/// populates it) and the dispatcher side (`PoolFunctionRunner`,
+/// substep 3.6) that reads from it. Substep 3.8 — callable from
+/// `local_backend` without pulling in the `tonic` / `pb` crates
+/// as direct dependencies.
+///
+/// The admission server runs until the tokio runtime drops it
+/// (via shutdown); the returned pool stays alive for the whole
+/// backend lifetime.
+pub async fn spawn_admission_server(
+    bind_addr: std::net::SocketAddr,
+) -> anyhow::Result<Arc<WorkerPool>> {
+    use pb::worker_admission::worker_admission_service_server::WorkerAdmissionServiceServer;
+    use tonic::transport::Server;
+    let pool = Arc::new(WorkerPool::new());
+    let service = WorkerAdmissionServer::new(pool.clone());
+    let pool_for_return = pool.clone();
+    tokio::spawn(async move {
+        if let Err(e) = Server::builder()
+            .add_service(WorkerAdmissionServiceServer::new(service))
+            .serve(bind_addr)
+            .await
+        {
+            // Logged here rather than bubbled because the spawn
+            // is fire-and-forget; the caller has already returned
+            // the pool handle and no longer has a place to
+            // surface a late transport failure.
+            eprintln!("WorkerAdmissionService exited: {e}");
+        }
+    });
+    Ok(pool_for_return)
+}
+
 #[derive(Clone)]
 pub struct WorkerAdmissionServer {
     pool: Arc<WorkerPool>,
+    /// Per-worker outbound channel handles. Populated on `register`,
+    /// removed on retire. Lets an operator-facing drain/floor-
+    /// update path push messages through the backend → worker
+    /// side of the bidirectional stream.
+    outbound: Arc<Mutex<HashMap<WorkerId, mpsc::Sender<Result<proto::BackendToWorker, Status>>>>>,
 }
 
 impl WorkerAdmissionServer {
     pub fn new(pool: Arc<WorkerPool>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            outbound: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     pub fn pool(&self) -> &Arc<WorkerPool> {
         &self.pool
+    }
+
+    /// Send a `DrainNotice` to the given worker. The worker
+    /// receives it on its `Register` stream, wakes its
+    /// drain-signalled future (substep 3.5), and exits after
+    /// finishing in-flight dispatches; on stream close the
+    /// server's retirement task removes the worker from the
+    /// pool. Substep 3.8 plumbing for operator-triggered retires.
+    ///
+    /// Returns `Ok(false)` when the worker isn't currently
+    /// admitted (idempotent — double-drain is a no-op), `Ok(true)`
+    /// when the notice was delivered, `Err` on transport failure
+    /// (which usually means the worker is already disconnecting).
+    pub async fn request_drain(
+        &self,
+        worker_id: WorkerId,
+        reason: impl Into<String>,
+    ) -> anyhow::Result<bool> {
+        let sender = {
+            let outbound = self.outbound.lock();
+            outbound.get(&worker_id).cloned()
+        };
+        let Some(sender) = sender else {
+            return Ok(false);
+        };
+        let notice = proto::DrainNotice {
+            deadline_unix_nanos: 0,
+            reason: reason.into(),
+        };
+        let msg = proto::BackendToWorker {
+            msg: Some(proto::backend_to_worker::Msg::Drain(notice)),
+        };
+        sender
+            .send(Ok(msg))
+            .await
+            .map_err(|e| anyhow::anyhow!("worker {worker_id:?} drain notice undeliverable: {e}"))?;
+        Ok(true)
     }
 }
 
@@ -119,10 +202,12 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
         let worker_id = self.pool.admit(entry);
 
         // Outbound stream — the backend side of the bidirectional
-        // channel. Substep 3.8 wires `DrainNotice` /
-        // `RegistryFloorUpdate` through this sender; for now it
-        // just keeps the stream alive until one side drops it.
+        // channel. Substep 3.8 plumbs `DrainNotice` through this
+        // sender via `request_drain`; the handle is stored in
+        // `self.outbound` so the operator-facing API can push
+        // messages without re-entering this handler.
         let (outbound_tx, outbound_rx) = mpsc::channel::<Result<proto::BackendToWorker, Status>>(8);
+        self.outbound.lock().insert(worker_id, outbound_tx.clone());
 
         // Spawn a retirement task that consumes status messages
         // and retires the worker when the inbound stream closes.
@@ -130,7 +215,14 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
         // open for the worker's lifetime — the task drops it on
         // retire so the worker sees EOF cleanly.
         let pool = self.pool.clone();
-        tokio::spawn(retirement_loop(pool, worker_id, inbound, outbound_tx));
+        let outbound_map = self.outbound.clone();
+        tokio::spawn(retirement_loop(
+            pool,
+            worker_id,
+            inbound,
+            outbound_tx,
+            outbound_map,
+        ));
 
         Ok(Response::new(ReceiverStream::new(outbound_rx)))
     }
@@ -145,21 +237,26 @@ async fn retirement_loop(
     worker_id: WorkerId,
     mut inbound: Streaming<proto::WorkerToBackend>,
     outbound_tx: mpsc::Sender<Result<proto::BackendToWorker, Status>>,
+    outbound_map: Arc<
+        Mutex<HashMap<WorkerId, mpsc::Sender<Result<proto::BackendToWorker, Status>>>>,
+    >,
 ) {
     loop {
         match inbound.message().await {
             Ok(Some(_msg)) => {
-                // Drain. Future substeps (3.8, Phase 7) act on
-                // these — right now we just keep the stream
-                // flowing.
+                // Drain. Future substeps (Phase 7) act on these;
+                // right now we just keep the stream flowing.
             },
             Ok(None) => break, // Clean close.
             Err(_) => break,   // Transport error → treat as close.
         }
     }
     // Drop the outbound sender so the worker sees EOF; retire
-    // from the pool so dispatch stops routing to it.
+    // from the pool so dispatch stops routing to it. Also purge
+    // the outbound map so a stale `request_drain` can't try to
+    // push through a closed channel.
     drop(outbound_tx);
+    outbound_map.lock().remove(&worker_id);
     let removed = pool.retire(worker_id);
     if !removed {
         // Retire was already called (via a DrainNotice path, or
