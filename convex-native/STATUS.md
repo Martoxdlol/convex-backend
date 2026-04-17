@@ -473,11 +473,39 @@ each substep ships as its own commit.
      lifecycle (churn-tolerance exit criterion), the other
      pins the "first message must be envelope" contract.
 
-3.5. **Worker-side registration loop.** Worker binary dials
-     `CONVEX_BACKEND_ENDPOINT=grpc://backend:5678`, opens the
-     `Register` stream, sends envelope + periodic `WorkerStatus`
-     messages, handles `DrainNotice` by flipping its readiness
-     flag and exiting after in-flight drains.
+3.5. ✓ **Worker-side registration loop.** Landed. New module
+     `convex_native_distributed::admission_client` +
+     env-var helper `read_backend_endpoint_from_env()`:
+
+     - `WorkerRegistration::register(backend_endpoint,
+       execute_endpoint, registry_version)` dials the backend's
+       admission service, sends the envelope built from
+       `collect_inventory()` (substep 3.2), and spawns the
+       drain-listener task.
+     - `push_status(in_flight, cpu_percent)` sends periodic
+       `WorkerStatus` heartbeats upstream; returns `Err` when
+       the stream is closed so the binary's heartbeat loop can
+       exit cleanly.
+     - `drain_signaled()` future resolves on `DrainNotice` or
+       stream close — the binary `select!`s it into its
+       top-level shutdown.
+     - `RegistryFloorUpdate` is logged but not acted on — the
+       worker keeps serving until the backend either sends a
+       drain notice or drops the stream.
+     - Dropping the handle cleanly closes the stream; the
+       admission server retires the worker via the substep-3.4
+       retirement loop.
+
+     Env-var: `CONVEX_BACKEND_ENDPOINT=grpc://backend:5678`
+     parsed via `read_backend_endpoint_from_env()`. Unset means
+     the worker runs under the Phase-2 fixed-pool shape;
+     present means it registers dynamically on startup.
+
+     Tests: one integration test spins up an admission server +
+     worker exec server, calls `WorkerRegistration::register`,
+     and asserts the worker appears in the pool, heartbeats
+     flow, and retirement fires on drop. Three env-var parser
+     tests cover unset / trimmed-value / rejected-empty.
 
 3.6. **`WorkerPool` as `FunctionRunner`.** The pool itself
      (not a single runner) implements

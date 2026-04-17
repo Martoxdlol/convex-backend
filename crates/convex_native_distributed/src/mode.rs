@@ -113,6 +113,31 @@ pub fn read_native_workers_from_env() -> anyhow::Result<Option<Vec<String>>> {
     }
 }
 
+/// Substep 3.5 env-var: `CONVEX_BACKEND_ENDPOINT`. When the
+/// worker binary starts it dials this URL, opens the
+/// `WorkerAdmissionService::Register` stream, and stays
+/// connected for its lifetime. Example: `grpc://backend:5678`.
+///
+/// Returns `Ok(None)` when the variable is unset — the worker
+/// can still run in the pre-Phase-3 "fixed pool" shape where the
+/// backend dials it directly via `CONVEX_NATIVE_WORKERS`.
+/// Returns `Ok(Some(url))` when set.
+/// Returns `Err` when set but empty.
+pub fn read_backend_endpoint_from_env() -> anyhow::Result<Option<String>> {
+    match std::env::var("CONVEX_BACKEND_ENDPOINT") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_BACKEND_ENDPOINT set but empty — unset it or set a valid gRPC URL",
+                )
+            }
+            Ok(Some(trimmed.to_string()))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
 /// Read the worker's bind address from `CONVEX_WORKER_BIND_ADDR`,
 /// falling back to [`DEFAULT_WORKER_BIND_ADDR`].
 pub fn read_worker_bind_addr_from_env() -> anyhow::Result<SocketAddr> {
@@ -276,6 +301,45 @@ mod tests {
         // SAFETY: Serialized via env_guard so no concurrent writer.
         unsafe {
             std::env::remove_var("CONVEX_NATIVE_WORKERS");
+        }
+    }
+
+    #[test]
+    fn read_backend_endpoint_from_env_unset_returns_none() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_BACKEND_ENDPOINT");
+        }
+        assert!(read_backend_endpoint_from_env().unwrap().is_none());
+    }
+
+    #[test]
+    fn read_backend_endpoint_from_env_trims_and_returns_value() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_BACKEND_ENDPOINT", "  http://backend:5678  ");
+        }
+        let v = read_backend_endpoint_from_env().unwrap().expect("set");
+        assert_eq!(v, "http://backend:5678");
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_BACKEND_ENDPOINT");
+        }
+    }
+
+    #[test]
+    fn read_backend_endpoint_from_env_rejects_empty() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_BACKEND_ENDPOINT", "   ");
+        }
+        assert!(read_backend_endpoint_from_env().is_err());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_BACKEND_ENDPOINT");
         }
     }
 

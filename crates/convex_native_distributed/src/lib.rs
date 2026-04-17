@@ -36,6 +36,7 @@
 //!   behaviour end-to-end.
 
 pub mod admission;
+pub mod admission_client;
 pub mod admission_server;
 pub mod client;
 pub mod conversions;
@@ -59,6 +60,7 @@ pub use client::{
 pub use mode::{
     build_conductor_runner,
     build_worker_server,
+    read_backend_endpoint_from_env,
     read_mode_from_env,
     read_native_workers_from_env,
     read_worker_bind_addr_from_env,
