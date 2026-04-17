@@ -605,12 +605,61 @@ Exit criteria: workers auto-register on start; the backend
 dispatches through the dynamic pool; operators don't need to
 restart the backend to change the worker set.
 
-## Phases 4..7 — not started
+## Phase 4 — active, decomposed into concrete substeps
+
+`DISTRIBUTED_PLAN.md` §15 Phase 4 / §7.4: native actions running
+on a remote worker can make sub-calls (`ctx.run_mutation`,
+`ctx.scheduler().run_after`, `ctx.storage().store`, …). Under
+the Phase-4 topology those calls route back to the backend over
+gRPC so every write still flows through the backend's Committer
+(otherwise OCC + subscription invalidation break for any write
+an action causes indirectly).
+
+4.1. ✓ **`BackendCallbackService` proto contract.** Landed.
+     New proto file `crates/pb/protos/backend_callbacks.proto`
+     defining the service with 12 RPCs covering the full
+     `udf::ActionCallbacks` / `convex_native::NativeActionCallbacks`
+     surface: `RunQuery` / `RunMutation` / `RunAction`,
+     `Schedule` / `CancelJob`,
+     `StorageStore` (streaming) / `StorageGet` (streaming) /
+     `StorageGetUrl` / `StorageDelete`,
+     `VectorSearch`, `LookupFunctionHandle` /
+     `CreateFunctionHandle`. Every request carries a
+     `CallbackContext { identity, execution_context,
+     component_path }` so the backend can attribute writes +
+     propagate trace chains. Generates
+     `pb::backend_callbacks::*`.
+
+4.2. **`BackendCallbackServer`.** Backend-side tonic impl
+     wrapping an `Arc<dyn udf::ActionCallbacks>`.
+
+4.3. **`BackendCallbackClient`.** Worker-side impl of
+     `convex_native::NativeActionCallbacks`; translates each
+     callback into the matching RPC.
+
+4.4. **Worker wiring.** `FunctionExecutionServer` takes a
+     `BackendCallbackClient` instead of `NoopCallbacks` when
+     `CONVEX_BACKEND_CALLBACK_ENDPOINT` (or
+     `CONVEX_BACKEND_ENDPOINT` by convention) is set.
+
+4.5. **Enable `UdfType::Action` on the distributed runner.**
+     `DistributedFunctionRunner::run_function` /
+     `PoolFunctionRunner::run_function` stop returning the
+     "Phase 4" guidance error and dispatch actions through
+     the wire.
+
+4.6. **Integration test.** Action calls a sub-mutation; assert
+     the write lands in the backend's database.
+
+Exit criteria: native actions on a remote worker can call
+mutations / schedule jobs / do file storage through the
+backend, and the backend's Committer sees every resulting
+write.
+
+## Phases 5..7 — not started
 
 See `DISTRIBUTED_PLAN.md` §15 for the full breakdown.
 
-- **Phase 4**: `BackendCallbackService` — action sub-calls
-  route back to the backend's Committer.
 - **Phase 5**: prebuilt `getconvex/convex-backend` container
   image; deployer ships only worker images.
 - **Phase 6**: JS interop (`WorkerKind::JAVASCRIPT` in the
