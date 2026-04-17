@@ -1,0 +1,30 @@
+# Bring up two worker replicas of the full_app example.
+# The conductor probe uses the in-tree example conductor.
+#
+# Start:
+#   docker compose -f convex-native/examples/full_app/deploy/docker-compose.yml up --build
+
+services:
+  worker-a:
+    build:
+      context: ../../../..
+      dockerfile: convex-native/examples/full_app/Dockerfile
+    environment:
+      CONVEX_MODE: worker
+      CONVEX_WORKER_BIND_ADDR: 0.0.0.0:4567
+      RUST_LOG: info,convex_native=debug
+    ports:
+      - "4567:4567"
+    restart: unless-stopped
+
+  worker-b:
+    build:
+      context: ../../../..
+      dockerfile: convex-native/examples/full_app/Dockerfile
+    environment:
+      CONVEX_MODE: worker
+      CONVEX_WORKER_BIND_ADDR: 0.0.0.0:4567
+      RUST_LOG: info,convex_native=debug
+    ports:
+      - "4568:4567"
+    restart: unless-stopped

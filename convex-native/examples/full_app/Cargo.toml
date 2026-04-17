@@ -1,0 +1,28 @@
+[package]
+name = "convex_full_app_example"
+description = "Fully-contained convex-native example app — schema, queries, mutations, actions, HTTP, crons."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# `cargo run -p convex_full_app_example -- ...` boots either a
+# distributed worker or an introspection print depending on
+# CONVEX_MODE. Everything you need is in this directory; no
+# patches to the workspace beyond its inclusion in members.
+
+[[bin]]
+name = "convex_full_app"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+convex_native = { workspace = true }
+convex_native_distributed = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

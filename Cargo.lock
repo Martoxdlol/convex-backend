@@ -2291,6 +2291,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "convex_full_app_example"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "convex_native",
+ "convex_native_distributed",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "convex_macro"
 version = "0.1.0"
 dependencies = [

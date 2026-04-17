@@ -9,25 +9,44 @@ the runnable / deployable counterpart.
 
 ```
 examples/
+├── full_app/                  Workspace-member crate — fully buildable
+│   ├── Cargo.toml             (cargo run -p convex_full_app_example)
+│   ├── Dockerfile
+│   ├── deploy/
+│   │   ├── docker-compose.yml
+│   │   └── kubernetes.yaml
+│   └── src/
+│       ├── main.rs            CONVEX_MODE-switched entry point
+│       ├── lib.rs
+│       ├── schema.rs          ConvexDocument / ConvexEnum / ConvexNested
+│       ├── queries.rs         3 queries
+│       ├── mutations.rs       3 mutations (incl. scheduler use)
+│       ├── actions.rs         2 actions (incl. internal)
+│       ├── http.rs            HTTP action
+│       └── crons.rs           1 cron
+│
 ├── minimal_app/               Reading sample: deployer-project layout
-│   └── src/main.rs            (library-mode against this repo's crates)
-└── deploy/
-    ├── docker/
-    │   ├── Dockerfile.worker  Multi-stage build for a native worker
-    │   ├── Dockerfile.conductor
-    │   └── docker-compose.yml Conductor + 2 workers on one host
+│   └── src/main.rs            (NOT a workspace member; shows the shape
+│                               a copy-out-of-repo project would take)
+│
+└── deploy/                    Topology-level artifacts (docker / k8s /
+    ├── docker/                systemd). Use full_app/Dockerfile for a
+    │   ├── Dockerfile.worker  single-crate build; these are for when
+    │   ├── Dockerfile.conductor  your project has its own layout.
+    │   └── docker-compose.yml
     ├── kubernetes/
-    │   ├── worker-deployment.yaml    Deployment + headless Service
-    │   └── conductor-deployment.yaml Deployment + Service
+    │   ├── worker-deployment.yaml
+    │   └── conductor-deployment.yaml
     └── systemd/
         ├── convex-worker.service
         └── convex-conductor.service
 ```
 
-Also runnable *in this workspace* (no copy-paste required):
+Runnable *in this workspace* (no copy-paste required):
 
 | Crate + example | What it does |
 |-----------------|--------------|
+| `convex_full_app_example` | **Start here.** Full buildable app — schema, queries, mutations, actions, HTTP, cron. Runs as introspection-print or gRPC worker. See `full_app/README.md`. |
 | `convex_native --example tiny_app` | Prints `describe_pretty()` — schema / functions / routes / crons introspection. Doesn't boot a server. |
 | `convex_native_distributed --example worker` | Empty-registry gRPC worker — template for custom worker binaries. |
 | `convex_native_distributed --example worker_with_functions` | Worker that actually registers `#[convex::query/mutation/action]` handlers and demonstrates `WorkerActionCallbacks` end-to-end. |
