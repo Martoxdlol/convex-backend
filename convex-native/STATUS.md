@@ -19,11 +19,14 @@ active phase is.
 Framework-level pieces (derives, ctx surface, schema reflection,
 registry, introspection) are solid and reused. The distributed
 dispatch layer is being rebuilt per `DISTRIBUTED_PLAN.md` —
-**Phase 1 (wire contract) has shipped**: `ExecuteResponse`
-carries a `DistributedFinalTx`, the worker no longer commits
-locally, and round-trip tests cover the native ↔ proto boundary.
-**Phase 2 (backend-side `FunctionRunner` impl)** is the next
-step.
+**Phase 1 (wire contract) has shipped** and **Phase 2
+(backend-side `FunctionRunner` impl) is substantially complete**:
+every substep except 2.8b (full SubscriptionManager assertion)
+has landed. `DistributedFunctionRunner` implements
+`FunctionRunner<ProdRuntime>`, and `local_backend` routes native
+Query/Mutation through a remote pool when
+`CONVEX_NATIVE_WORKERS` is set. **Phase 3 (dynamic pool +
+admission service)** is the next major step.
 
 ---
 
@@ -337,13 +340,40 @@ substep is checked and the integration test is green.
      covering unset / parseable / rejected-empty.
 
 2.8. **Integration test: subscription invalidation across the
-     wire.**
-     Start backend + one worker in the same test process.
-     Register a mutation on the worker that writes to table
-     `T`. Register a subscriber on the backend for a query
-     reading `T`. Dispatch the mutation. Assert the
-     subscriber sees an `InvalidationEvent` — this is the
-     cross-process OCC + subscription loop working end-to-end.
+     wire.** Split into two sub-substeps:
+
+     2.8a. ✓ **Wire-path integration test.** Landed. New test
+     file `crates/convex_native_distributed/tests/function_runner_e2e.rs`
+     spins up a tonic `FunctionExecutionServer` on an ephemeral
+     port, dials it from a `DistributedFunctionRunner`, and
+     exercises three dispatch paths:
+     - Action with an unknown handler → handler-level error
+       surfaces verbatim; `final_tx` stays `None`.
+     - Query without `Database<Rt>` attached → transport
+       `Unimplemented` error with a message that points the
+       operator at `.with_database()`.
+     - Phase-2 request fields (`begin_timestamp`,
+       `existing_writes`) serialize cleanly so substep-2.1
+       / substep-2.4 wire shapes can't regress silently.
+
+     Plus four unit tests in `function_runner_impl::tests` pin
+     the error paths on the `FunctionRunner` impl itself
+     (Action / HttpAction / missing-metadata / JS-only methods).
+
+     2.8b. **Full SubscriptionManager assertion.** Blocked on
+     `Database<Rt>` test fixtures. Starting a real `Database`
+     requires persistence + retention + committer scaffolding
+     that the open-source repo doesn't expose as test helpers
+     today; building them here would dwarf the actual assertion.
+     When a `DbFixture::new_in_memory()` helper lands (or when
+     the backend-image topology in Phase 5 materialises and the
+     integration test runs against a live binary instead of an
+     in-process fixture), add the assertion:
+     - Register a native mutation that writes to table `T`.
+     - Subscribe to a query reading `T`.
+     - Dispatch the mutation via
+       `DistributedFunctionRunner::run_function`.
+     - Assert the subscriber sees an `InvalidationEvent`.
 
 Exit criteria: every substep shipped and the integration test
 (2.8) green. After Phase 2, a deployer with a fixed
@@ -373,15 +403,17 @@ See `DISTRIBUTED_PLAN.md` §15 for the full breakdown.
 ```
 cargo test -p convex_native              # 242 tests
 cargo test -p convex_native_backend      # 10 tests
-cargo test -p convex_native_distributed  # 56 tests
+cargo test -p convex_native_distributed  # 72 tests
 
-# 308 total — all green
+# 324 total — all green
 ```
 
-The two extra tests on `convex_native_distributed` (54 → 56) came
-in with Phase 1: `response_final_tx_roundtrips_through_proto` and
-`response_without_final_tx_keeps_field_none` pin the `final_tx`
-wire format both with and without the field set.
+Delta since Phase 1: +16 tests on `convex_native_distributed`
+covering the substep-2.1/2.2/2.3/2.4 wire additions, the
+substep-2.6a `FinalTxSummary → FunctionFinalTransaction`
+conversion, the substep-2.6b FunctionRunner trait impl
+error-path guidance, the substep-2.7 `CONVEX_NATIVE_WORKERS`
+env-var parser, and the substep-2.8a end-to-end gRPC wire test.
 
 ---
 

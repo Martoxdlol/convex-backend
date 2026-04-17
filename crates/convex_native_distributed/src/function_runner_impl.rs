@@ -395,6 +395,74 @@ mod tests {
     use super::*;
     use crate::client::MockWorkerClient;
 
+    fn empty_runner() -> DistributedFunctionRunner {
+        let worker = MockWorkerClient::new("test-worker", 0);
+        DistributedFunctionRunner::new(vec![worker]).unwrap()
+    }
+
+    fn test_execution_context() -> ExecutionContext {
+        use common::execution_context::{
+            ExecutionContext,
+            ExecutionId,
+            RequestId,
+        };
+        ExecutionContext::new_from_parts(RequestId::new(), ExecutionId::new(), None, true)
+    }
+
+    async fn assert_run_function_err(udf_type: UdfType, needle: &str) {
+        let runner = empty_runner();
+        let result = runner
+            .run_function(
+                udf_type,
+                Identity::system(),
+                RepeatableTimestamp::MIN,
+                FunctionWrites { updates: vec![] },
+                None,
+                None,
+                None,
+                BTreeMap::new(),
+                BTreeMap::new(),
+                test_execution_context(),
+            )
+            .await;
+        let err = match result {
+            Ok(_) => panic!("expected {udf_type:?} dispatch to error"),
+            Err(e) => e,
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(needle),
+            "error must guide the operator toward the right plan step; expected {needle:?} in \
+             {msg:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn run_function_action_returns_phase_4_guidance() {
+        // `UdfType::Action` on the distributed runner isn't wired
+        // until Phase 4's BackendCallbackService. The error must
+        // point the operator at that plan step.
+        assert_run_function_err(UdfType::Action, "Phase 4").await;
+    }
+
+    #[tokio::test]
+    async fn run_function_http_action_points_at_http_router() {
+        // HttpAction uses a different dispatch path (HttpRouter);
+        // the error steers operators away from trying to wire
+        // HttpActions through FunctionExecutionService.
+        assert_run_function_err(UdfType::HttpAction, "HttpRouter").await;
+    }
+
+    #[tokio::test]
+    async fn run_function_query_without_metadata_errors_explicitly() {
+        // `run_function` requires `function_metadata` for
+        // Query/Mutation so it can extract the canonical path +
+        // args. Missing metadata is a programmer error (the
+        // caller forgot to supply them) — the error must name
+        // the missing argument so the bug is easy to diagnose.
+        assert_run_function_err(UdfType::Query, "function_metadata").await;
+    }
+
     #[tokio::test]
     async fn evaluate_schema_returns_clear_error() {
         // The distributed runner is native-only; its JS-focused
