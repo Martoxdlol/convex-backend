@@ -37,6 +37,18 @@ pub struct Message {
     pub created_at: f64,
 }
 
+/// Exercises the `Vec<u8>` special-case in the derive macro.
+/// A field typed `Vec<u8>` must reflect as `Validator::Bytes`,
+/// not `Validator::Array(Int64)` — that distinction is what keeps
+/// file payloads routing through the right wire format.
+#[derive(ConvexDocument, Debug, Clone, PartialEq)]
+#[convex(table = "blobs")]
+pub struct Blob {
+    pub payload: Vec<u8>,
+    pub optional_payload: Option<Vec<u8>>,
+    pub checksum: String,
+}
+
 #[test]
 fn field_enum_variants_expose_field_names() {
     assert_eq!(UserField::Name.as_str(), "name");
@@ -160,6 +172,47 @@ fn table_definition_emits_document_shape_validator() {
     assert_eq!(
         avatar.validator,
         Validator::Union(vec![Validator::Null, Validator::String]),
+    );
+}
+
+#[test]
+fn table_definition_emits_bytes_validator_for_vec_u8_fields() {
+    // The derive macro special-cases `Vec<u8>` → `Validator::Bytes`
+    // at the AST level because `u8` has no `ConvexSchema` impl (see
+    // `schema_type.rs` docs). This pins that path: a refactor that
+    // accidentally routed `Vec<u8>` through the generic `Vec<T>`
+    // impl would flip this to `Array(Int64)` and break file /
+    // payload round-trips.
+    use common::schemas::{
+        validator::{
+            ObjectValidator,
+            Validator,
+        },
+        DocumentSchema,
+    };
+    use value::IdentifierFieldName;
+
+    let def = Blob::table_definition();
+    let DocumentSchema::Union(objs) =
+        def.document_type.as_ref().expect("document_type populated")
+    else {
+        panic!("expected Union");
+    };
+    let ObjectValidator(fields) = &objs[0];
+
+    let payload_key: IdentifierFieldName = "payload".parse().unwrap();
+    let payload = fields.get(&payload_key).expect("payload field present");
+    assert_eq!(payload.validator, Validator::Bytes);
+    assert!(!payload.optional);
+
+    // `Option<Vec<u8>>` threads through the same special-case and
+    // wraps Bytes in the Option-shaped union.
+    let opt_key: IdentifierFieldName = "optional_payload".parse().unwrap();
+    let opt = fields.get(&opt_key).expect("optional_payload present");
+    assert!(opt.optional, "Option<Vec<u8>> is an optional field");
+    assert_eq!(
+        opt.validator,
+        Validator::Union(vec![Validator::Null, Validator::Bytes]),
     );
 }
 
