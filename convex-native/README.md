@@ -18,8 +18,8 @@ actions) in native Rust.
 **Phase 1 COMPLETE** (1.0.1 → 1.3.3, 1.2.4 / 1.2.5, 1.4.1–1.4.4, 1.5.1, 1.5.2,
 1.6.1–1.6.3), **Phase 2 COMPLETE** (2.1–2.8), **Phase 3 partial** (3.1
 proto contract + 3.2 crate skeleton/conversions + 3.3 worker server
-partial + 3.4 conductor client + P2C + 3.5 mode alias + executor
-trait stub), **Phase 4
+partial + 3.4 conductor client + P2C + real transport + 3.5 mode
+switching helpers + executor trait stub), **Phase 4
 partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3 graceful drain
 + 4.4 timeouts + 4.5 circuit breaker + 4.6 index-cache warmup plan),
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
@@ -439,6 +439,20 @@ shuts down every clone.
   gRPC server on an ephemeral port, bring up a client, exercise
   health + action execute + unimplemented query path, and verify
   `in_flight_estimate` returns to zero after the call drains.
+- **Phase 3.5 — binary-level mode switching helpers (shipped):**
+  `mode.rs` decodes `CONVEX_MODE`, `CONVEX_WORKER_ENDPOINTS`
+  (comma-separated gRPC URLs), and `CONVEX_WORKER_BIND_ADDR`
+  (defaults to `0.0.0.0:4567`). `build_worker_server(native)`
+  returns a `(tonic::transport::Server, FunctionExecutionServiceServer)`
+  pair the binary wires onto the transport of its choice;
+  `build_conductor_runner(endpoints)` connects a
+  `TonicWorkerClient` per endpoint and wraps them in a
+  `DistributedFunctionRunner`. Failing to reach any worker
+  during `build_conductor_runner` refuses to start — safer
+  than silently serving a reduced pool. 6 new unit tests
+  (endpoint parsing, default bind-address resolution, malformed
+  input rejection, unreachable-worker rejection, service
+  construction).
 - **Phase 3.3 — worker-side gRPC server (partial, shipped):**
   `FunctionExecutionServer` implements the generated tonic trait.
   `Health` is fully wired: reports `registry_version` (defaults to

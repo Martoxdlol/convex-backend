@@ -20,12 +20,20 @@
 
 pub mod client;
 pub mod conversions;
+pub mod mode;
 pub mod server;
 pub mod tonic_client;
 
 pub use client::{
     DistributedFunctionRunner,
     WorkerClient,
+};
+pub use mode::{
+    build_conductor_runner,
+    build_worker_server,
+    read_mode_from_env,
+    read_worker_bind_addr_from_env,
+    read_worker_endpoints_from_env,
 };
 pub use server::FunctionExecutionServer;
 pub use tonic_client::TonicWorkerClient;
