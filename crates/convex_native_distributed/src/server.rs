@@ -36,10 +36,8 @@ use convex_native::{
     NativeFunctionRunner,
     Rt,
 };
-use database::{
-    Database,
-    WriteSource,
-};
+use common::types::Timestamp;
+use database::Database;
 use keybroker::Identity;
 use pb::function_execution::{
     self as proto,
@@ -170,19 +168,34 @@ impl FunctionExecutionService for FunctionExecutionServer {
                          Database<Rt>. Construct the server with .with_database(db) to enable it.",
                     ));
                 };
-                let (result, log_lines) = match udf_type {
-                    UdfType::Query => run_query_inline(&self.native, database, &native_req).await,
+                let begin_ts = proto_req
+                    .begin_timestamp
+                    .map(Timestamp::try_from)
+                    .transpose()
+                    .map_err(|e| {
+                        Status::invalid_argument(format!(
+                            "ExecuteRequest.begin_timestamp is not a valid Timestamp: {e}"
+                        ))
+                    })?;
+                let dispatch = match udf_type {
+                    UdfType::Query => {
+                        run_query_inline(&self.native, database, &native_req, begin_ts).await
+                    },
                     UdfType::Mutation => {
-                        run_mutation_inline(&self.native, database, &native_req).await
+                        run_mutation_inline(&self.native, database, &native_req, begin_ts).await
                     },
                     _ => unreachable!(),
                 };
                 let native_response = convex_native::distributed::ExecuteResponse::new(
-                    result.map_err(|e| e.to_string()),
+                    dispatch.result.map_err(|e| e.to_string()),
                 )
-                .with_log_lines(log_lines);
+                .with_log_lines(dispatch.log_lines);
                 let mut proto_resp = conversions::to_proto_response(&native_response);
                 proto_resp.served_by_version = Some(self.registry_version.clone());
+                // Phase 1: worker reports the reads/writes summary back
+                // to the backend instead of committing locally. See
+                // `convex-native/DISTRIBUTED_PLAN.md` §15 Phase 1.
+                proto_resp.final_tx = dispatch.final_tx;
                 Ok(Response::new(proto_resp))
             },
             UdfType::HttpAction => Err(Status::unimplemented(
@@ -207,21 +220,39 @@ impl FunctionExecutionService for FunctionExecutionServer {
     }
 }
 
-/// Open a fresh transaction, run the native query, drop the tx.
-/// Queries are read-only by design — no commit needed.
+/// Bundle returned by the query / mutation dispatch helpers.
+/// Carries the handler result, drained log lines, and — when the
+/// handler closed its transaction cleanly — the `DistributedFinalTx`
+/// the worker reports to the backend.
+struct InlineDispatch {
+    result: anyhow::Result<value::ConvexValue>,
+    log_lines: Vec<String>,
+    final_tx: Option<proto::DistributedFinalTx>,
+}
+
+/// Open a fresh transaction at `begin_ts` (or `now_ts_for_reads()`
+/// when the backend didn't supply one — pre-Phase-1 callers), run
+/// the native query, then summarise the transaction's read set
+/// into a `DistributedFinalTx`. Queries are read-only by design so
+/// nothing ever commits.
 async fn run_query_inline(
     native: &Arc<NativeFunctionRunner>,
     database: &Database<Rt>,
     req: &convex_native::distributed::ExecuteRequest,
-) -> (anyhow::Result<value::ConvexValue>, Vec<String>) {
+    begin_ts: Option<Timestamp>,
+) -> InlineDispatch {
     let log_buffer = convex_native::LogBuffer::new();
+    let mut final_tx: Option<proto::DistributedFinalTx> = None;
     let result = async {
-        let ts = database.now_ts_for_reads();
+        let ts = match begin_ts {
+            Some(ts) => database.now_ts_for_reads().prior_ts(ts)?,
+            None => database.now_ts_for_reads(),
+        };
         let usage = FunctionUsageTracker::new();
         let mut tx = database
             .begin_with_ts(Identity::system(), *ts, usage)
             .await?;
-        native
+        let value = native
             .run_query_with_log_buffer(
                 &req.name,
                 &mut tx,
@@ -229,24 +260,41 @@ async fn run_query_inline(
                 req.args.clone(),
                 log_buffer.clone(),
             )
-            .await
+            .await?;
+        final_tx = Some(summarise_tx(tx));
+        Ok(value)
     }
     .await;
     let log_lines = log_lines_to_pretty_strings(&log_buffer);
-    (result, log_lines)
+    InlineDispatch {
+        result,
+        log_lines,
+        final_tx,
+    }
 }
 
-/// Open a fresh transaction, run the native mutation, commit on
-/// handler success. On handler error the tx is dropped without
-/// committing.
+/// Open a fresh transaction at `begin_ts` (or `now_ts_for_reads()`
+/// when the backend didn't supply one), run the native mutation,
+/// and — on handler success — summarise the resulting transaction
+/// into a `DistributedFinalTx`. **Phase 1 of `DISTRIBUTED_PLAN.md`
+/// removes the inline commit**: the worker no longer touches
+/// `Database::commit_with_write_source`. Phase 2 wires the backend
+/// to consume the returned `DistributedFinalTx` and commit through
+/// its own Committer. On handler error the tx is dropped without
+/// reporting.
 async fn run_mutation_inline(
     native: &Arc<NativeFunctionRunner>,
     database: &Database<Rt>,
     req: &convex_native::distributed::ExecuteRequest,
-) -> (anyhow::Result<value::ConvexValue>, Vec<String>) {
+    begin_ts: Option<Timestamp>,
+) -> InlineDispatch {
     let log_buffer = convex_native::LogBuffer::new();
+    let mut final_tx: Option<proto::DistributedFinalTx> = None;
     let result = async {
-        let ts = database.now_ts_for_reads();
+        let ts = match begin_ts {
+            Some(ts) => database.now_ts_for_reads().prior_ts(ts)?,
+            None => database.now_ts_for_reads(),
+        };
         let usage = FunctionUsageTracker::new();
         let mut tx = database
             .begin_with_ts(Identity::system(), *ts, usage)
@@ -260,14 +308,40 @@ async fn run_mutation_inline(
                 log_buffer.clone(),
             )
             .await?;
-        database
-            .commit_with_write_source(tx, WriteSource::system("convex_native_distributed"))
-            .await?;
+        final_tx = Some(summarise_tx(tx));
         Ok(value)
     }
     .await;
     let log_lines = log_lines_to_pretty_strings(&log_buffer);
-    (result, log_lines)
+    InlineDispatch {
+        result,
+        log_lines,
+        final_tx,
+    }
+}
+
+/// Drain a finished transaction into the Phase-1 wire summary.
+/// Today only scalars (begin_ts, writes_count, reads_count); Phase
+/// 2 grows the `DistributedFinalTx` proto message to carry the full
+/// `FunctionReads` + `FunctionWrites` content the backend's
+/// Committer needs. Errors from `into_flat()` (nested transaction
+/// leftover) are swallowed into a zero writes count — for native
+/// handlers the tx is always flat at this point; a future invariant
+/// violation would show up as the backend rejecting the response
+/// at commit time under Phase 2 regardless.
+fn summarise_tx(tx: database::Transaction<Rt>) -> proto::DistributedFinalTx {
+    let begin_timestamp: u64 = (*tx.begin_timestamp()).into();
+    let (reads, writes) = tx.into_reads_and_writes();
+    let reads_count = reads.num_intervals() as u64;
+    let writes_count = writes
+        .into_flat()
+        .map(|flat| flat.into_coalesced_writes().count())
+        .unwrap_or(0) as u64;
+    proto::DistributedFinalTx {
+        begin_timestamp,
+        writes_count,
+        reads_count,
+    }
 }
 
 /// Snapshot the buffer and render each line as a plain string.

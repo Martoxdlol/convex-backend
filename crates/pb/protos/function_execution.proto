@@ -78,13 +78,14 @@ message ExecuteRequest {
   // for this function's read snapshot. The worker opens its read
   // transaction at this ts rather than inferring one locally, so
   // the backend's Committer can validate reads / writes against a
-  // known snapshot point at commit time. Unit: microseconds since
-  // the Unix epoch; matches `Timestamp`'s on-disk representation.
+  // known snapshot point at commit time. Encoded as the raw u64
+  // representation of `common::types::Timestamp` (monotonic
+  // transaction timestamp — see sync_types::Timestamp).
   //
   // Absent for action calls (actions don't take a read snapshot) and
   // for pre-Phase-1 callers that haven't been upgraded yet — the
   // worker falls back to `database.now_ts_for_reads()` in that case.
-  optional uint64 begin_timestamp_us = 9;
+  optional uint64 begin_timestamp = 9;
 
   // Phase 1: writes from earlier UDFs in the same backend request
   // that haven't been committed yet. When the backend batches
@@ -165,11 +166,11 @@ message ExecuteResponse {
 // `FunctionReads` + `FunctionWrites` sub-messages so the backend
 // can actually commit through its Committer.
 message DistributedFinalTx {
-  // `Timestamp` the worker opened its read transaction at,
-  // microseconds since the Unix epoch. For Phase 2 the backend
-  // feeds this through `Committer::validate_reads_and_write` to
-  // decide whether OCC passes.
-  uint64 begin_timestamp_us = 1;
+  // `Timestamp` the worker opened its read transaction at, encoded
+  // as the raw u64 of `common::types::Timestamp`. For Phase 2 the
+  // backend feeds this through `Committer::validate_reads_and_write`
+  // to decide whether OCC passes.
+  uint64 begin_timestamp = 1;
 
   // Number of document updates produced by the handler. Round-trip
   // tests assert this matches what the handler actually wrote;

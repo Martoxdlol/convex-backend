@@ -97,7 +97,7 @@ pub fn to_proto_request(
         // through `impl FunctionRunner` (Phase 2). Today the
         // composite/in-process path still routes natively so
         // `to_proto_request` just propagates None.
-        begin_timestamp_us: None,
+        begin_timestamp: None,
         existing_writes: None,
     })
 }
