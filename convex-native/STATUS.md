@@ -203,12 +203,20 @@ substep is checked and the integration test is green.
      distributed-dispatch usage tracking; does not yet enable
      OCC validation.
 
-     2.2b. **`ReadSet` intervals per (tablet, index).**
-     Pending. Grows `DistributedFinalTx` with the full index
-     reads list (tablet id + descriptor + indexed fields +
-     interval set). Search-index reads deferred as their own
-     follow-up. Required before the backend's Committer can
-     validate OCC on a distributed-dispatched mutation.
+     2.2b. ✓ **`ReadSet` intervals per (tablet, index).**
+     Landed. New proto message `DistributedIndexReads`
+     (`{ tablet_id, index_descriptor, fields, intervals }`)
+     and `repeated` field on `DistributedFinalTx`. Native
+     `IndexReadsSummary` carries `TabletIndexName`,
+     `IndexedFields`, and `IntervalSet` directly (no lossy
+     projection). `summarise_tx` drains the tx's indexed
+     ReadSet into the vec. Search-index reads are left as a
+     follow-up substep. `FinalTxSummary` lost its `PartialEq`
+     / `Eq` derive because `IntervalSet` doesn't implement
+     equality; test comparisons now check the relevant fields
+     individually. After substep 2.2b the Committer has
+     everything it needs for OCC validation on a
+     distributed-dispatched mutation.
 
 2.3. ✓ **Wire `FunctionWrites` content.**
      Landed. `repeated common.DocumentUpdateWithPrevTs writes`

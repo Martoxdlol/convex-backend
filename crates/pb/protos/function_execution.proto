@@ -220,12 +220,45 @@ message DistributedFinalTx {
   // path to accept distributed results end-to-end.
   optional DistributedTxReadSize user_tx_size = 6;
   optional DistributedTxReadSize system_tx_size = 7;
+
+  // Substep 2.2b: indexed read-set content — one entry per
+  // (tablet_id, index_descriptor) the handler read through.
+  // Backend iterates this against its `SubscriptionManager` for
+  // invalidation and against the Committer for OCC validation.
+  //
+  // Search-index reads are intentionally not carried today — the
+  // native worker framework doesn't yet ship typed text-search
+  // surface. Adding them is a follow-up substep tracked in
+  // `convex-native/STATUS.md`.
+  //
+  // Empty list is valid and indicates the handler opened a tx
+  // but read nothing indexable.
+  repeated DistributedIndexReads index_reads = 8;
 }
 
 // Scalar read-size counters. Mirrors `database::TransactionReadSize`.
 message DistributedTxReadSize {
   uint64 total_document_size = 1;
   uint64 total_document_count = 2;
+}
+
+// Per-index reads the handler accumulated. Key is the
+// `TabletIndexName` pair; value is the index's indexed-fields
+// list plus the interval-set the reads covered. Substep 2.2b
+// shape — grows in substep 2.6 if the Committer needs
+// anything else (e.g. stack traces for OCC debugging).
+message DistributedIndexReads {
+  // `TabletId::Display` form (UUID-shaped hex string) — same
+  // encoding `DistributedFinalTx.rows_read_by_tablet` uses.
+  string tablet_id = 1;
+  // `IndexDescriptor::as_str()` — e.g. "by_email" or "by_id".
+  string index_descriptor = 2;
+  // `IndexedFields` — ordered list of field paths indexed by
+  // this index.
+  repeated common.FieldPath fields = 3;
+  // `IntervalSet` flattened into `Vec<common.Interval>` via the
+  // existing `IntervalSet -> Vec<IntervalProto>` conversion.
+  repeated common.Interval intervals = 4;
 }
 
 message HealthRequest {

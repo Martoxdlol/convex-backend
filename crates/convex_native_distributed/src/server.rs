@@ -377,6 +377,30 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::Fi
         total_document_size: reads.system_tx_size().total_document_size as u64,
         total_document_count: reads.system_tx_size().total_document_count as u64,
     };
+    // Substep 2.2b: drain the indexed read set into one
+    // IndexReadsSummary per (tablet, index). Search-index reads
+    // are intentionally skipped here — native handlers don't ship
+    // a typed search surface yet.
+    let read_set = reads.into_read_set();
+    let (indexed, _search) = read_set.consume();
+    let index_reads: Vec<convex_native::distributed::IndexReadsSummary> = indexed
+        .map(|(index_name, index_reads)| {
+            // `database::IndexReads` isn't re-exported; reach into
+            // the `reads` module directly. `stack_traces` is debug-
+            // only (collected under `READ_SET_CAPTURE_BACKTRACES`)
+            // and not sent over the wire.
+            let database::reads::IndexReads {
+                fields,
+                intervals,
+                stack_traces: _,
+            } = index_reads;
+            convex_native::distributed::IndexReadsSummary {
+                index_name,
+                fields,
+                intervals,
+            }
+        })
+        .collect();
     let writes_vec: Vec<common::document::DocumentUpdateWithPrevTs> = writes
         .into_flat()
         .map(|flat| {
@@ -393,6 +417,7 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::Fi
         writes: writes_vec,
         user_tx_size: Some(user_tx_size),
         system_tx_size: Some(system_tx_size),
+        index_reads,
     }
 }
 

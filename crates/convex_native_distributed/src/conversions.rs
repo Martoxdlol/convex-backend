@@ -13,6 +13,7 @@ use convex_native::distributed::{
     ExecuteRequest,
     ExecuteResponse,
     FinalTxSummary,
+    IndexReadsSummary,
     TxReadSize,
 };
 use pb::function_execution as proto;
@@ -228,6 +229,11 @@ pub fn final_tx_to_proto(summary: FinalTxSummary) -> anyhow::Result<proto::Distr
         .into_iter()
         .map(pb::common::DocumentUpdateWithPrevTs::try_from)
         .collect::<anyhow::Result<_>>()?;
+    let index_reads: Vec<proto::DistributedIndexReads> = summary
+        .index_reads
+        .into_iter()
+        .map(index_reads_to_proto)
+        .collect();
     Ok(proto::DistributedFinalTx {
         begin_timestamp: summary.begin_timestamp,
         writes_count: summary.writes_count,
@@ -236,6 +242,62 @@ pub fn final_tx_to_proto(summary: FinalTxSummary) -> anyhow::Result<proto::Distr
         writes,
         user_tx_size: summary.user_tx_size.map(tx_read_size_to_proto),
         system_tx_size: summary.system_tx_size.map(tx_read_size_to_proto),
+        index_reads,
+    })
+}
+
+fn index_reads_to_proto(native: IndexReadsSummary) -> proto::DistributedIndexReads {
+    let IndexReadsSummary {
+        index_name,
+        fields,
+        intervals,
+    } = native;
+    let tablet_id = index_name.table().to_string();
+    let index_descriptor = index_name.descriptor().as_str().to_string();
+    let field_vec: Vec<value::FieldPath> = Vec::from(fields);
+    let fields: Vec<pb::common::FieldPath> = field_vec
+        .into_iter()
+        .map(pb::common::FieldPath::from)
+        .collect();
+    let intervals: Vec<pb::common::Interval> = intervals.into();
+    proto::DistributedIndexReads {
+        tablet_id,
+        index_descriptor,
+        fields,
+        intervals,
+    }
+}
+
+fn index_reads_from_proto(p: proto::DistributedIndexReads) -> anyhow::Result<IndexReadsSummary> {
+    use common::{
+        bootstrap_model::index::database_index::IndexedFields,
+        interval::IntervalSet,
+        types::{
+            IndexDescriptor,
+            TabletIndexName,
+        },
+    };
+    let tablet_id: value::TabletId = p
+        .tablet_id
+        .parse()
+        .map_err(|e| anyhow::anyhow!("DistributedIndexReads.tablet_id {:?}: {e}", p.tablet_id))?;
+    let descriptor = IndexDescriptor::new(p.index_descriptor.clone())?;
+    let index_name = if descriptor.is_reserved() {
+        TabletIndexName::new_reserved(tablet_id, descriptor)?
+    } else {
+        TabletIndexName::new(tablet_id, descriptor)?
+    };
+    let fields_vec: Vec<value::FieldPath> = p
+        .fields
+        .into_iter()
+        .map(value::FieldPath::try_from)
+        .collect::<anyhow::Result<_>>()?;
+    let fields = IndexedFields::try_from(fields_vec)?;
+    let intervals = IntervalSet::try_from(p.intervals)?;
+    Ok(IndexReadsSummary {
+        index_name,
+        fields,
+        intervals,
     })
 }
 
@@ -264,6 +326,12 @@ pub fn final_tx_from_proto(proto: &proto::DistributedFinalTx) -> anyhow::Result<
         .cloned()
         .map(common::document::DocumentUpdateWithPrevTs::try_from)
         .collect::<anyhow::Result<_>>()?;
+    let index_reads: Vec<IndexReadsSummary> = proto
+        .index_reads
+        .iter()
+        .cloned()
+        .map(index_reads_from_proto)
+        .collect::<anyhow::Result<_>>()?;
     Ok(FinalTxSummary {
         begin_timestamp: proto.begin_timestamp,
         writes_count: proto.writes_count,
@@ -276,6 +344,7 @@ pub fn final_tx_from_proto(proto: &proto::DistributedFinalTx) -> anyhow::Result<
         writes,
         user_tx_size: proto.user_tx_size.as_ref().map(tx_read_size_from_proto),
         system_tx_size: proto.system_tx_size.as_ref().map(tx_read_size_from_proto),
+        index_reads,
     })
 }
 
@@ -462,6 +531,9 @@ mod tests {
             // `response_final_tx_tx_size_roundtrip` below.
             user_tx_size: None,
             system_tx_size: None,
+            // Substep 2.2b index_reads content is exercised by
+            // `response_final_tx_index_reads_roundtrip` below.
+            index_reads: Vec::new(),
         };
         let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
         let p = to_proto_response(&native).unwrap();
@@ -476,7 +548,16 @@ mod tests {
         assert_eq!(decoded_proto.rows_read_by_tablet.get("tab2"), Some(&22));
         assert!(decoded_proto.writes.is_empty());
         let decoded_native = from_proto_response(&p).unwrap();
-        assert_eq!(decoded_native.final_tx, Some(summary));
+        // `FinalTxSummary` no longer implements `PartialEq` because
+        // it embeds `IntervalSet` (substep 2.2b). Compare the
+        // fields that this test case actually exercises.
+        let decoded_summary = decoded_native.final_tx.expect("final_tx populated");
+        assert_eq!(decoded_summary.begin_timestamp, summary.begin_timestamp);
+        assert_eq!(decoded_summary.writes_count, summary.writes_count);
+        assert_eq!(decoded_summary.reads_count, summary.reads_count);
+        assert_eq!(decoded_summary.rows_read_by_tablet, rows_read_by_tablet);
+        assert!(decoded_summary.writes.is_empty());
+        assert!(decoded_summary.index_reads.is_empty());
     }
 
     #[test]
@@ -562,6 +643,7 @@ mod tests {
             writes: vec![update.clone()],
             user_tx_size: None,
             system_tx_size: None,
+            index_reads: Vec::new(),
         };
         let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
         let p = to_proto_response(&native).unwrap();
@@ -598,6 +680,7 @@ mod tests {
             writes: Vec::new(),
             user_tx_size: Some(user),
             system_tx_size: Some(system),
+            index_reads: Vec::new(),
         };
         let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
         let p = to_proto_response(&native).unwrap();
@@ -616,6 +699,66 @@ mod tests {
     }
 
     #[test]
+    fn response_final_tx_index_reads_roundtrip() {
+        // Substep 2.2b: `index_reads` carries one entry per
+        // (tablet, index) the handler read through, including the
+        // indexed-fields list and the flat interval set. Pin an
+        // "index over everything" round-trip — IntervalSet::All
+        // has its own proto encoding and is the shape any
+        // `collect()`-style handler emits.
+        use common::{
+            bootstrap_model::index::database_index::IndexedFields,
+            interval::IntervalSet,
+            types::{
+                IndexDescriptor,
+                TabletIndexName,
+            },
+        };
+        use convex_native::distributed::IndexReadsSummary;
+        let tablet_id = value::TabletId::MIN;
+        let descriptor = IndexDescriptor::new("by_email").unwrap();
+        let index_name = TabletIndexName::new(tablet_id, descriptor).unwrap();
+        let fields: IndexedFields = vec!["email".parse::<value::FieldPath>().unwrap()]
+            .try_into()
+            .unwrap();
+        let intervals = IntervalSet::All;
+        let summary = FinalTxSummary {
+            begin_timestamp: 1,
+            writes_count: 0,
+            reads_count: 1,
+            rows_read_by_tablet: Default::default(),
+            writes: Vec::new(),
+            user_tx_size: None,
+            system_tx_size: None,
+            index_reads: vec![IndexReadsSummary {
+                index_name: index_name.clone(),
+                fields: fields.clone(),
+                intervals,
+            }],
+        };
+        let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary);
+        let p = to_proto_response(&native).unwrap();
+        let dft = p.final_tx.as_ref().expect("final_tx populated");
+        assert_eq!(dft.index_reads.len(), 1);
+        assert_eq!(dft.index_reads[0].tablet_id, tablet_id.to_string());
+        assert_eq!(dft.index_reads[0].index_descriptor, "by_email");
+        assert_eq!(dft.index_reads[0].fields.len(), 1);
+        assert_eq!(
+            dft.index_reads[0].fields[0].fields,
+            vec!["email".to_string()]
+        );
+        let decoded = from_proto_response(&p).unwrap();
+        let summary = decoded.final_tx.unwrap();
+        assert_eq!(summary.index_reads.len(), 1);
+        assert_eq!(summary.index_reads[0].index_name, index_name);
+        assert_eq!(summary.index_reads[0].fields, fields);
+        // `IntervalSet::All` has no PartialEq; compare via its
+        // proto round-trip (All → `ALL_INTERVAL_PROTO`).
+        let encoded: Vec<pb::common::Interval> = summary.index_reads[0].intervals.clone().into();
+        assert_eq!(encoded.len(), 1, "IntervalSet::All encodes to one interval");
+    }
+
+    #[test]
     fn response_without_final_tx_keeps_field_none() {
         // Handler errors + actions carry no tx → the proto's final_tx
         // stays None. Tests downstream (Phase 2 dispatch) rely on this
@@ -624,7 +767,7 @@ mod tests {
         let p = to_proto_response(&native).unwrap();
         assert!(p.final_tx.is_none());
         let decoded = from_proto_response(&p).unwrap();
-        assert_eq!(decoded.final_tx, None);
+        assert!(decoded.final_tx.is_none());
     }
 
     #[test]

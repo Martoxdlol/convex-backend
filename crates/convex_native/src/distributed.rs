@@ -175,10 +175,11 @@ impl ExecuteResponse {
 /// 1:1 so the conversions layer can move between them without
 /// losing fields.
 ///
-/// Substep 2.2 of `convex-native/STATUS.md` still needs to land
-/// (full `FunctionReads` content); substep 2.3 landed
-/// `writes: Vec<DocumentUpdateWithPrevTs>`.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+/// Substep 2.2b landed the `index_reads` field, which contains
+/// `IntervalSet` — a type that does not implement `PartialEq`.
+/// Downstream tests compare the interesting fields individually
+/// rather than relying on struct-level equality.
+#[derive(Clone, Debug, Default)]
 pub struct FinalTxSummary {
     /// Raw u64 representation of the `Timestamp` the worker opened
     /// its transaction at.
@@ -214,6 +215,12 @@ pub struct FinalTxSummary {
     /// didn't open a transaction (actions, handler errors).
     pub user_tx_size: Option<TxReadSize>,
     pub system_tx_size: Option<TxReadSize>,
+    /// Substep 2.2b: indexed reads the handler accumulated — one
+    /// entry per (tablet, index). Empty list = the handler opened
+    /// a tx but read nothing indexable (and a valid state
+    /// distinct from "no final_tx"). Search reads deferred; see
+    /// `convex-native/STATUS.md`.
+    pub index_reads: Vec<IndexReadsSummary>,
 }
 
 /// Native-side mirror of `pb::function_execution::DistributedTxReadSize`
@@ -223,6 +230,29 @@ pub struct FinalTxSummary {
 pub struct TxReadSize {
     pub total_document_size: u64,
     pub total_document_count: u64,
+}
+
+/// Native-side mirror of `pb::function_execution::DistributedIndexReads`.
+/// One entry per (tablet, index) the handler read through. Substep
+/// 2.2b of `convex-native/STATUS.md`.
+///
+/// Kept in a shape close to `database::IndexReads` so
+/// `server::summarise_tx` can build one entry per ReadSet index
+/// without a lossy projection. Search-index reads are **not**
+/// carried here — native handlers don't currently use search; the
+/// follow-up substep adds a dedicated shape for those.
+#[derive(Clone, Debug)]
+pub struct IndexReadsSummary {
+    /// `TabletIndexName` carrying the tablet id + index descriptor
+    /// the handler read through.
+    pub index_name: common::types::TabletIndexName,
+    /// Ordered field-path list this index indexes on.
+    pub fields: common::bootstrap_model::index::database_index::IndexedFields,
+    /// Flat interval set the handler's reads covered. Reuses
+    /// `common::interval::IntervalSet` so the conversions layer
+    /// can piggy-back on the existing
+    /// `IntervalSet <-> Vec<IntervalProto>` impl.
+    pub intervals: common::interval::IntervalSet,
 }
 
 /// Trait a worker implements to accept remote calls. The
