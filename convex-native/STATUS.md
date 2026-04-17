@@ -178,10 +178,13 @@ freshly-minted `ExecutionContext` by default; override via
 `scheduler().with_execution_context(ctx)` when a parent
 request-id chain needs to be preserved.
 
-**Caveat**: `run_at` still computes its delay against
-`SystemTime::now()`, not the runtime clock. For mocked-clock tests,
-compute the delay from `ctx.unix_timestamp()` and call `run_after`
-directly.
+`run_at` / `run_action_at` on the mutation-scoped scheduler compute
+the delay against the transaction's runtime clock
+(`self.tx.runtime().unix_timestamp()`), so tests driving a mocked
+runtime see the mocked time. The action-scoped scheduler still
+routes through `BackendCallbacks::schedule`, which computes against
+`SystemTime::now()` — the action's callbacks don't hold a `Runtime`
+handle today; see the "Non-obvious caveats" section.
 
 ### Native action snapshot-pinned `ctx.db()` (shipped)
 Native `ActionCtx` now exposes a read-only `ctx.db()` returning an
@@ -207,10 +210,16 @@ register handlers via
 
 ### Non-obvious caveats
 
-- `run_at` reads real wall-clock time via `SystemTime::now()`, not
-  the runtime clock. Tests that mock the runtime need to compute
-  the delay from `ctx.unix_timestamp()` and call `run_after` with
-  a `Duration`.
+- **`run_at` / `run_action_at`** compute their delay against
+  `NativeActionCallbacks::unix_timestamp_now()`.
+  `BackendCallbacks` overrides that to return
+  `database.runtime().unix_timestamp()` when a `Database<RT>` is
+  wired, so mocked-clock tests driving a real backend see the
+  mocked time and can assert on the computed delay. Fallback
+  callbacks (`NoopCallbacks`, JS-only `BackendCallbacks` without
+  a native `Database`) still use `SystemTime::now()`.
+  Mutation-scoped scheduling goes through `VirtualSchedulerModel`
+  and reads the runtime clock directly from the transaction.
 - The typed `.page()` does not drive reactive pagination — the sync
   layer calls a different code path. `.page()` is the right shape
   for one-shot scrolls inside a query/mutation handler, not for

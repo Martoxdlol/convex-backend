@@ -9,12 +9,11 @@
 //! attached to the no-op callbacks (e.g. in unit tests) they return a
 //! clear "no callbacks attached" error.
 
+#[cfg(test)]
+use std::time::SystemTime;
 use std::{
     sync::Arc,
-    time::{
-        Duration,
-        SystemTime,
-    },
+    time::Duration,
 };
 
 use common::{
@@ -122,17 +121,18 @@ impl<'a> Scheduler<'a> {
     /// `timestamp` in the past is clamped to "now" (delay = 0). The
     /// underlying `NativeActionCallbacks::schedule` API only takes a
     /// `Duration`, so this method computes `delay = timestamp - now`
-    /// using `SystemTime::now()`. Tests that drive a mocked runtime
-    /// clock won't see the mocked time here — if you need to schedule
-    /// off a transaction-runtime clock, compute the delay yourself
-    /// from `ctx.unix_timestamp()` and use `run_after` directly.
+    /// using `callbacks.unix_timestamp_now()`. The default /
+    /// [`crate::NoopCallbacks`] implementation falls back to
+    /// `SystemTime::now()`; `BackendCallbacks` overrides to use the
+    /// runtime clock, so mocked-clock tests driving a real backend
+    /// see the mocked time and can assert on the computed delay.
     pub async fn run_at<F: ConvexMutationFunction>(
         &self,
         timestamp: UnixTimestamp,
         marker: F,
         args: F::Args,
     ) -> anyhow::Result<DeveloperDocumentId> {
-        let delay = delay_until(timestamp)?;
+        let delay = self.delay_until(timestamp);
         self.run_after(delay, marker, args).await
     }
 
@@ -144,7 +144,7 @@ impl<'a> Scheduler<'a> {
         marker: F,
         args: F::Args,
     ) -> anyhow::Result<DeveloperDocumentId> {
-        let delay = delay_until(timestamp)?;
+        let delay = self.delay_until(timestamp);
         self.run_action_after(delay, marker, args).await
     }
 
@@ -152,12 +152,23 @@ impl<'a> Scheduler<'a> {
     pub async fn cancel(&self, id: DeveloperDocumentId) -> anyhow::Result<()> {
         self.callbacks.cancel_scheduled(self.namespace, id).await
     }
+
+    /// Compute `timestamp - now` using the callbacks' "now", so
+    /// backends with a real `Runtime` can honour a mocked clock.
+    fn delay_until(&self, timestamp: UnixTimestamp) -> Duration {
+        let now = self.callbacks.unix_timestamp_now();
+        timestamp.checked_sub(now).unwrap_or(Duration::ZERO)
+    }
 }
 
 /// Compute the `Duration` between `SystemTime::now()` and an absolute
 /// `UnixTimestamp`. Returns `Duration::ZERO` when the timestamp is in
 /// the past. Errors only if the host clock predates the Unix epoch
 /// (effectively impossible on real systems).
+///
+/// Retained for direct callers that don't have a callbacks handle;
+/// `Scheduler` itself goes through `callbacks.unix_timestamp_now()`.
+#[cfg(test)]
 pub(crate) fn delay_until(timestamp: UnixTimestamp) -> anyhow::Result<Duration> {
     let now = UnixTimestamp::from_system_time(SystemTime::now())
         .ok_or_else(|| anyhow::anyhow!("system clock predates UNIX epoch"))?;
@@ -230,27 +241,40 @@ impl<'a, RT: Runtime> MutationScheduler<'a, RT> {
     }
 
     /// Schedule a mutation to fire at the absolute wall-clock time
-    /// `timestamp`. Delegates to [`run_after`](Self::run_after) with a
-    /// delay computed from `SystemTime::now()`.
+    /// `timestamp`. The delay is computed against the mutation's
+    /// runtime clock (`self.tx.runtime().unix_timestamp()`), not
+    /// `SystemTime::now()` — so tests driving a mocked runtime see
+    /// the mocked time and can assert on the exact recorded delay.
     pub async fn run_at<F: ConvexMutationFunction>(
         &mut self,
         timestamp: UnixTimestamp,
         marker: F,
         args: F::Args,
     ) -> anyhow::Result<DeveloperDocumentId> {
-        let delay = delay_until(timestamp)?;
+        let delay = self.delay_until_runtime(timestamp);
         self.run_after(delay, marker, args).await
     }
 
-    /// Schedule an action to fire at the absolute wall-clock time.
+    /// Schedule an action to fire at the absolute wall-clock time,
+    /// against the mutation's runtime clock. Same mocked-clock
+    /// semantics as [`run_at`](Self::run_at).
     pub async fn run_action_at<F: ConvexActionFunction>(
         &mut self,
         timestamp: UnixTimestamp,
         marker: F,
         args: F::Args,
     ) -> anyhow::Result<DeveloperDocumentId> {
-        let delay = delay_until(timestamp)?;
+        let delay = self.delay_until_runtime(timestamp);
         self.run_action_after(delay, marker, args).await
+    }
+
+    /// Compute `timestamp - now` using the transaction's runtime
+    /// clock. Clamps past timestamps to `Duration::ZERO` — the
+    /// scheduler would otherwise reject a negative delay and
+    /// callers expect "schedule this, now at the latest" semantics.
+    fn delay_until_runtime(&self, timestamp: UnixTimestamp) -> Duration {
+        let now = self.tx.runtime().unix_timestamp();
+        timestamp.checked_sub(now).unwrap_or(Duration::ZERO)
     }
 
     /// Cancel a previously scheduled job. Idempotent.
@@ -268,14 +292,12 @@ impl<'a, RT: Runtime> MutationScheduler<'a, RT> {
     ) -> anyhow::Result<DeveloperDocumentId> {
         let path = udf_path_for(name)?;
         // `VirtualSchedulerModel::schedule` takes a wall-clock
-        // UnixTimestamp. Compose from "now + delay" using
-        // `SystemTime::now()` — tests that mock the runtime clock
-        // don't see that mocked time here; if precise scheduling
-        // against a mocked clock is required, compute the absolute
-        // timestamp yourself from `ctx.unix_timestamp()` and call
-        // `schedule_by_name` (or add an override).
-        let now = UnixTimestamp::from_system_time(SystemTime::now())
-            .ok_or_else(|| anyhow::anyhow!("system clock predates UNIX epoch"))?;
+        // UnixTimestamp. Compose from "now + delay" using the
+        // transaction's runtime clock, so tests driving a mocked
+        // clock see the mocked time here (unlike the action-side
+        // callback path, which still uses `SystemTime::now()` in
+        // `BackendCallbacks::schedule`).
+        let now = self.tx.runtime().unix_timestamp();
         let target = now + delay;
         VirtualSchedulerModel::new(self.tx, self.namespace)
             .schedule(path, args, target, self.context.clone())

@@ -17,9 +17,13 @@
 //! implements `NativeActionCallbacks` by delegating to the full
 //! `udf::ActionCallbacks` trait.
 
-use std::time::Duration;
+use std::time::{
+    Duration,
+    SystemTime,
+};
 
 use async_trait::async_trait;
+use common::runtime::UnixTimestamp;
 use value::{
     ConvexObject,
     ConvexValue,
@@ -100,6 +104,27 @@ pub trait NativeActionCallbacks: Send + Sync + 'static {
         namespace: TableNamespace,
         id: StorageId,
     ) -> anyhow::Result<bool>;
+
+    /// Return "now" for the purposes of action-scoped `run_at`.
+    ///
+    /// The default implementation uses `SystemTime::now()`, which
+    /// doesn't honour a mocked runtime clock. Backend adapters that
+    /// do hold a real `Runtime` (e.g. `BackendCallbacks` via its
+    /// `Database<RT>`) should override to return
+    /// `runtime.unix_timestamp()` so that tests driving a mocked
+    /// clock can assert on the exact computed delay. Mutation-scoped
+    /// `run_at` already uses the transaction's runtime clock
+    /// directly; this method exists so actions can match that.
+    fn unix_timestamp_now(&self) -> UnixTimestamp {
+        // Fall back to wall clock. `SystemTime::now()` is guaranteed
+        // non-negative relative to the Unix epoch on all supported
+        // platforms, so the fallback path is
+        // `Duration::default()` only when the host clock is before
+        // 1970 — effectively never.
+        UnixTimestamp::from_system_time(SystemTime::now()).unwrap_or_else(|| {
+            UnixTimestamp::from_secs_f64(0.0).expect("zero is a valid unix timestamp")
+        })
+    }
 
     /// Fetch a document by id using the callback's snapshot view —
     /// without opening a full user query. `BackendCallbacks` opens a

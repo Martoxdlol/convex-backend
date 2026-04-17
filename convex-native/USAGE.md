@@ -374,10 +374,14 @@ ctx.scheduler().cancel(job_id).await?;
 
 Caveats:
 
-- **`run_at` reads real wall-clock time** via `SystemTime::now()`.
-  Tests driving a mocked runtime clock should compute the delay
-  from `ctx.unix_timestamp()` and call `run_after` with a
-  `Duration`.
+- **`run_at` honours the runtime clock** when the scheduler is
+  attached to a backend that wires `Database<RT>` (the standard
+  composite path). `BackendCallbacks::unix_timestamp_now()` returns
+  `database.runtime().unix_timestamp()`, so mocked-clock tests see
+  the mocked time. `NoopCallbacks` and JS-only adapters fall back
+  to `SystemTime::now()` — pure unit tests with `NoopCallbacks`
+  should compute delays from `ctx.unix_timestamp()` and use
+  `run_after(Duration, ...)` directly.
 - **Mutation vs. action scheduler semantics differ internally.**
   `MutationCtx::scheduler()` writes through `VirtualSchedulerModel`
   on the mutation's own transaction, so scheduled jobs commit

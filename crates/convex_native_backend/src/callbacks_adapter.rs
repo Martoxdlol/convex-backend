@@ -343,15 +343,11 @@ impl<RT: Runtime + 'static> NativeActionCallbacks for BackendCallbacks<RT> {
     ) -> anyhow::Result<DeveloperDocumentId> {
         let path = path_for(name)?;
         let serialized = args_to_serialized(args)?;
-        // The backend wants a UnixTimestamp wall-clock for the
-        // scheduled job; compose from "now + delay" using the
-        // runtime from the context.
-        let now = UnixTimestamp::from_nanos(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-        );
+        // Compose "now + delay" against the runtime clock when a
+        // Database is wired (so mocked-clock tests see the mocked
+        // time), falling back to the wall clock for the
+        // JS-only adapter.
+        let now = self.unix_timestamp_now();
         let target = now + delay;
         self.inner
             .schedule_job(
@@ -363,6 +359,21 @@ impl<RT: Runtime + 'static> NativeActionCallbacks for BackendCallbacks<RT> {
                 self.context.clone(),
             )
             .await
+    }
+
+    fn unix_timestamp_now(&self) -> UnixTimestamp {
+        // When a Database handle is wired, use its runtime so tests
+        // driving a mocked clock observe the mocked time. Otherwise
+        // fall back to the wall clock — callers without a native
+        // Database (e.g. JS-only adapters) don't have a Runtime
+        // handle to consult.
+        if let Some(db) = self.database.as_ref() {
+            db.runtime().unix_timestamp()
+        } else {
+            UnixTimestamp::from_system_time(std::time::SystemTime::now()).unwrap_or_else(|| {
+                UnixTimestamp::from_secs_f64(0.0).expect("zero is a valid unix timestamp")
+            })
+        }
     }
 
     async fn cancel_scheduled(
