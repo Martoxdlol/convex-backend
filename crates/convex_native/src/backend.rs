@@ -294,4 +294,99 @@ mod tests {
         assert!(built.has_schema());
         assert!(built.has_http());
     }
+
+    #[test]
+    fn counts_return_zero_when_capabilities_were_not_opted_in() {
+        // A builder that opted into nothing yields zeroes from the
+        // `_count` helpers, not a panic. Summary-logging paths rely
+        // on that to be safe to call unconditionally.
+        let built = ConvexBackend::new().build().unwrap();
+        assert_eq!(built.function_count(), 0);
+        assert_eq!(built.table_count(), 0);
+        assert_eq!(built.route_count(), 0);
+        assert_eq!(built.cron_count(), 0);
+    }
+
+    #[test]
+    fn summary_includes_all_four_counts_and_the_crate_version() {
+        // `summary()` is typed into startup logs. Pin the format
+        // fragments so a silent reshape (e.g. dropping the crate
+        // version) doesn't go unnoticed.
+        let built = ConvexBackend::new().build().unwrap();
+        let s = built.summary();
+        assert!(s.contains("convex_native"), "summary names the crate: {s}");
+        assert!(s.contains(crate::VERSION), "summary includes version: {s}");
+        assert!(s.contains("0 fn"), "function count shows up: {s}");
+        assert!(s.contains("0 table"), "table count shows up: {s}");
+        assert!(s.contains("0 route"), "route count shows up: {s}");
+        assert!(s.contains("0 cron"), "cron count shows up: {s}");
+    }
+
+    #[test]
+    fn validate_is_a_noop_when_crons_or_runner_are_missing() {
+        // `validate()` can only cross-check cron↔function consistency
+        // when both sides were opted in. If either is missing, it
+        // treats the backend as "nothing to validate" and returns
+        // Ok — pin that so a future refactor doesn't surprise
+        // callers with a mandatory-opt-in error.
+        let only_runner = ConvexBackend::new()
+            .with_native_functions()
+            .build()
+            .unwrap();
+        only_runner.validate().expect("runner-only ok");
+
+        let only_crons = ConvexBackend::new().with_crons().build().unwrap();
+        only_crons.validate().expect("crons-only ok");
+    }
+
+    #[test]
+    fn warmup_plan_is_empty_without_schema() {
+        // `warmup_plan()` is safe to call unconditionally — it
+        // returns an empty Vec when no schema was collected rather
+        // than panicking.
+        let built = ConvexBackend::new().build().unwrap();
+        assert!(built.warmup_plan().is_empty());
+    }
+
+    #[test]
+    fn convex_native_version_matches_crate_version() {
+        // Deployment traceability: `BuiltBackend::convex_native_version()`
+        // must track `crate::VERSION`, which is also exposed in the
+        // introspect envelope and the worker's Health response.
+        let built = ConvexBackend::new().build().unwrap();
+        assert_eq!(built.convex_native_version(), crate::VERSION);
+    }
+
+    #[tokio::test]
+    async fn run_action_without_runner_errors_with_a_helpful_message() {
+        // `.with_native_functions()` is required for `run_action`.
+        // When it's missing, the error must explain how to fix the
+        // build rather than returning a generic "None".
+        let built = ConvexBackend::new().build().unwrap();
+        let empty_obj = value::ConvexObject::try_from(std::collections::BTreeMap::<
+            value::FieldName,
+            value::ConvexValue,
+        >::new())
+        .unwrap();
+        let err = built
+            .run_action("x", value::TableNamespace::Global, empty_obj)
+            .await
+            .expect_err("no runner");
+        assert!(
+            format!("{err}").contains("with_native_functions"),
+            "error points at the missing builder call: {err}",
+        );
+    }
+
+    #[test]
+    fn describe_pretty_emits_valid_json_even_when_empty() {
+        // `describe_pretty` uses `unwrap_or_else(String::new)` on the
+        // serde error path. The normal path for an empty backend
+        // must still produce valid JSON — pin that by parsing the
+        // output back.
+        let built = ConvexBackend::new().build().unwrap();
+        let pretty = built.describe_pretty();
+        assert!(!pretty.is_empty(), "not the serde-error fallback");
+        let _: serde_json::Value = serde_json::from_str(&pretty).expect("valid JSON");
+    }
 }
