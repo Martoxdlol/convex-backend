@@ -128,26 +128,167 @@ point them at `http://127.0.0.1:3210` and call
 No upstream modifications — this crate depends on `local_backend`
 exactly as shipped.
 
-## Switching to the distributed topology
+## Running in distributed mode
 
-Set `CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678` on the backend
-binary you run here, then boot a second instance of this same
-crate as a worker with:
+The distributed topology splits the single process above into two
+roles that talk to each other over gRPC:
+
+```
+                  ┌──────────────────────────────────────┐
+ Client ─HTTPS/WS─┤  agnostic backend                    │◀── admin CLI
+                  │  (no deployer code; admission + HTTP)│    (loopback)
+                  └─────────────┬────────────────────────┘
+                                │ gRPC ·5678
+                                │ (WorkerAdmissionService,
+                                │  FunctionExecutionService,
+                                │  BackendCallbackService)
+                     ┌──────────┴─────────┐
+                     ▼                    ▼
+             ┌───────────────┐   ┌───────────────┐
+             │ standalone_   │   │ standalone_   │   … scales
+             │ todo_app      │   │ todo_app      │     horizontally
+             │ (CONVEX_MODE= │   │ (same image)  │
+             │  worker)      │   │               │
+             └───────────────┘   └───────────────┘
+```
+
+Two binaries, built independently, rolled on independent
+schedules. The agnostic backend is the long-lived image; workers
+roll whenever you change handler code.
+
+### Step 1 — build the agnostic backend
+
+The **agnostic backend** is the already-shipped `convex-local-backend`
+binary, built **without any `#[convex::*]` registrations linked
+in**. It's called "agnostic" because it has no knowledge of
+deployer handlers; it only speaks admission + coordinates OCC +
+serves HTTP to clients.
 
 ```sh
+# From the repo root — builds crates/local_backend/src/main.rs.
+cargo build --release --bin convex-local-backend
+# Binary: target/release/convex-local-backend
+```
+
+For a container image, use the template in
+`convex-native/examples/deploy/docker/Dockerfile.backend`:
+
+```sh
+docker build \
+  -f convex-native/examples/deploy/docker/Dockerfile.backend \
+  -t getconvex/convex-backend:dev .
+```
+
+`CONVEX_REFUSE_NATIVE_HANDLERS=1` on the backend process enforces
+agnosticism at boot: if any `#[convex::*]` macro code somehow got
+linked into the binary, it refuses to start rather than silently
+shadowing the worker pool's handlers.
+
+### Step 2 — boot the agnostic backend
+
+```sh
+# Terminal A — backend on :3210 (HTTP) + :5678 (admission) + :9090 (admin HTTP).
+CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678 \
+  CONVEX_ADMIN_BIND_ADDR=127.0.0.1:9090 \
+  CONVEX_REFUSE_NATIVE_HANDLERS=1 \
+  ./target/release/convex-local-backend \
+    --port 3210 \
+    --instance-name mydeploy \
+    --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
+    --db-spec sqlite \
+    --local-storage ./_run/backend-storage
+```
+
+The backend logs `CONVEX_ADMISSION_BIND_ADDR=... — spawning
+WorkerAdmissionService` on startup. Until a worker joins, query
+dispatches return a "no workers available" gRPC error.
+
+### Step 3 — boot this example as a worker
+
+Same `standalone_todo_app` crate, different env. The worker dials
+the backend's admission port, sends its `RegistrationEnvelope`
+(native inventory + `registry_version`), and stays connected for
+its lifetime. Closing the stream retires the worker.
+
+```sh
+# Terminal B — worker on :4567.
 CONVEX_MODE=worker \
   CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567 \
   CONVEX_BACKEND_ENDPOINT=http://127.0.0.1:5678 \
-  cargo run --release -- \
+  cargo run --release -p standalone_todo_app -- \
     --port 0 \
-    --instance-name todo-worker \
+    --instance-name mydeploy-worker \
     --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
     --db-spec sqlite \
     --local-storage ./_run/worker-storage
 ```
 
-See `../HOW_TO_RUN.md` §3 and `convex-native/DISTRIBUTED_PLAN.md`
-for the full split-topology walk-through.
+> **Why two `--local-storage` dirs?** The worker process opens
+> its own `Database<Rt>` at `begin_timestamp`s the backend
+> supplies on each request. In this split-binary demo both
+> processes talk to their own sqlite; in production both sides
+> point at the same Postgres/MySQL cluster.
+
+### Step 4 — verify from the operator surface
+
+```sh
+# Pool snapshot — one worker, registry version = this crate's pkg version.
+curl -s http://127.0.0.1:9090/admin/pool | jq .
+
+# Scale by booting more workers on different ports; the backend
+# load-balances across them (Power-of-2-Choices).
+CONVEX_MODE=worker \
+  CONVEX_WORKER_BIND_ADDR=0.0.0.0:4568 \
+  CONVEX_BACKEND_ENDPOINT=http://127.0.0.1:5678 \
+  cargo run --release -p standalone_todo_app -- --port 0 ...
+
+# Rolling update: bump the pool floor so only v2 workers receive
+# new dispatches.
+curl -X POST http://127.0.0.1:9090/admin/pool/floor \
+  -d '{"min_registry_version":"0.2.0"}'
+
+# Drain a specific worker before killing it.
+curl -X POST http://127.0.0.1:9090/admin/pool/drain \
+  -d '{"worker_id":3,"reason":"v1 retirement"}'
+```
+
+### Step 5 — call a function
+
+Exactly like the monolith path — clients don't observe the split:
+
+```sh
+curl -sS http://127.0.0.1:3210/api/mutation \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "path": "mutations:create",
+        "args": {"owner": "alice", "text": "shipped it"},
+        "format": "json"
+      }' | jq .
+```
+
+The backend routes `mutations:create` to an available worker,
+collects the `FinalTxSummary` (reads + writes), commits on its
+own `Committer` (OCC + subscription invalidation stay on the
+backend), and returns the result. See
+`convex-native/DISTRIBUTED_PLAN.md` §6 for the exact protocol.
+
+### Kubernetes
+
+For a real cluster, the manifests in
+`convex-native/examples/deploy/kubernetes/` cover both roles:
+
+- `backend-deployment.yaml` — single-replica backend + PVC +
+  Services for HTTP and admission.
+- `worker-deployment.yaml` — multi-replica worker Deployment +
+  headless Service, dialing the backend via the cluster DNS name.
+
+```sh
+kubectl apply -f convex-native/examples/deploy/kubernetes/
+```
+
+See `../HOW_TO_RUN.md` §3 for the cargo-only flow and
+`convex-native/DISTRIBUTED_PLAN.md` cover-to-cover for the
+architecture rationale.
 
 ## Gotchas
 
