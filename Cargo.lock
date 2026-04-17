@@ -2371,6 +2371,7 @@ dependencies = [
  "function_runner",
  "keybroker",
  "model",
+ "parking_lot",
  "pb",
  "prost",
  "prost-types",

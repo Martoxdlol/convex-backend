@@ -20,6 +20,7 @@ errors = { workspace = true }
 function_runner = { workspace = true }
 keybroker = { workspace = true }
 model = { workspace = true }
+parking_lot = { workspace = true }
 pb = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }

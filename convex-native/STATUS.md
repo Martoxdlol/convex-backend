@@ -414,11 +414,33 @@ each substep ships as its own commit.
      round-trip, empty registries shape, hash determinism,
      hash changes with content.
 
-3.3. **`WorkerPool` type.** Replaces the fixed
-     `Vec<Arc<dyn WorkerClient>>` with a churn-tolerant
-     `DashMap<WorkerId, WorkerEntry>` plus a
-     `by_function: DashMap<String, Vec<WorkerId>>` dispatch
-     index. Per-registry-version groups; floor-bump control.
+3.3. ✓ **`WorkerPool` type.** Landed. New module
+     `convex_native_distributed::pool` with a `WorkerPool`
+     backed by a single `parking_lot::RwLock` on the inner
+     state (workers: HashMap, by_function: HashMap). Picked
+     `RwLock + HashMap` over `DashMap` — admission rate is
+     tiny (seconds between admits on a real pool) and coarser
+     locking keeps the invariants trivial to reason about.
+     Upgrade to sharded maps if the pool ever exceeds a few
+     hundred members.
+
+     - `WorkerId(u64)` allocated monotonically; worker
+       restart yields a fresh id (no in-flight-dispatch
+       races against a stale client).
+     - `admit` / `retire` are the two shape-changing ops;
+       retire is idempotent.
+     - `eligible_for(name)` returns every worker serving the
+       name, filtered by the pool-wide
+       `min_registry_version` floor (reuses the same
+       lexicographic-parts comparison as `FunctionExecutionServer`'s
+       version gate, so worker-side acceptance and pool-side
+       eligibility stay in sync).
+     - `by_version()` count-grouping feeds Phase-7 dashboards
+       and makes rolling-update progress observable.
+
+     Tests: five unit tests pin admission ordering, function
+     routing, retirement idempotency, floor filtering, and
+     version grouping.
 
 3.4. **`WorkerAdmissionServer`.** Backend-side tonic service
      implementation. Accepts `Register` streams, validates the
