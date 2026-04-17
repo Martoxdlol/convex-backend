@@ -596,32 +596,40 @@ impl ValidatedPathAndArgs {
             PublicFunctionPath::ResolvedComponent(path) => path,
         };
 
-        // Native-handler short-circuit. When a native resolver is
-        // installed (see `install_native_function_resolver`) and the
+        // Native-handler fallback. Pure-native deployments never
+        // write `_modules` rows, so `udf_version` + the JS analyzed
+        // function lookup below fail — but the handler is alive in
+        // `inventory`. When a native resolver is installed and the
         // bare function name matches a `#[convex::*]` registration,
-        // synthesize an `AnalyzedFunction` from the registry instead
-        // of reading `_modules`. A pure-native deployment never
-        // writes those rows — without this short-circuit every HTTP
-        // request would hit the `missing_or_internal_error` branch
-        // below. See `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md`.
-        if let Some(native) = resolve_native_function(path.udf_path.function_name()) {
-            let analyzed_function = synthesize_native_analyzed_function(&path, &native);
-            let returns_validator = ReturnsValidator::Unvalidated;
-            // Pass `None` npm_version through `new_inner_with_version`
-            // — native handlers are not published via the npm SDK so
-            // `udf_server_version` has no meaningful value for them.
-            return match ValidatedPathAndArgs::new_inner(
-                allowed_visibility,
-                tx,
-                path,
-                args,
-                expected_udf_type,
-                analyzed_function,
-                None,
-            )? {
-                Ok(validated) => Ok(Ok((validated, returns_validator))),
-                Err(js_err) => Ok(Err(js_err)),
-            };
+        // short-circuit with a synthesized `AnalyzedFunction`.
+        // Ordering: we check the native resolver BEFORE the module
+        // table only when module lookup would fail — specifically,
+        // when UdfConfig is absent (no `npx convex dev` has run
+        // against this deployment). This preserves today's mixed
+        // JS + native behaviour where a JS shim with stricter
+        // validators wins over the native registry's Unvalidated
+        // default. See `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md`.
+        let udf_config = UdfConfigModel::new(tx, path.component.into()).get().await?;
+        if udf_config.is_none() {
+            if let Some(native) = resolve_native_function(path.udf_path.function_name()) {
+                let analyzed_function = synthesize_native_analyzed_function(&path, &native);
+                let returns_validator = ReturnsValidator::Unvalidated;
+                // `npm_version: None` — native handlers are not
+                // published via the npm SDK, so no version-gate
+                // checks apply.
+                return match ValidatedPathAndArgs::new_inner(
+                    allowed_visibility,
+                    tx,
+                    path,
+                    args,
+                    expected_udf_type,
+                    analyzed_function,
+                    None,
+                )? {
+                    Ok(validated) => Ok(Ok((validated, returns_validator))),
+                    Err(js_err) => Ok(Err(js_err)),
+                };
+            }
         }
 
         let udf_version = match udf_version(&path, tx).await? {
@@ -636,6 +644,28 @@ impl ValidatedPathAndArgs {
             .get_analyzed_function_by_id(&path)
             .await?
         else {
+            // Second native fallback: if there IS a UdfConfig (JS
+            // has been pushed) but the named function isn't in any
+            // `_modules` row, it might still be a native handler
+            // registered via `inventory`. Allow the short-circuit
+            // here too so a JS-push-then-add-native-handler workflow
+            // works without requiring the deployer to re-push.
+            if let Some(native) = resolve_native_function(path.udf_path.function_name()) {
+                let analyzed_function = synthesize_native_analyzed_function(&path, &native);
+                let returns_validator = ReturnsValidator::Unvalidated;
+                return match ValidatedPathAndArgs::new_inner(
+                    allowed_visibility,
+                    tx,
+                    path,
+                    args,
+                    expected_udf_type,
+                    analyzed_function,
+                    None,
+                )? {
+                    Ok(validated) => Ok(Ok((validated, returns_validator))),
+                    Err(js_err) => Ok(Err(js_err)),
+                };
+            }
             return Ok(Err(JsError::from_message(missing_or_internal_error(
                 public_path,
             )?)));

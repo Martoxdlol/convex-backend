@@ -413,10 +413,16 @@ Shipped as **Option B — registry-backed fast path in validation**:
   circular `udf → convex_native_core` dep — the `udf` crate stays
   storage-agnostic and the bridge lives in
   `convex_native_backend::native_resolver`.
-- `ValidatedPathAndArgs::new_with_returns_validator` short-circuits
-  when the bare function name is in the resolver. Synthesizes an
-  `AnalyzedFunction { args_str: None, returns_str: None,
-  visibility: derived from is_internal, udf_type: from the
+- `ValidatedPathAndArgs::new_with_returns_validator` falls back
+  to the native resolver **only when the JS-side module lookup
+  would fail** — either UdfConfig is absent (pure-native
+  deployment) or the named function is missing from the loaded
+  `_modules` rows. Mixed JS + native deployments with a matching
+  JS export keep using the JS-side `AnalyzedFunction` so the
+  stricter JS validators win over the native registry's
+  `Unvalidated` default. On a native hit the short-circuit
+  synthesizes `AnalyzedFunction { args_str: None, returns_str:
+  None, visibility derived from is_internal, udf_type from the
   handler kind }` and runs `new_inner` with `npm_version: None`.
 - `validate_schedule_args` gets the same short-circuit — native
   mutations can be `ctx.scheduler().schedule(...)`'d.
