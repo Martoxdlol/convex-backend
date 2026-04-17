@@ -154,6 +154,31 @@ async fn http_health(
     Ok(HttpResponse::json(200, serde_json::json!({"status": "ok"})))
 }
 
+/// Exercises `scheduler().run_at(...)` in an end-to-end action flow.
+///
+/// Computes an absolute wall-clock timestamp ~10s in the future and
+/// hands it to the scheduler. The scheduler internally converts to a
+/// `Duration` via `delay_until`; we assert downstream through the
+/// mock that the recorded delay lands in a tolerance band around 10s.
+#[convex::action]
+pub async fn notify_at_timestamp(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
+    use std::time::SystemTime;
+    let now = common::runtime::UnixTimestamp::from_system_time(SystemTime::now())
+        .expect("clock after epoch");
+    let ten_seconds_out =
+        common::runtime::UnixTimestamp::from_secs_f64(now.as_secs_f64() + 10.0).unwrap();
+    ctx.scheduler()
+        .run_at(
+            ten_seconds_out,
+            RecordNote,
+            RecordNoteArgs {
+                body: "deadline".into(),
+            },
+        )
+        .await?;
+    Ok(())
+}
+
 // ── Mock callbacks ───────────────────────────────────────────────
 
 #[derive(Default)]
@@ -305,6 +330,47 @@ async fn full_app_works_end_to_end() {
     assert_eq!(state.schedules[0].1, Duration::from_secs(10));
     assert_eq!(state.stores, 1);
     assert_eq!(state.deletes, 1);
+}
+
+#[tokio::test]
+async fn scheduler_run_at_lands_as_absolute_delay() {
+    // Runs `notify_at_timestamp` through the full `ConvexBackend`
+    // stack. The action computes a `UnixTimestamp` ten seconds in the
+    // future and schedules against it via `scheduler().run_at(...)`.
+    // The scheduler's `delay_until` helper converts the absolute
+    // timestamp back to a `Duration`, which the mock records.
+    //
+    // Tolerance: 9s..=11s absorbs the two separate `SystemTime::now()`
+    // reads (one in the action, one inside `delay_until`) that can
+    // drift by milliseconds under CI load.
+    let mock = Arc::new(Mock {
+        state: Mutex::new(MockState::default()),
+    });
+    let built = ConvexBackend::new()
+        .with_native_functions()
+        .with_native_schema()
+        .with_callbacks(mock.clone())
+        .build()
+        .expect("build");
+
+    let args_value = (NotifyAtTimestampArgs {}).to_convex().unwrap();
+    let obj = match args_value {
+        ConvexValue::Object(o) => o,
+        _ => unreachable!(),
+    };
+    built
+        .run_action("notify_at_timestamp", TableNamespace::Global, obj)
+        .await
+        .expect("action ran");
+
+    let state = mock.state.lock().unwrap();
+    assert_eq!(state.schedules.len(), 1, "one schedule call recorded");
+    let (name, delay) = &state.schedules[0];
+    assert_eq!(name, "record_note");
+    assert!(
+        *delay >= Duration::from_secs(9) && *delay <= Duration::from_secs(11),
+        "run_at should land ~10s out after delay_until conversion: {delay:?}",
+    );
 }
 
 #[test]
