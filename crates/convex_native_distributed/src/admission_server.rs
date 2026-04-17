@@ -91,7 +91,7 @@ pub async fn spawn_admission_server_with_handle(
             // is fire-and-forget; the caller has already returned
             // the pool handle and no longer has a place to
             // surface a late transport failure.
-            eprintln!("WorkerAdmissionService exited: {e}");
+            tracing::error!("WorkerAdmissionService exited: {e}");
         }
     });
     Ok((pool_for_return, service))
@@ -219,14 +219,14 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
             .pool
             .diff_against_active_inventory(&envelope.registry_version, &functions)
         {
-            eprintln!(
-                "[convex-admission] inventory diff: active={} incoming={} added={:?} removed={:?} \
-                 carried_over={}",
-                diff.active_version,
-                diff.incoming_version,
-                diff.added,
-                diff.removed,
-                diff.carried_over.len(),
+            tracing::info!(
+                target: "convex_admission",
+                active = %diff.active_version,
+                incoming = %diff.incoming_version,
+                added = ?diff.added,
+                removed = ?diff.removed,
+                carried_over = diff.carried_over.len(),
+                "inventory diff on new registry_version",
             );
         }
         let entry = WorkerEntry {

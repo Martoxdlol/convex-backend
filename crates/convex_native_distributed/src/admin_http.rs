@@ -32,7 +32,6 @@ use std::sync::Arc;
 use axum::{
     extract::State,
     http::StatusCode,
-    response::IntoResponse,
     routing::{
         get,
         post,
@@ -106,12 +105,12 @@ pub async fn spawn_admin_server(
         let listener = match tokio::net::TcpListener::bind(bind_addr).await {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("AdminHttpServer: bind {bind_addr} failed: {e}");
+                tracing::error!("AdminHttpServer: bind {bind_addr} failed: {e}");
                 return;
             },
         };
         if let Err(e) = axum::serve(listener, app).await {
-            eprintln!("AdminHttpServer exited: {e}");
+            tracing::error!("AdminHttpServer exited: {e}");
         }
     });
     Ok(())
@@ -218,17 +217,6 @@ async fn drain_worker(
         worker_id: req.worker_id,
         delivered,
     }))
-}
-
-// Implement IntoResponse for the error tuple explicitly — axum
-// provides a blanket impl for `(StatusCode, String)` via
-// `IntoResponse`, but the `Result`-return pattern needs the
-// `Json<...>` Ok variant to satisfy the trait. This is a no-op
-// wrapper that just ensures the import doesn't get dead-code-
-// eliminated when the file is first compiled.
-#[allow(dead_code)]
-fn _suppress_unused_import() -> impl IntoResponse {
-    (StatusCode::OK, Json(serde_json::json!({})))
 }
 
 #[cfg(test)]

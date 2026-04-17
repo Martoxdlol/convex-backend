@@ -136,6 +136,22 @@ roadmap you're signing up for.
 
 - Pool inspector, inventory diff, manual `min_registry_version`
   floor bump over an admin RPC. Production-grade operations.
+- Env var `CONVEX_ADMIN_BIND_ADDR=127.0.0.1:9090` mounts the
+  admin HTTP surface:
+  - `GET /admin/pool` — pool introspection JSON
+    (total, by_version, by_kind, kind_preferences, per-worker
+    detail).
+  - `POST /admin/pool/floor {"min_registry_version":"X.Y.Z"}`
+    — set rolling-update floor (null clears).
+  - `POST /admin/pool/kind_preference
+    {"function_name":"compute","kind":"native-rust"}` — pin
+    per-function kind preference.
+  - `POST /admin/pool/drain {"worker_id":N,"reason":"…"}`
+    — trigger operator-initiated worker drain.
+  - Inventory diff on each registry_version change logged
+    via `tracing::info!(target="convex_admission")`.
+- Bind to loopback + expose through SSH/port-forward; do
+  **not** expose this directly on the public network.
 
 ## Rolling-update semantics
 
