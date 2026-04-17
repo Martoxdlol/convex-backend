@@ -82,6 +82,19 @@ All green at HEAD.
   together on Ctrl-C / `/preempt`). Conductor mode still runs from
   the dedicated `convex_native_distributed::examples::conductor`
   binary.
+- `ExecuteRequest.execution_context` propagates across the
+  gRPC boundary — request-id / execution-id / parent-scheduled-job
+  chains span both processes. The mutation scheduler inherits it
+  automatically.
+- `ExecuteResponse.log_lines` carries worker-side `ctx.log()`
+  output over the wire; `ConductorLogSink` forwards them into the
+  conductor's log-streaming path.
+- `WorkerActionCallbacks` — native-only callbacks the worker
+  installs when a `Database<Rt>` is attached, so actions
+  dispatched through the distributed path can sub-call
+  queries/mutations, schedule jobs, and do snapshot reads.
+- `DistributedFunctionRunner::in_flight_per_worker()` gauge
+  snapshot (`native_funrun_in_flight_per_worker`).
 
 ### Phase 4 — production hardening
 - Fastrace span propagation on every runner entry point.
@@ -116,7 +129,17 @@ All green at HEAD.
 - `convex_native::errors` helpers: `bad_request` (400),
   `unauthenticated` (401), `forbidden` (403), `not_found` (404),
   `conflict` (409), `rate_limited` (429), `overloaded` (503).
-- `ctx.auth()` / `ctx.unix_timestamp()` / `ctx.log()`.
+- Every ctx exposes `ctx.auth()` (with `user_identity()` +
+  `subject()` matching `ctx.auth.getUserIdentity()`),
+  `ctx.unix_timestamp()`, `ctx.log()`, `ctx.rng_u64()` /
+  `ctx.rng_fill(...)`, and `ctx.execution_context()`. Query /
+  mutation ctxs additionally expose
+  `ctx.db().normalize_id(...)`; the action ctx exposes
+  `ctx.db().get<T>(id)` (snapshot-pinned) +
+  `ctx.storage().get_metadata(id)`.
+- `observed_identity` / `observed_time` / `observed_rng` are
+  all populated on `UdfOutcome` based on what the handler
+  actually read.
 - `convex_native::testing::{TestCallbacks, CallRecord, args!}`
   for unit tests.
 - `BuiltBackend::describe_json() / describe_pretty()` stable
