@@ -27,7 +27,7 @@ cargo test -p convex_native              # 236 tests
 cargo test -p convex_native_backend      # 10 tests
 cargo test -p convex_native_distributed  # 57 tests
 
-# total: 303
+# total: 303 — all green
 ```
 
 All green at HEAD.

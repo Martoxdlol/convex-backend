@@ -264,6 +264,14 @@ Shared methods across all ctxs:
   stay reproducible. Calling either flips `observed_rng` on the
   ctx; the runner drains that bit into
   `UdfOutcome::observed_rng`.
+- `ctx.execution_context() -> Option<&ExecutionContext>` — the
+  enclosing request's context (request-id / execution-id /
+  parent-scheduled-job chain). `None` in tests that build a ctx
+  without attaching one. Use the returned reference's
+  `request_id` / `execution_id` for structured logs that should
+  correlate with the enclosing request. The mutation scheduler
+  picks the same context up automatically, so scheduled jobs
+  chain off the caller's id without the handler doing anything.
 
 ## 5. Typed queries
 
