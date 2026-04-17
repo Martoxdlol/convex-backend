@@ -106,10 +106,10 @@ pub trait ConductorMetricsSink: Send + Sync + 'static {
 
 /// Outcome of one dispatch-side `execute(...)` call.
 ///
-/// Mirrors the `native_funrun_request_*` metric families named in
-/// `native-rust-functions.md` §12.3: successes on first try,
-/// successes after a failover retry, and transport / gRPC-level
-/// failures the dispatcher couldn't recover from.
+/// Mirrors the `native_funrun_request_*` metric families:
+/// successes on first try, successes after a failover retry, and
+/// transport / gRPC-level failures the dispatcher couldn't recover
+/// from.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ConductorOutcome {
     /// First-attempt success. The handler returned a value (or a
@@ -394,8 +394,7 @@ impl DistributedFunctionRunner {
     }
 
     /// Snapshot each worker's `(label, in_flight_estimate())` — the
-    /// shape behind the `native_funrun_in_flight_per_worker` metric
-    /// named in `convex-native/native-rust-functions.md` §12.3.
+    /// shape behind the `native_funrun_in_flight_per_worker` metric.
     /// Callers typically render these onto a gauge so operators can
     /// see the P2C load distribution across the pool in one view.
     pub fn in_flight_per_worker(&self) -> Vec<(String, u64)> {

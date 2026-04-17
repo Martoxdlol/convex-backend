@@ -64,9 +64,7 @@ Read `DISTRIBUTED_PLAN.md` cover to cover before contributing.
 | `MIGRATION.md` | JS ↔ Rust cheatsheet. |
 | `STANDALONE.md` | Monolith alternative (`local_backend` library mode). Not the recommended topology going forward, but it works today. |
 | `COMPOSITE_RUNNER.md` | How the monolith dispatch path works inside `local_backend`. Implementation reference for the alternative topology. |
-| `DEPLOYMENT.md` | Operational guide — kept, will evolve per-phase. |
-| `IMPLEMENTATION_PLAN.md` | Superseded. Historical. |
-| `native-rust-functions.md` | Original design doc. Framework sections still accurate; distributed sections are superseded by `DISTRIBUTED_PLAN.md`. |
+| `DEPLOYMENT.md` | Operational guide — env vars, rolling updates, observability. |
 
 ## Crate map
 

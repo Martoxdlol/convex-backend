@@ -7,10 +7,8 @@
 //! the user's function for the duration of the call.
 //!
 //! These types are intentionally minimal: they route typed calls into the
-//! existing `UserFacingModel` and `Transaction` APIs. The design doc
-//! (`convex-native/native-rust-functions.md` §8) lists the full surface —
-//! we implement only the subset required for a working MVP today, expanding
-//! as each later phase needs it.
+//! existing `UserFacingModel` and `Transaction` APIs. See
+//! `convex-native/USAGE.md` for the full developer surface.
 
 pub mod action;
 pub mod mutation;

@@ -22,10 +22,10 @@ mod native_function;
 
 /// `#[derive(ConvexDocument)]`
 ///
-/// See `convex-native/native-rust-functions.md` for the full design.
 /// Generates `ConvexDocument` impl, `XxxField` enum, `XxxIndex` enum,
 /// `XxxPatch` struct, `XxxWithId` struct, and registers the table with
-/// `inventory` for schema collection.
+/// `inventory` for schema collection. See `convex-native/USAGE.md` for
+/// the developer-facing surface.
 #[proc_macro_derive(ConvexDocument, attributes(convex))]
 pub fn derive_convex_document(input: TokenStream) -> TokenStream {
     convex_document::derive_convex_document(input)

@@ -7,9 +7,8 @@ for "you have a running app" fast and leaves corners uncovered.
 - For the full per-topic feature reference, read **`USAGE.md`**.
 - For what's shipped vs. missing, read **`STATUS.md`**.
 - For porting a JS app to Rust, read **`MIGRATION.md`**.
-- For design rationale, read `native-rust-functions.md` (original
-  design doc; `USAGE.md` / `STATUS.md` are authoritative for the
-  shipped API).
+- For the target architecture + phase breakdown, read
+  **`DISTRIBUTED_PLAN.md`**.
 
 ## Adding the dep
 

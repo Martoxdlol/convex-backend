@@ -1,8 +1,8 @@
 //! # convex_native
 //!
 //! Framework crate for writing Convex server functions (queries, mutations,
-//! actions) in native Rust. See `convex-native/native-rust-functions.md` in
-//! the repository root for the design document.
+//! actions) in native Rust. See `convex-native/USAGE.md` for the developer
+//! surface and `convex-native/DISTRIBUTED_PLAN.md` for the target topology.
 //!
 //! Developer code is expected to bring the common types into scope with
 //! `use convex_native::prelude::*;`.

@@ -1,16 +1,9 @@
 # Status
 
-**As of this writing the project is in a planning reset.** The
-previous plan (see `IMPLEMENTATION_PLAN.md`, now marked
-superseded) drove the framework far enough to demonstrate every
-ctx / schema / derive feature in isolation, but the distributed
-topology it delivered is not correct against the
-"backend-coordinates / workers-execute" architecture the project
-actually needs. Code that conflicted with that target has been
-removed. `DISTRIBUTED_PLAN.md` is the current source of truth.
-
-This file tracks what survived, what was removed, and what the
-active phase is.
+Every phase of `DISTRIBUTED_PLAN.md` has shipped in source.
+This file tracks the per-substep detail + the four deferred
+items blocked on out-of-source infrastructure. `DISTRIBUTED_PLAN.md`
+is the architecture source of truth.
 
 ---
 
@@ -42,9 +35,7 @@ release tooling + downstream JS worker implementation.
 | `MIGRATION.md` | JS ↔ Rust cheatsheet. Still valid. |
 | `STANDALONE.md` | Monolith alternative (`local_backend` as a library). Works today but is the legacy shape — deprioritized relative to the new distributed target. |
 | `COMPOSITE_RUNNER.md` | Describes `CompositeFunctionRunner` — the monolith dispatch path inside `local_backend`. Stays for the monolith topology; not used by the new distributed target. |
-| `DEPLOYMENT.md` | Operational guide. Rewritten to point at `DISTRIBUTED_PLAN.md` for the real architecture. |
-| `IMPLEMENTATION_PLAN.md` | **Superseded.** Historical phased plan that led to the now-removed code. |
-| `native-rust-functions.md` | Original design doc. Sections 1–9 still describe the framework surface correctly; sections 10–13 (distributed execution, operations) are superseded by `DISTRIBUTED_PLAN.md`. |
+| `DEPLOYMENT.md` | Operational guide — env-var matrix, rolling updates, observability, Phase-7 admin surface. |
 
 ---
 

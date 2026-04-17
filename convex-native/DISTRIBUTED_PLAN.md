@@ -974,8 +974,6 @@ Any exception would cost more than it saves.
 
 ## Related reading
 
-- `native-rust-functions.md` §10 — original design for distributed
-  execution (shape sketched, not implemented).
 - `STATUS.md` — current shipped surface.
 - `DEPLOYMENT.md` — operational guide for today's topologies.
 - `COMPOSITE_RUNNER.md` — composite runner's current dispatch
