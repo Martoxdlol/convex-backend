@@ -129,6 +129,60 @@ impl ConductorMetricsSink for NoopConductorMetrics {
     fn record(&self, _: Option<&str>, _: UdfType, _: ConductorOutcome, _: Duration) {}
 }
 
+/// Observability hook for forwarding worker-side `ctx.log()` output
+/// into the conductor's own log-streaming path.
+///
+/// `FunctionExecutionServer` on the worker snapshots the ctx's
+/// `LogBuffer` after every handler invocation and writes the
+/// rendered lines into `ExecuteResponse::log_lines` (see
+/// `function_execution.proto`). Without a sink the conductor
+/// receives those lines but has nowhere to route them; wiring one
+/// lets deployments forward them into syslog / Loki / fluentd /
+/// whatever their log stack is.
+///
+/// Called once per completed `execute(...)` with the successful
+/// response's log lines. No-op for transport failures (no response
+/// means no worker-side logs to forward).
+pub trait ConductorLogSink: Send + Sync + 'static {
+    /// Forward the log lines a worker emitted for one completed
+    /// request. `worker` is the endpoint label the request landed on.
+    /// `lines` is the `"[LEVEL] message"`-shaped vec the worker
+    /// wrote into `ExecuteResponse::log_lines`.
+    fn forward(&self, worker: &str, udf_type: UdfType, lines: Vec<String>);
+}
+
+/// Default discards every log line.
+pub struct NoopConductorLogs;
+
+impl ConductorLogSink for NoopConductorLogs {
+    fn forward(&self, _: &str, _: UdfType, _: Vec<String>) {}
+}
+
+/// In-memory capture sink — tests assert on the captured lines.
+#[derive(Default)]
+pub struct CapturingConductorLogs {
+    inner: std::sync::Mutex<Vec<(String, UdfType, Vec<String>)>>,
+}
+
+impl CapturingConductorLogs {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> Vec<(String, UdfType, Vec<String>)> {
+        self.inner.lock().unwrap().clone()
+    }
+}
+
+impl ConductorLogSink for CapturingConductorLogs {
+    fn forward(&self, worker: &str, udf_type: UdfType, lines: Vec<String>) {
+        self.inner
+            .lock()
+            .unwrap()
+            .push((worker.to_string(), udf_type, lines));
+    }
+}
+
 /// In-memory counter sink for tests. Records every call so
 /// assertions can verify routing + outcome attribution.
 #[derive(Default)]
@@ -261,6 +315,10 @@ pub struct DistributedFunctionRunner {
     /// deployments that care about `native_funrun_*` metrics
     /// swap in their own sink via [`with_metrics`].
     metrics: Arc<dyn ConductorMetricsSink>,
+    /// Log-forwarding hook. Defaults to [`NoopConductorLogs`];
+    /// deployments wire their log stack through
+    /// [`with_log_sink`] to forward worker `ctx.log()` output.
+    log_sink: Arc<dyn ConductorLogSink>,
 }
 
 impl DistributedFunctionRunner {
@@ -276,6 +334,7 @@ impl DistributedFunctionRunner {
             failover: true,
             min_registry_version: None,
             metrics: Arc::new(NoopConductorMetrics),
+            log_sink: Arc::new(NoopConductorLogs),
         })
     }
 
@@ -283,6 +342,14 @@ impl DistributedFunctionRunner {
     /// the final outcome + latency. See [`ConductorMetricsSink`].
     pub fn with_metrics(mut self, metrics: Arc<dyn ConductorMetricsSink>) -> Self {
         self.metrics = metrics;
+        self
+    }
+
+    /// Attach a log-forwarding sink. Called once per successful
+    /// `execute(...)` with the worker's `ExecuteResponse::log_lines`.
+    /// See [`ConductorLogSink`].
+    pub fn with_log_sink(mut self, log_sink: Arc<dyn ConductorLogSink>) -> Self {
+        self.log_sink = log_sink;
         self
     }
 
@@ -373,6 +440,10 @@ impl DistributedFunctionRunner {
                     };
                     self.metrics
                         .record(Some(worker.label()), udf_type, outcome, started.elapsed());
+                    if !resp.log_lines.is_empty() {
+                        self.log_sink
+                            .forward(worker.label(), udf_type, resp.log_lines.clone());
+                    }
                     return Ok(resp);
                 },
                 Err(e) if e.code() == tonic::Code::Unavailable => {
@@ -709,6 +780,46 @@ mod tests {
             1,
             "final record when every attempt failed has no worker label",
         );
+    }
+
+    #[tokio::test]
+    async fn log_sink_receives_worker_log_lines_on_successful_dispatch() {
+        // The worker would normally render its LogBuffer into
+        // `"[LEVEL] message"` strings. Here the mock short-circuits
+        // that by returning an `ExecuteResponse` with log_lines set,
+        // which is the same wire shape. The sink should capture
+        // them verbatim, keyed by the worker label.
+        let handler_a = |_: &ExecuteRequest, _: UdfType| {
+            Ok(ExecuteResponse::new(Ok(value::ConvexValue::Null))
+                .with_log_lines(vec!["[INFO] hello from a".to_string()]))
+        };
+        let a = MockWorkerClient::with_handler("A", 0, handler_a);
+        let b = MockWorkerClient::new("B", 10);
+        let sink = Arc::new(CapturingConductorLogs::new());
+        let runner = DistributedFunctionRunner::new(vec![a, b])
+            .unwrap()
+            .with_chooser(Arc::new(FixedChooser((0, 1))))
+            .with_log_sink(sink.clone());
+        runner.execute(req(), UdfType::Action).await.unwrap();
+        let snap = sink.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].0, "A");
+        assert_eq!(snap[0].2, vec!["[INFO] hello from a"]);
+    }
+
+    #[tokio::test]
+    async fn log_sink_is_silent_when_worker_returns_no_log_lines() {
+        // Most handlers don't log — the sink must NOT be called for
+        // every request, so deployments that only forward actual
+        // log output don't eat a function-call overhead on every
+        // dispatch.
+        let a = MockWorkerClient::new("A", 0);
+        let sink = Arc::new(CapturingConductorLogs::new());
+        let runner = DistributedFunctionRunner::new(vec![a])
+            .unwrap()
+            .with_log_sink(sink.clone());
+        runner.execute(req(), UdfType::Action).await.unwrap();
+        assert!(sink.snapshot().is_empty());
     }
 
     #[tokio::test]

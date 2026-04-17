@@ -40,10 +40,13 @@ pub mod server;
 pub mod tonic_client;
 
 pub use client::{
+    CapturingConductorLogs,
+    ConductorLogSink,
     ConductorMetricsSink,
     ConductorOutcome,
     CountingConductorMetrics,
     DistributedFunctionRunner,
+    NoopConductorLogs,
     NoopConductorMetrics,
     WorkerClient,
 };
