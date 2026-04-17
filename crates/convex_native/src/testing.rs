@@ -274,6 +274,12 @@ impl NativeActionCallbacks for TestCallbacksImpl {
 macro_rules! __convex_native_args {
     ( $( $key:expr => $value:expr ),* $(,)? ) => {{
         use ::std::collections::BTreeMap;
+        // `mut` is only actually needed when at least one pair is
+        // supplied; for the zero-pair form (`args! {}`) the local
+        // never gets written to. Suppressing the lint keeps both
+        // call shapes valid without the macro having to branch on
+        // "did the user pass any pairs?".
+        #[allow(unused_mut)]
         let mut map: BTreeMap<
             $crate::__private::FieldName,
             $crate::__private::ConvexValue,
@@ -347,5 +353,155 @@ mod tests {
             history.count(|r| matches!(r, CallRecord::Mutation { name, .. } if name == "set")),
             1,
         );
+    }
+
+    fn empty_obj() -> ConvexObject {
+        ConvexObject::try_from(std::collections::BTreeMap::<value::FieldName, ConvexValue>::new())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn unregistered_query_name_bails_with_helpful_message() {
+        // If a handler calls an unregistered name, the stub must
+        // bail with a message naming the missing registration so
+        // the test author knows to add an `.on_query(...)` clause.
+        let (cb, _h) = TestCallbacksBuilder::new().build();
+        let err = cb
+            .run_query_by_name(TableNamespace::Global, "missing", empty_obj())
+            .await
+            .expect_err("unregistered");
+        let msg = format!("{err}");
+        assert!(msg.contains("no query handler registered"));
+        assert!(msg.contains("missing"), "names the missing handler: {msg}");
+    }
+
+    #[tokio::test]
+    async fn unregistered_mutation_name_bails_with_helpful_message() {
+        let (cb, _h) = TestCallbacksBuilder::new().build();
+        let err = cb
+            .run_mutation_by_name(TableNamespace::Global, "no_handler", empty_obj())
+            .await
+            .expect_err("unregistered");
+        assert!(format!("{err}").contains("no mutation handler registered"));
+    }
+
+    #[tokio::test]
+    async fn schedule_records_delay_and_returns_a_stub_id() {
+        // The stub's scheduler path must log the call (so tests
+        // assert on delays) and return a non-panicking stub id.
+        let (cb, history) = TestCallbacksBuilder::new().build();
+        let id = cb
+            .schedule(
+                TableNamespace::Global,
+                "bg_job",
+                empty_obj(),
+                Duration::from_secs(7),
+            )
+            .await
+            .expect("ok");
+        assert_eq!(id, DeveloperDocumentId::MIN);
+        let records = history.snapshot();
+        assert_eq!(records.len(), 1);
+        assert!(
+            matches!(&records[0], CallRecord::Schedule { name, delay }
+                if name == "bg_job" && *delay == Duration::from_secs(7)),
+            "delay survives the round-trip: {:?}",
+            records[0],
+        );
+    }
+
+    #[tokio::test]
+    async fn storage_store_records_content_type_and_byte_count() {
+        // `storage_store` returns a fixed stub id; the valuable
+        // piece is that the content-type string and body length
+        // land in the history so tests can assert on them.
+        let (cb, history) = TestCallbacksBuilder::new().build();
+        let payload = Bytes::from_static(b"hello world");
+        let id = cb
+            .storage_store(TableNamespace::Global, payload.clone(), "text/plain")
+            .await
+            .expect("ok");
+        assert_eq!(id, StorageId("test-storage".into()));
+        let records = history.snapshot();
+        assert!(matches!(
+            &records[0],
+            CallRecord::StorageStore { content_type, bytes }
+                if content_type == "text/plain" && *bytes == payload.len()
+        ));
+    }
+
+    #[tokio::test]
+    async fn storage_get_url_returns_the_configured_default() {
+        // `with_storage_url(None)` overrides to return None; otherwise
+        // the stub returns the configured default URL.
+        let (cb, _) = TestCallbacksBuilder::new().build();
+        let url = cb
+            .storage_get_url(TableNamespace::Global, StorageId("any".into()))
+            .await
+            .unwrap();
+        assert_eq!(url, Some("https://test/url".into()));
+
+        let (cb_none, _) = TestCallbacksBuilder::new().with_storage_url(None).build();
+        let url = cb_none
+            .storage_get_url(TableNamespace::Global, StorageId("any".into()))
+            .await
+            .unwrap();
+        assert_eq!(url, None);
+
+        let (cb_custom, _) = TestCallbacksBuilder::new()
+            .with_storage_url(Some("https://override"))
+            .build();
+        let url = cb_custom
+            .storage_get_url(TableNamespace::Global, StorageId("any".into()))
+            .await
+            .unwrap();
+        assert_eq!(url, Some("https://override".into()));
+    }
+
+    #[tokio::test]
+    async fn storage_delete_returns_true_and_records() {
+        // The stub always returns `true` (file "was deleted"). Pin
+        // that + record capture so tests can dedupe delete
+        // invocations.
+        let (cb, history) = TestCallbacksBuilder::new().build();
+        let removed = cb
+            .storage_delete(TableNamespace::Global, StorageId("a".into()))
+            .await
+            .expect("ok");
+        assert!(removed);
+        assert_eq!(history.len(), 1);
+        assert!(matches!(
+            &history.snapshot()[0],
+            CallRecord::StorageDelete { id } if id == &StorageId("a".into()),
+        ));
+    }
+
+    #[test]
+    fn history_len_and_is_empty_track_insertions_across_clones() {
+        // `TestHistory::clone()` shares the underlying Vec via Arc.
+        // Tests that move a clone into an async task rely on both
+        // handles observing the same writes.
+        let (_cb, history) = TestCallbacksBuilder::new().build();
+        assert!(history.is_empty());
+        assert_eq!(history.len(), 0);
+        let clone = history.clone();
+        // Inject a record directly through the internal Arc to
+        // avoid awaiting — we're just probing the shared-state
+        // contract, not the forwarders themselves.
+        history.0.lock().unwrap().push(CallRecord::StorageGetUrl {
+            id: StorageId("x".into()),
+        });
+        assert_eq!(clone.len(), 1);
+        assert!(!clone.is_empty());
+    }
+
+    #[test]
+    fn args_macro_with_zero_pairs_yields_empty_object() {
+        // The `args!` macro accepts a trailing comma and zero pairs.
+        // That's the "no args" form handler tests use — must produce
+        // a real empty ConvexObject, not a parse error.
+        let obj = crate::testing::args! {};
+        let map: std::collections::BTreeMap<_, _> = obj.into();
+        assert!(map.is_empty());
     }
 }
