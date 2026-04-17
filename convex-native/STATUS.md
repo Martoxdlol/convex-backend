@@ -1115,6 +1115,22 @@ topologies all consumed `ValidatedPathAndArgs` and therefore all
 saw this gap. The resolver is installed once per process from
 `make_app`, so every topology benefits without further wiring.
 
+### Native schema publication (resolved 2026-04-17)
+
+Companion to the HTTP-validation fix above. Pure-native
+deployments also never write `_schemas` / `_indexes` rows
+because `apply_config` is never called, so any query using a
+`#[convex(index(...))]` index would fail with "Index
+todos.by_owner not found" even after the validation fix let
+requests through. `convex_native_backend::publish_native_schema`
+now runs during `make_app`, submits the native `DatabaseSchema`
+as pending, waits for validation + index backfill, then activates
+the schema + enables indexes — blocking boot until the deployment
+is actually ready to serve queries. In Kubernetes deployments the
+readiness probe hits HTTP, so worker readiness must not lead
+schema readiness; the blocking boot is what keeps that invariant
+true.
+
 ## Known non-goals for this project
 
 1. **Multi-tenancy.** One backend = one Convex deployment. Convex

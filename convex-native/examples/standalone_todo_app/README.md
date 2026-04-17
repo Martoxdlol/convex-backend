@@ -132,7 +132,15 @@ point them at `http://127.0.0.1:3210` and call
    native-registered handler short-circuit to Rust at dispatch;
    everything else falls through to V8 (there is no V8 code
    here, so the JS side is effectively idle).
-5. The HTTP service starts on `--port` with the same router the
+5. `publish_native_schema` submits the inventory-declared
+   `DatabaseSchema` (including `#[convex(index(...))]` indexes)
+   as pending, waits for the in-process `SchemaWorker` to
+   validate it and for every index to finish backfilling, then
+   activates the schema + enables the indexes. Boot blocks on
+   this so the readiness probe (HTTP) flips to Ready only once
+   indexes are live — queries that rely on indexes never see
+   "index backfilling" errors on a fresh deployment.
+6. The HTTP service starts on `--port` with the same router the
    upstream binary uses.
 
 No upstream modifications — this crate depends on `local_backend`

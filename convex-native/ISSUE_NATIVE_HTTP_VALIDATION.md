@@ -472,6 +472,21 @@ Shipped as **Option B — registry-backed fast path in validation**:
 - `crates/convex_native_backend/src/native_resolver.rs` —
   `empty_runner_reports_none` pins the empty-registry path.
 
+**Additional follow-up shipped 2026-04-17:** native schema +
+indexes weren't being installed either (same root cause —
+pure-native deployments never call `apply_config`), so queries
+that relied on `#[convex(index(...))]` indexes failed with
+"Index todos.by_owner not found" even after the validation fix
+let requests through. `convex_native_backend::publish_native_schema`
+now runs during `make_app` (after `Application::new`, before the
+HTTP server starts). It submits the native `DatabaseSchema` as
+pending, waits for the in-process `SchemaWorker` to validate it
+and for every index to finish backfilling, then calls
+`SchemaModel::apply` + `IndexModel::apply` to activate. Blocking
+boot on this is intentional: in Kubernetes-style deployments the
+readiness probe hits HTTP, so worker readiness must not lead
+schema readiness.
+
 **Follow-up work still outstanding:**
 
 - **HTTP-path integration test.** A real monolith e2e test that
@@ -480,7 +495,13 @@ Shipped as **Option B — registry-backed fast path in validation**:
   2.8b and 4.6b in `STATUS.md`. A thin smoke harness will land
   once that fixture exists. Until then, the fix has been
   validated by running the example directly against its shipped
-  binary.
+  binary: mutations + indexed queries (`list_for_owner`,
+  `count_pending`) return correct results.
+- **Native actions.** The action dispatch path still fails with
+  "Missing a valid module" for `#[convex::action]` handlers.
+  Separate from the validation / schema work tracked here;
+  needs its own investigation into how `ApplicationFunctionRunner`
+  resolves the source module for an action.
 - **Arg validators on the macro.** Extending `#[convex::*]` to
   emit a `ConvexTypeOf`-backed `ArgsValidator` would close
   question 2 above. Separate PR.
