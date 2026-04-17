@@ -131,6 +131,7 @@ pub struct QueryCtx<'tx, RT: Runtime> {
     pub(crate) namespace: TableNamespace,
     pub(crate) log_buffer: crate::logging::LogBuffer,
     pub(crate) observed: std::sync::Arc<Observed>,
+    pub(crate) execution_context: Option<common::execution_context::ExecutionContext>,
 }
 
 impl<'tx, RT: Runtime> QueryCtx<'tx, RT> {
@@ -141,6 +142,7 @@ impl<'tx, RT: Runtime> QueryCtx<'tx, RT> {
             namespace,
             log_buffer: crate::logging::LogBuffer::new(),
             observed: std::sync::Arc::new(Observed::new()),
+            execution_context: None,
         }
     }
 
@@ -157,6 +159,7 @@ impl<'tx, RT: Runtime> QueryCtx<'tx, RT> {
             namespace,
             log_buffer,
             observed: std::sync::Arc::new(Observed::new()),
+            execution_context: None,
         }
     }
 
@@ -175,7 +178,26 @@ impl<'tx, RT: Runtime> QueryCtx<'tx, RT> {
             namespace,
             log_buffer,
             observed,
+            execution_context: None,
         }
+    }
+
+    /// Attach the enclosing request's `ExecutionContext`. Exposed
+    /// via `execution_context()` for handlers that need the
+    /// request-id for structured logging. Queries themselves don't
+    /// use it for scheduling (queries can't schedule), so it's
+    /// carried purely for observability.
+    pub fn with_execution_context(
+        mut self,
+        execution_context: common::execution_context::ExecutionContext,
+    ) -> Self {
+        self.execution_context = Some(execution_context);
+        self
+    }
+
+    /// Borrow the enclosing request's `ExecutionContext`, if any.
+    pub fn execution_context(&self) -> Option<&common::execution_context::ExecutionContext> {
+        self.execution_context.as_ref()
     }
 
     /// Borrow the determinism-observation flags.

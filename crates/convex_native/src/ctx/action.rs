@@ -40,6 +40,7 @@ pub struct ActionCtx<'a, RT: Runtime> {
     pub(crate) callbacks: Arc<dyn NativeActionCallbacks>,
     pub(crate) namespace: TableNamespace,
     pub(crate) log_buffer: crate::logging::LogBuffer,
+    pub(crate) execution_context: Option<common::execution_context::ExecutionContext>,
     _rt: std::marker::PhantomData<&'a RT>,
 }
 
@@ -63,6 +64,7 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
             callbacks,
             namespace,
             log_buffer: crate::logging::LogBuffer::new(),
+            execution_context: None,
             _rt: std::marker::PhantomData,
         }
     }
@@ -82,8 +84,26 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
             callbacks,
             namespace,
             log_buffer,
+            execution_context: None,
             _rt: std::marker::PhantomData,
         }
+    }
+
+    /// Attach the enclosing request's `ExecutionContext` — exposed
+    /// through `execution_context()`. The action-scoped scheduler
+    /// reads its context off the attached callbacks (not the ctx),
+    /// so this slot is purely for observability / structured logs.
+    pub fn with_execution_context(
+        mut self,
+        execution_context: common::execution_context::ExecutionContext,
+    ) -> Self {
+        self.execution_context = Some(execution_context);
+        self
+    }
+
+    /// Borrow the enclosing request's `ExecutionContext`, if any.
+    pub fn execution_context(&self) -> Option<&common::execution_context::ExecutionContext> {
+        self.execution_context.as_ref()
     }
 
     /// Borrow a logger that writes into the ctx's log buffer.

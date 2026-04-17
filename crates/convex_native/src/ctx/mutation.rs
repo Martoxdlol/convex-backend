@@ -95,6 +95,16 @@ impl<'tx, RT: Runtime> MutationCtx<'tx, RT> {
         self
     }
 
+    /// Borrow the enclosing request's `ExecutionContext`, if any.
+    /// `None` when the mutation is running without an attached
+    /// context (e.g. a unit test using `MutationCtx::new`).
+    /// Callers use the returned reference's `request_id` /
+    /// `execution_id` for structured logs that should correlate
+    /// with the enclosing request.
+    pub fn execution_context(&self) -> Option<&common::execution_context::ExecutionContext> {
+        self.execution_context.as_ref()
+    }
+
     #[doc(hidden)]
     pub fn observed(&self) -> &std::sync::Arc<super::query::Observed> {
         &self.observed

@@ -332,6 +332,9 @@ async fn dispatch_native_inner<RT: Runtime + 'static>(
                 log_buffer.clone(),
                 observed.clone(),
             );
+            if let Some(caller_ctx) = execution_context.clone() {
+                ctx = ctx.with_execution_context(caller_ctx);
+            }
             handler(&mut ctx, args_obj).await
         },
         (UdfType::Mutation, HandlerFn::Mutation(handler)) => {
