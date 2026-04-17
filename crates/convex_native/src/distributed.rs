@@ -1,23 +1,28 @@
-//! Distributed execution protocol — architectural scaffolding.
+//! Distributed execution protocol — tonic-free Rust shapes.
 //!
 //! Per `IMPLEMENTATION_PLAN.md` Phase 3.
 //!
 //! The full design in `native-rust-functions.md` §10 calls for a gRPC
 //! protocol where a **conductor** dispatches function calls to a pool
-//! of identical **worker** binaries, each running the native registry
-//! and returning a `FunctionOutcome` + read/write set that the
-//! conductor commits.
+//! of identical **worker** binaries, each running the native registry.
 //!
-//! **Phase 3.1 status:** the protobuf contract lives at
+//! This module keeps the runner-facing shape visible in one place:
+//! [`ConvexMode`] (operating-mode enum parsed from `CONVEX_MODE`),
+//! [`ExecuteRequest`] / [`ExecuteResponse`] (the request/response
+//! payload shapes), and [`FunctionExecutor`] (the trait a worker
+//! implements). The matching protobuf contract lives at
 //! `crates/pb/protos/function_execution.proto` and generates
 //! `pb::function_execution::{ExecuteRequest, ExecuteResponse,
 //! HealthRequest, HealthResponse, FunctionExecutionService}` via
-//! `tonic_build`. The Rust shapes in this module are the
-//! tonic-free equivalents the composite runner will map through.
+//! `tonic_build`.
 //!
-//! **Phase 3.2+** lands the generated client/server inside a new
-//! `crates/convex_native_distributed/` crate, which will translate
-//! between the proto and the native runner via this module's types.
+//! The tonic-side server/client implementations, conversions
+//! between the two shapes, and the CONVEX_MODE env helpers live in
+//! `crates/convex_native_distributed/`. Consumers that only need
+//! the tonic-free types (e.g. tests, in-process executors, or the
+//! composite runner's fallback path) can stay on the types defined
+//! here without pulling the `tonic` + generated-code surface into
+//! their build.
 
 use std::time::Duration;
 
