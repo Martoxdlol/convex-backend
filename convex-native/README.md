@@ -47,7 +47,7 @@ Ctrl-C).
 ### What works
 
 - Current test tallies (all green):
-  - `cargo test -p convex_native` — **208 tests** (unit + derive +
+  - `cargo test -p convex_native` — **210 tests** (unit + derive +
     runtime integration).
   - `cargo test -p convex_native_backend` — **10 tests** (pure
     helpers; deeper paths covered by end-to-end convex-local-backend
