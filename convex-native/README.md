@@ -249,8 +249,9 @@ if !ctx.auth().is_authenticated() {
 ```
 
 Exposes: `bad_request` (400), `not_found` (404), `unauthenticated`
-(401), `forbidden` (403), `conflict` (409). The `ErrorMetadata` type
-is re-exported too for callers that need it directly.
+(401), `forbidden` (403), `conflict` (409), `rate_limited` (429),
+`overloaded` (503). The `ErrorMetadata` type is re-exported too for
+callers that need it directly.
 
 ### New — `BuiltBackend::summary()` + `*_count()` helpers
 

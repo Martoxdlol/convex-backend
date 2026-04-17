@@ -76,6 +76,30 @@ pub fn conflict(
     ErrorMetadata::conflict(short_msg, msg)
 }
 
+/// 429 Too Many Requests — the caller exceeded a rate limit. The
+/// `msg` should explain whether the limit is actionable (e.g.
+/// "upgrade your plan") vs. incorrect behaviour (e.g. ">1000
+/// concurrent mutations over a single websocket").
+pub fn rate_limited(
+    short_msg: impl Into<std::borrow::Cow<'static, str>>,
+    msg: impl Into<std::borrow::Cow<'static, str>>,
+) -> ErrorMetadata {
+    ErrorMetadata::rate_limited(short_msg, msg)
+}
+
+/// 503 Service Unavailable — the backend hit a defensive limit (e.g.
+/// a capacity ceiling) and is asking the caller to back off.
+///
+/// The upstream `ErrorMetadata::overloaded` guidance applies: avoid
+/// this in favour of a bare `anyhow::bail!` (which maps to a generic
+/// 500) unless a specific custom message helps the caller recover.
+pub fn overloaded(
+    short_msg: impl Into<std::borrow::Cow<'static, str>>,
+    msg: impl Into<std::borrow::Cow<'static, str>>,
+) -> ErrorMetadata {
+    ErrorMetadata::overloaded(short_msg, msg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +142,30 @@ mod tests {
     fn conflict_preserves_short_msg() {
         let meta = downcast(conflict("DuplicateEmail", "That email is already registered").into());
         assert_eq!(meta.short_msg, "DuplicateEmail");
+    }
+
+    #[test]
+    fn rate_limited_preserves_short_msg() {
+        let meta = downcast(
+            rate_limited(
+                "QueriesPerMinuteLimit",
+                "You have exceeded the queries-per-minute allotment.",
+            )
+            .into(),
+        );
+        assert_eq!(meta.short_msg, "QueriesPerMinuteLimit");
+    }
+
+    #[test]
+    fn overloaded_preserves_short_msg() {
+        let meta = downcast(
+            overloaded(
+                "IndexBuildSaturated",
+                "The index is rebuilding; retry shortly.",
+            )
+            .into(),
+        );
+        assert_eq!(meta.short_msg, "IndexBuildSaturated");
     }
 
     #[test]
