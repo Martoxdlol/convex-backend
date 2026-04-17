@@ -981,21 +981,30 @@ cargo +nightly fmt -p convex_native -p convex_macro
 
 ## Next up
 
-Per `IMPLEMENTATION_PLAN.md`, the remaining shippable items are:
+Phases 1–5 of `IMPLEMENTATION_PLAN.md` are all shipped (see
+**Current state** at the top for the per-phase breakdown). What
+remains is polish around the edges rather than new phases:
 
 1. **End-to-end client smoke test.** Boot `convex-local-backend` with
    a registered `#[convex::query]`, drive it through the websocket /
    HTTP client, assert the response matches what the handler returns.
-2. **Step 3.1–3.6** — real `convex_native_distributed` gRPC crate
-   using the `ExecuteRequest` / `ExecuteResponse` scaffolding that
-   already lives in `convex_native::distributed`.
-3. **Step 4.7** — rolling updates with version-aware routing.
-4. **Native `ActionCtx` snapshot transaction.** Today the native
+   Today the integration is verified by `cargo test -p convex_native`
+   plus a successful `cargo build --bin convex-local-backend`.
+2. **Document shape validation.** `table_definition()` currently
+   emits `document_type: None` — i.e. every derived type gets an
+   "any" schema shape. Lifting `#[derive(ConvexDocument)]` to emit a
+   concrete `DocumentSchema` that matches the struct's field list
+   would let the backend reject shape-violating writes at the
+   database layer instead of relying on `from_convex_object` failing
+   downstream.
+3. **Native `ActionCtx` snapshot transaction.** Today the native
    `ActionCtx` has no transaction at all; sub-calls happen through
-   `run_query_by_name` which opens its own. If an action needs a
-   stable read-time view, we'd either need to pass a snapshot `ts`
-   through the `BackendCallbacks` or give `ActionCtx` its own
-   optional `Transaction<Rt>`.
+   `run_query_by_name` which opens its own. Query sub-calls within a
+   single action already share a snapshot `ts` (threaded through
+   `BackendCallbacks::with_snapshot_ts`), but exposing
+   `ctx.db().get(...)` directly on `ActionCtx` would need either an
+   optional `Transaction<Rt>` on the ctx or a pass-through read API
+   that reuses the pinned snapshot.
 
 Agents iterating on this project: please keep this document honest about
 what is merged vs what is planned, after each commit.
