@@ -713,13 +713,22 @@ collection happens at link time — nothing you need to call.
 
 ## 19. Distributed topology
 
-Three operating modes, selected via `CONVEX_MODE`:
+> **Target architecture**: see `DISTRIBUTED_PLAN.md`. One prebuilt
+> `getconvex/convex-backend` image coordinates OCC, subscriptions,
+> committing; a pool of worker binaries executes native handlers
+> and returns reads / writes over gRPC. `STATUS.md` tracks which
+> phase is currently shipped.
+
+Two operating modes are first-class today:
 
 ```
-CONVEX_MODE=standalone  # default — HTTP only, native + JS in one process
-CONVEX_MODE=worker      # HTTP + tonic FunctionExecutionService
-CONVEX_MODE=conductor   # run convex_native_distributed::examples::conductor
+CONVEX_MODE=standalone  # default — HTTP only, native + JS in one process (monolith)
+CONVEX_MODE=worker      # HTTP + tonic FunctionExecutionService (pre-Phase-1 worker)
 ```
+
+(A third value, `CONVEX_MODE=conductor`, parses for backwards
+compatibility but is rejected by `convex-local-backend` — the
+standalone-conductor concept is replaced by the backend image.)
 
 ### Worker (from `convex-local-backend`)
 
@@ -732,20 +741,10 @@ CONVEX_MODE=worker \
 Boots the HTTP Application and additionally spawns a tonic
 `FunctionExecutionService` on `CONVEX_WORKER_BIND_ADDR`, sharing
 its `Database<Rt>` with the HTTP path. Ctrl-C / `/preempt` drains
-HTTP and the worker gRPC server together.
-
-### Conductor (separate binary)
-
-```sh
-CONVEX_MODE=conductor \
-  CONVEX_WORKER_ENDPOINTS=http://worker-a:4567,http://worker-b:4567 \
-  cargo run -p convex_native_distributed --example conductor
-```
-
-Probes each worker's `Health` RPC, prints one line per worker,
-exits non-zero if any probe fails. The conductor uses P2C load
-balancing (`DistributedFunctionRunner`) and retries failovers on
-`tonic::Code::Unavailable`.
+HTTP and the worker gRPC server together. Phase 1 of
+`DISTRIBUTED_PLAN.md` changes this to return
+`FunctionFinalTransaction` to the backend instead of committing
+locally.
 
 ### Version-aware rolling updates
 
