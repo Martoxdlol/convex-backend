@@ -59,6 +59,18 @@ Every build of `convex-local-backend` therefore transparently picks
 up any `#[convex::query]` / `#[convex::mutation]` / `#[convex::action]`
 statically registered via `inventory::submit!`.
 
+**Validation-path wiring (native resolver).** `make_app` also
+installs the native registry as the global resolver
+`udf::validation` consults at the HTTP / WebSocket / sync entry
+points — without that step, `ValidatedPathAndArgs::new` would
+refuse every request because pure-native deployments never write
+rows to the `_modules` system table. The bridge is
+`convex_native_backend::install_native_resolver`; it's idempotent
+and cheap (one `OnceLock::set`). See
+`ISSUE_NATIVE_HTTP_VALIDATION.md` for the full diagnosis of the
+bug the resolver fixes, and `STATUS.md` → "Cross-phase fixes" for
+the project-wide entry.
+
 ## Method-by-method behaviour
 
 | Trait method | Composite behaviour |

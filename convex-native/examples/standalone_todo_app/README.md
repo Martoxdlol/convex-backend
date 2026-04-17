@@ -117,12 +117,22 @@ point them at `http://127.0.0.1:3210` and call
    Inside it calls `NativeFunctionRunner::from_inventory()`, which
    walks linker sections populated by `inventory::submit!` calls
    the `#[convex::*]` macros emitted at compile time.
-3. `make_app` wraps the native runner with V8 inside a
+3. `make_app` installs the native registry as the global resolver
+   `udf::validation` consults at the HTTP / WebSocket / sync
+   entry points. Without this step every pure-native deployment
+   would 404 with "Could not find public function — run `npx
+   convex dev`" because the backend would only look in the
+   `_modules` system table (which a Rust-only deployment never
+   writes). The bridge lives in
+   `convex_native_backend::install_native_resolver`. See
+   `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md` for the
+   diagnosis.
+4. `make_app` also wraps the native runner with V8 inside a
    `CompositeFunctionRunner`. Requests whose function path is a
-   native-registered handler short-circuit to Rust; everything
-   else falls through to V8 (there is no V8 code here, so the JS
-   side is effectively idle).
-4. The HTTP service starts on `--port` with the same router the
+   native-registered handler short-circuit to Rust at dispatch;
+   everything else falls through to V8 (there is no V8 code
+   here, so the JS side is effectively idle).
+5. The HTTP service starts on `--port` with the same router the
    upstream binary uses.
 
 No upstream modifications — this crate depends on `local_backend`
