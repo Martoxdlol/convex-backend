@@ -166,3 +166,89 @@ pub fn describe_pretty(
     let v = describe_json(schema, functions, router);
     serde_json::to_string_pretty(&v).unwrap_or_else(|_| "<serde error>".to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    //! The `introspect::describe_json` envelope is consumed by dev
+    //! tooling (`convex dev`, codegen, CI checks). The docstring
+    //! promises "the output schema is stable; additions are
+    //! additive-only unless flagged in this module's changelog
+    //! section." These tests pin three invariants that support that
+    //! promise:
+    //!
+    //! 1. The envelope always carries `version` + `convex_native_version` —
+    //!    consumers branch on those for forward-compat.
+    //! 2. Absent sections are omitted (not present-with-null), so consumers can
+    //!    distinguish "not provided" from "empty".
+    //! 3. `describe_pretty` emits valid JSON (never the "<serde error>"
+    //!    fallback for the all-None envelope).
+
+    use super::*;
+
+    #[test]
+    fn envelope_always_includes_version_fields() {
+        let v = describe_json(None, None, None);
+        let obj = v.as_object().expect("envelope is a JSON object");
+        assert_eq!(obj.get("version"), Some(&json!(1)));
+        assert!(
+            obj.get("convex_native_version").is_some(),
+            "convex_native_version must appear even with nothing else to describe",
+        );
+    }
+
+    #[test]
+    fn missing_sections_are_absent_not_null() {
+        // The docs say "any argument set to None is omitted". An
+        // accidental switch to `insert("schema", Value::Null)` would
+        // look the same to a human but parse differently on the
+        // consumer side.
+        let v = describe_json(None, None, None);
+        let obj = v.as_object().expect("object");
+        assert!(!obj.contains_key("schema"));
+        assert!(!obj.contains_key("functions"));
+        assert!(!obj.contains_key("http_routes"));
+        assert!(!obj.contains_key("crons"));
+    }
+
+    #[test]
+    fn full_envelope_includes_crons_when_registry_passed() {
+        // `describe_json_full` is the only entry point that can surface
+        // the `crons` key; `describe_json` unconditionally passes
+        // `None`. Confirm that contract so a drive-by "always include
+        // crons" refactor wouldn't silently start emitting crons from
+        // the smaller helper.
+        let v_basic = describe_json(None, None, None);
+        assert!(!v_basic.as_object().unwrap().contains_key("crons"));
+        let v_full = describe_json_full(None, None, None, None);
+        // Still no crons when the arg is None.
+        assert!(!v_full.as_object().unwrap().contains_key("crons"));
+    }
+
+    #[test]
+    fn describe_pretty_emits_valid_json() {
+        // The fallback on serde error is `"<serde error>"` (a plain
+        // string, not JSON). Make sure the normal path never hits that
+        // by parsing the output back.
+        let pretty = describe_pretty(None, None, None);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&pretty).expect("pretty output is valid JSON");
+        let obj = parsed.as_object().expect("pretty output is an object");
+        assert_eq!(obj.get("version"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn convex_native_version_matches_the_crate_version() {
+        // The envelope surfaces `crate::VERSION`; a typo in the
+        // constant would silently make the introspect envelope
+        // disagree with the `worker`'s `Health` response (which also
+        // uses `crate::VERSION`). This test is the cheap pin.
+        let v = describe_json(None, None, None);
+        let version_field = v
+            .as_object()
+            .unwrap()
+            .get("convex_native_version")
+            .and_then(|v| v.as_str())
+            .expect("convex_native_version is a string");
+        assert_eq!(version_field, crate::VERSION);
+    }
+}
