@@ -18,11 +18,17 @@
 //! // function runner.
 //! ```
 //!
-//! This surface intentionally doesn't *start* a backend — that lives in
-//! the future `crates/convex_native_backend/` crate which has the
-//! `function_runner` dep and the V8 build prerequisite. What you get
-//! here is the full "collected app" object that the backend adapter
-//! consumes.
+//! This surface intentionally doesn't *start* a backend — that
+//! lives in the sibling `crates/convex_native_backend/` crate
+//! which carries the `function_runner` dep and the V8 build
+//! prerequisite. What you get here is the full "collected app"
+//! object a developer can introspect, validate, and describe
+//! without paying the isolate build cost. The production binary
+//! picks the inventory up directly through
+//! `NativeFunctionRunner::from_inventory()` inside
+//! `local_backend::make_app()`, so `BuiltBackend` is useful
+//! mostly for tooling (dev-time JSON introspection, startup
+//! cron/target validation, summary logs).
 
 use std::sync::Arc;
 

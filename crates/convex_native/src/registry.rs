@@ -146,9 +146,9 @@ impl NativeFunctionRegistry {
 }
 
 /// Helper: invoke the handler against a concrete transaction.
-/// Actions are NOT supported here — they don't take a transaction; use
-/// `NativeFunctionRunner::run_action` or the future `ActionCtx`
-/// invocation path instead.
+/// Actions are NOT supported here — they don't take a transaction;
+/// use `NativeFunctionRunner::run_action` /
+/// `run_action_with_callbacks` instead.
 pub async fn invoke(
     handler: &HandlerFn,
     tx: &mut Transaction<Rt>,
