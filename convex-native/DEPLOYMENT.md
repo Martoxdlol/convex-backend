@@ -40,6 +40,13 @@ Use when:
 - Single-machine deployments with <100 QPS.
 - You don't want to operate a multi-process topology.
 
+**To put your own `#[convex::query/mutation/action]` code into
+this mode without modifying this repo, see `STANDALONE.md`** —
+it covers depending on `local_backend` as a library, the
+`Cargo.toml` / `main.rs` template, and the load-bearing
+`use my_convex_app as _;` that keeps inventory submissions
+linked.
+
 Limitation: the binary requires the full build chain
 (including V8 / `isolate`, which needs `rush install` in
 `npm-packages/` once per checkout). The function runner inside
