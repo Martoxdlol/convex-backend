@@ -503,6 +503,22 @@ shuts down every clone.
   stub that returns `Unavailable` paired with a real tonic
   client), and `health_probes_report_per_worker_versions`.
   Total suite now 37/37 green (32 unit + 5 integration).
+- **Unified `convex-local-backend` binary with `CONVEX_MODE=worker`
+  (shipped):** `convex-local-backend` now accepts two modes:
+  - `standalone` (default): HTTP only, as before.
+  - `worker`: HTTP **plus** a tonic `FunctionExecutionService` bound
+    to `CONVEX_WORKER_BIND_ADDR` (defaulting to `0.0.0.0:4567`). The
+    tonic server shares the same `Database<Rt>` and
+    `NativeFunctionRunner` the HTTP path uses, so a remote conductor
+    and a local HTTP client see one consistent read timeline.
+  Conductor mode is still rejected from this binary (a conductor
+  doesn't own a `Database`; boot the dedicated
+  `convex_native_distributed::examples::conductor` binary instead).
+  The wiring lives in `local_backend::make_app` and hops through
+  `convex_native_distributed::serve_worker_with_database(addr, native,
+  db)`, which keeps `pb` and `tonic` out of `local_backend`'s direct
+  dep graph. The worker server is spawned as a background task;
+  graceful co-shutdown with the HTTP server is future work.
 - **Phase 3.5 — binary-level mode switching helpers (shipped):**
   `mode.rs` decodes `CONVEX_MODE`, `CONVEX_WORKER_ENDPOINTS`
   (comma-separated gRPC URLs), and `CONVEX_WORKER_BIND_ADDR`

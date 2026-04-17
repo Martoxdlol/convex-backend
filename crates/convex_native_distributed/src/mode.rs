@@ -29,7 +29,9 @@ use std::{
 use convex_native::{
     distributed::ConvexMode,
     NativeFunctionRunner,
+    Rt,
 };
+use database::Database;
 use pb::function_execution::function_execution_service_server::FunctionExecutionServiceServer;
 use tonic::transport::Server;
 
@@ -103,6 +105,30 @@ pub fn build_worker_server(
         Server::builder(),
         FunctionExecutionServiceServer::new(server),
     )
+}
+
+/// Serve `FunctionExecutionService` on `addr`, wired to the given
+/// native runner and a worker-local `Database<Rt>`. Blocks until the
+/// tonic server exits (error or process shutdown).
+///
+/// This is the "consumer" variant of [`build_worker_server`] —
+/// callers that just want "bind, attach the database, run forever"
+/// don't need to pull `tonic` or `pb` as direct dependencies.
+///
+/// Used by `convex-local-backend` under `CONVEX_MODE=worker` to
+/// expose native functions over gRPC without duplicating the tonic
+/// wiring.
+pub async fn serve_worker_with_database(
+    addr: SocketAddr,
+    native: Arc<NativeFunctionRunner>,
+    database: Database<Rt>,
+) -> anyhow::Result<()> {
+    let server = FunctionExecutionServer::new(native).with_database(database);
+    Server::builder()
+        .add_service(FunctionExecutionServiceServer::new(server))
+        .serve(addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("FunctionExecutionService serve({addr}): {e}"))
 }
 
 /// Connect a `TonicWorkerClient` per endpoint and wrap the set in a

@@ -79,7 +79,10 @@ CONVEX_MODE=conductor CONVEX_WORKER_ENDPOINTS=http://127.0.0.1:45671 \
   and a `min_registry_version` floor for Phase 4.7 rolling
   deploys; `with_failover(bool)` toggles the failover attempt.
 
-Outstanding: a unified binary that switches topology based on
-`CONVEX_MODE` alone (today deployers run either
-`convex-local-backend` for Standalone or the
-`worker` / `conductor` examples for split topologies).
+Outstanding: only the conductor half of the unified binary. The
+worker half shipped: `convex-local-backend` now accepts
+`CONVEX_MODE=worker` and spawns a tonic `FunctionExecutionService`
+alongside the HTTP server via `serve_worker_with_database(addr,
+native, db)`. Conductor mode stays behind the
+`examples/conductor` binary because `convex-local-backend` always
+boots a local `Database`, which defeats the conductor topology.

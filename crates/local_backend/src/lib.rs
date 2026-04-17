@@ -211,36 +211,42 @@ pub async fn make_app(
         config.name(),
         reqwest::redirect::Policy::default(),
     );
-    let js_runner: Arc<dyn FunctionRunner<ProdRuntime>> =
-        Arc::new(InProcessFunctionRunner::new(
-            config.name().clone(),
-            key_broker.function_runner_keybroker(),
-            config.convex_origin_url()?,
-            runtime.clone(),
-            persistence.reader(),
-            DeploymentStorage {
-                files_storage: application_storage.files_storage.clone(),
-                modules_storage: application_storage.modules_storage.clone(),
-            },
-            database.clone(),
-            fetch_client.clone(),
-        )?);
+    let js_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(InProcessFunctionRunner::new(
+        config.name().clone(),
+        key_broker.function_runner_keybroker(),
+        config.convex_origin_url()?,
+        runtime.clone(),
+        persistence.reader(),
+        DeploymentStorage {
+            files_storage: application_storage.files_storage.clone(),
+            modules_storage: application_storage.modules_storage.clone(),
+        },
+        database.clone(),
+        fetch_client.clone(),
+    )?);
 
-    // convex-local-backend runs as an all-in-one (conductor + worker
-    // + database) binary, so the only supported CONVEX_MODE here is
-    // Standalone. If an operator explicitly sets conductor/worker,
-    // fail loud rather than silently running in the wrong topology
-    // — the dedicated distributed binaries (via
-    // convex_native_distributed::examples) are the right target for
-    // those modes.
+    // convex-local-backend is an all-in-one binary: it always runs a
+    // full Application (database + HTTP server + composite runner).
+    // `CONVEX_MODE` toggles a *second* surface on top of that:
+    //
+    //   - `standalone` (default): HTTP only.
+    //   - `worker`: HTTP + a tonic `FunctionExecutionService` bound to
+    //     `CONVEX_WORKER_BIND_ADDR`, so a remote conductor can dispatch native
+    //     calls to this process while still using the same Database as the HTTP
+    //     path.
+    //   - `conductor`: rejected — a conductor-only role would still spin up the
+    //     local Database, which defeats the topology. Use the dedicated
+    //     `convex_native_distributed::examples/conductor` binary for that shape.
     let convex_mode = convex_native_distributed::read_mode_from_env();
     tracing::info!("convex-local-backend CONVEX_MODE detected: {convex_mode:?}");
-    if !matches!(convex_mode, convex_native::distributed::ConvexMode::Standalone) {
-        anyhow::bail!(
-            "convex-local-backend only supports CONVEX_MODE=standalone (got {convex_mode:?}). \
-             Use the convex_native_distributed examples/worker + examples/conductor binaries for \
-             split-topology deployments, or unset CONVEX_MODE to accept the default."
-        );
+    use convex_native::distributed::ConvexMode;
+    match convex_mode {
+        ConvexMode::Standalone | ConvexMode::Worker => {},
+        ConvexMode::Conductor => anyhow::bail!(
+            "convex-local-backend refuses CONVEX_MODE=conductor: the conductor role doesn't own a \
+             Database, but this binary always boots one. Use the convex_native_distributed \
+             examples/conductor binary for conductor-only deployments."
+        ),
     }
 
     // Wrap in the composite runner so any statically-registered
@@ -254,7 +260,7 @@ pub async fn make_app(
     );
     let function_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(
         convex_native_backend::CompositeFunctionRunner::new(
-            native_runner,
+            native_runner.clone(),
             js_runner,
             database.clone(),
         )
@@ -303,6 +309,38 @@ pub async fn make_app(
             config.beacon_fields.clone(),
         );
         runtime.spawn_background("beacon_worker", beacon_future);
+    }
+
+    // In Worker mode, also expose a tonic `FunctionExecutionService`
+    // on `CONVEX_WORKER_BIND_ADDR`. Queries and mutations arriving
+    // over gRPC execute inline against the same `Database` the HTTP
+    // path uses, so a conductor and a direct HTTP client see one
+    // consistent read timeline.
+    //
+    // Spawned as a background task: the tonic server lives for the
+    // lifetime of the process. Graceful co-shutdown with the HTTP
+    // server is future work — today a Ctrl-C kills the process and
+    // takes the tonic listener with it.
+    if matches!(convex_mode, ConvexMode::Worker) {
+        let bind_addr = convex_native_distributed::read_worker_bind_addr_from_env()?;
+        tracing::info!(
+            "CONVEX_MODE=worker: starting FunctionExecutionService on {bind_addr} ({} native \
+             function(s))",
+            native_runner.len(),
+        );
+        let worker_db = database.clone();
+        let worker_native = native_runner.clone();
+        runtime.spawn_background("convex_native_worker", async move {
+            if let Err(e) = convex_native_distributed::serve_worker_with_database(
+                bind_addr,
+                worker_native,
+                worker_db,
+            )
+            .await
+            {
+                tracing::error!("convex_native worker tonic server exited: {e}");
+            }
+        });
     }
 
     let app_state = LocalAppState {
