@@ -29,6 +29,7 @@ runtime = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 sync_types = { workspace = true }
+tokio-stream = { workspace = true, features = ["net"] }
 tokio = { workspace = true }
 tonic = { workspace = true }
 udf = { workspace = true }

@@ -442,11 +442,36 @@ each substep ships as its own commit.
      routing, retirement idempotency, floor filtering, and
      version grouping.
 
-3.4. **`WorkerAdmissionServer`.** Backend-side tonic service
-     implementation. Accepts `Register` streams, validates the
-     envelope against the active pool, stores the admitted
-     worker in the `WorkerPool`. Rejection path surfaces the
-     reason back to the worker before closing the stream.
+3.4. ✓ **`WorkerAdmissionServer`.** Landed. New module
+     `convex_native_distributed::admission_server` implements
+     the `WorkerAdmissionService` tonic trait:
+
+     - First message on the Register stream must be a
+       `RegistrationEnvelope`; anything else closes the
+       stream with `FailedPrecondition`.
+     - On admission, the server dials back to
+       `envelope.execute_endpoint` to build a
+       `TonicWorkerClient` (dispatch and admission channels are
+       deliberately separate so heartbeat traffic doesn't
+       head-of-line-block dispatch latency).
+     - The worker is admitted to the shared `Arc<WorkerPool>`;
+       inbound `WorkerStatus` messages are drained but not yet
+       acted on (substep 3.8 will surface them for Phase-7
+       dashboards).
+     - Closing the inbound stream triggers a retirement task
+       that drops the worker from the pool. Retirement is
+       idempotent (from substep 3.3).
+     - Outbound stream is channel-backed (`ReceiverStream`) so
+       substep 3.8 can push `DrainNotice` / `RegistryFloorUpdate`
+       messages through it later.
+
+     Deps added: `tokio-stream` (direct — previously only a
+     dev-dep).
+
+     Tests: two integration-style unit tests spin up real
+     tonic servers — one pins the full admit → pool → retire
+     lifecycle (churn-tolerance exit criterion), the other
+     pins the "first message must be envelope" contract.
 
 3.5. **Worker-side registration loop.** Worker binary dials
      `CONVEX_BACKEND_ENDPOINT=grpc://backend:5678`, opens the

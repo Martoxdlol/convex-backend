@@ -36,6 +36,7 @@
 //!   behaviour end-to-end.
 
 pub mod admission;
+pub mod admission_server;
 pub mod client;
 pub mod conversions;
 pub mod function_runner_impl;
