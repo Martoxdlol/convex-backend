@@ -35,17 +35,15 @@ breakdown, `README.md` is authoritative. One-line summary:
   (schema migration diff, compile-time index-field validation,
   text/vector search indexes, bulk `get_many`).
 
-Outstanding items relative to this plan: Phase 3.5 binary-level
-`CONVEX_MODE` switch inside `convex-local-backend` is now
-**two-thirds shipped**. Standalone and Worker modes both run
-directly from `convex-local-backend` (the Worker half adds a tonic
-`FunctionExecutionService` on `CONVEX_WORKER_BIND_ADDR`, wired to
-the same `Database<Rt>` the HTTP path uses and draining alongside
-it). Conductor mode is still rejected from `convex-local-backend`
-and routed to `convex_native_distributed::examples::conductor` —
-the conductor-only role doesn't fit a binary that always boots a
-local `Database`. Phase 5 doesn't have a concrete "fully complete"
-state — the plan lists four items, all shipped.
+Single nuance relative to this plan: step 3.5's binary-level
+`CONVEX_MODE` switch is fully shipped for Standalone and Worker
+modes from `convex-local-backend`, but Conductor mode stays
+behind the dedicated `convex_native_distributed::examples::conductor`
+binary because a conductor-only role doesn't fit a binary that
+always boots a local `Database<Rt>`. That split is documented
+inline in README.md's Phase 3 bullet and is intentional rather
+than outstanding work. Everything else under 3.1–3.6, 4.1–4.7,
+and 5.1–5.4 is in-tree and covered by tests.
 
 ## Context
 
