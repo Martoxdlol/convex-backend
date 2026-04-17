@@ -31,8 +31,6 @@ use convex_native::distributed::{
 use pb::function_execution as proto;
 use tonic::Status;
 
-use crate::conversions;
-
 /// A single worker the conductor can dispatch to. Implementations
 /// are `Arc`-shared.
 #[async_trait]
@@ -357,7 +355,8 @@ mod tests {
         // agree on the same types — any refactor that breaks the
         // seam between them would fail here at compile time too.
         let native = req();
-        let encoded = conversions::to_proto_request(&native, UdfType::Action).expect("encode");
+        let encoded =
+            crate::conversions::to_proto_request(&native, UdfType::Action).expect("encode");
         assert_eq!(encoded.name, "get_user");
     }
 }

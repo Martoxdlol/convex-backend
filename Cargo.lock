@@ -2367,6 +2367,7 @@ dependencies = [
  "rand 0.9.4",
  "serde_json",
  "tokio",
+ "tokio-stream",
  "tonic",
  "value",
 ]

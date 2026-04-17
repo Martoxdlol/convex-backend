@@ -21,9 +21,11 @@
 pub mod client;
 pub mod conversions;
 pub mod server;
+pub mod tonic_client;
 
 pub use client::{
     DistributedFunctionRunner,
     WorkerClient,
 };
 pub use server::FunctionExecutionServer;
+pub use tonic_client::TonicWorkerClient;

@@ -417,19 +417,28 @@ shuts down every clone.
   Health}{Request,Response}` to/from the tonic-free
   `convex_native::distributed` types, plus helpers for
   `TableNamespace`, `ConvexObject` args, and `UdfType` round-trips.
-- **Phase 3.4 — conductor-side client + P2C load balancer (shipped,
-  transport-less):** `DistributedFunctionRunner` holds a
+- **Phase 3.4 — conductor-side client + P2C load balancer
+  (shipped):** `DistributedFunctionRunner` holds a
   `Vec<Arc<dyn WorkerClient>>` and a `Chooser` (default
   `RandomChooser`). Each `execute(req, udf_type)` picks two worker
   indices via the chooser, sends to whichever has the lower
   `in_flight_estimate()`, and retries against the other on
   `tonic::Code::Unavailable`. Non-transient gRPC errors bubble up
-  without retry. The `WorkerClient` trait is the seam for testing
-  and will be implemented by `TonicWorkerClient` (wraps
-  `FunctionExecutionServiceClient`) in a follow-up. Tests: 7
-  client tests covering happy-path routing, same-index
-  degradation, Unavailable failover, non-retry on other errors,
-  exhaustion of retries, and empty worker set rejection.
+  without retry.
+- **Phase 3.4 transport — `TonicWorkerClient` (shipped):** real
+  gRPC client wrapping a generated
+  `FunctionExecutionServiceClient<Channel>`. Constructed via
+  `TonicWorkerClient::connect("http://<addr>")` (opens a fresh
+  channel) or `TonicWorkerClient::from_channel(chan, endpoint)`
+  (reuses an existing one when the conductor multiplexes). Tracks
+  in-flight locally through an `AtomicU64` guarded by a drop-bound
+  `InFlightGuard`, so the P2C load balancer sees accurate
+  counts without a network round-trip. Real end-to-end tests
+  (conductor P2C → TonicWorkerClient → tonic server →
+  `FunctionExecutionServer` → `NativeFunctionRunner`) spin up a
+  gRPC server on an ephemeral port, bring up a client, exercise
+  health + action execute + unimplemented query path, and verify
+  `in_flight_estimate` returns to zero after the call drains.
 - **Phase 3.3 — worker-side gRPC server (partial, shipped):**
   `FunctionExecutionServer` implements the generated tonic trait.
   `Health` is fully wired: reports `registry_version` (defaults to

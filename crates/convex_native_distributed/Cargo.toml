@@ -22,7 +22,8 @@ tonic = { workspace = true }
 value = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread"] }
+tokio-stream = { workspace = true, features = ["net"] }
 
 [lints]
 workspace = true
