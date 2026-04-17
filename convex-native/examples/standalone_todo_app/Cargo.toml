@@ -22,4 +22,3 @@ convex_native = { path = "../../../crates/convex_native" }
 convex_native_core = { path = "../../../crates/convex_native_core" }
 
 anyhow = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

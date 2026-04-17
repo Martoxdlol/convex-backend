@@ -28,7 +28,7 @@ db_connection = { workspace = true }
 futures = { workspace = true }
 local_backend = { path = "../local_backend" }
 runtime = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 tracing = { workspace = true }
 
 [lints]

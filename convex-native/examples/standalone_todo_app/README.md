@@ -10,11 +10,11 @@ template when you follow `convex-native/STANDALONE.md`.
 
 ```
 standalone_todo_app/
-├── Cargo.toml          4 deps: convex_native + convex_native_core
-│                        + tokio + anyhow.
+├── Cargo.toml          3 deps: convex_native + convex_native_core
+│                        + anyhow (convex_native owns tokio).
 ├── README.md           this file
 └── src/
-    ├── main.rs         7 lines: #[tokio::main] → convex_native::run()
+    ├── main.rs         5 lines: sync fn main → convex_native::run()
     ├── lib.rs          declares every app submodule.
     └── app/
         ├── schema.rs     #[derive(ConvexDocument)] Todo
@@ -56,7 +56,7 @@ cargo run --release -- \
     --port 3210 \
     --instance-name mydeploy \
     --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
-    --db-spec sqlite \
+    --db sqlite \
     --local-storage ./_run/storage
 ```
 
@@ -197,7 +197,7 @@ CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678 \
     --port 3210 \
     --instance-name mydeploy \
     --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
-    --db-spec sqlite \
+    --db sqlite \
     --local-storage ./_run/backend-storage
 ```
 
@@ -221,7 +221,7 @@ CONVEX_MODE=worker \
     --port 0 \
     --instance-name mydeploy-worker \
     --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
-    --db-spec sqlite \
+    --db sqlite \
     --local-storage ./_run/worker-storage
 ```
 
@@ -302,9 +302,10 @@ architecture rationale.
   instance is running. `lsof -i :3210` / `kill`.
 - **V8 build fails on first run** — run `rush install` in
   `npm-packages/` at the repo root.
-- **SQLite file locked** — the default `--db-spec sqlite` writes
-  to `./convex_local_backend.sqlite3`. Two instances can't share
-  a DB; use a distinct `--local-storage` + DB file per process.
+- **SQLite file locked** — the default `--db sqlite` writes to
+  `./convex_local_backend.sqlite3` (positional `DB_SPEC` arg).
+  Two instances can't share a DB; use a distinct `--local-storage`
+  + DB file per process.
 
 ## Cross-references
 

@@ -11,7 +11,6 @@
 //! For a worker role, point a deployer-specific binary (see
 //! `convex-native/examples/standalone_todo_app`) at this binary's
 //! admission port.
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    convex_native::run().await
+fn main() -> anyhow::Result<()> {
+    convex_native::run()
 }

@@ -6,7 +6,6 @@
 #[allow(unused_imports)]
 use standalone_todo_app as _;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    convex_native::run().await
+fn main() -> anyhow::Result<()> {
+    convex_native::run()
 }

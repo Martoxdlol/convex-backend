@@ -306,7 +306,7 @@ cargo run -- \
     --port 3210 \
     --instance-name mydeploy \
     --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
-    --db-spec sqlite \
+    --db sqlite \
     --local-storage ./mydeploy_storage
 ```
 

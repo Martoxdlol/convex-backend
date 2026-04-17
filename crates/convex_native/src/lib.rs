@@ -1,18 +1,23 @@
 //! Batteries-included entry point for convex-native deployers.
 //!
 //! Re-exports the full developer surface from `convex_native_core`
-//! and adds [`run`] — a single async call that parses
+//! and adds [`run`] — a single synchronous call that parses
 //! `LocalConfig` from the process CLI, connects persistence, boots
 //! the HTTP service, and blocks until Ctrl-C.
 //!
 //! ```no_run
-//! # async fn _demo() -> anyhow::Result<()> {
+//! # fn _demo() -> anyhow::Result<()> {
 //! #[allow(unused_imports)]
 //! use my_convex_app as _;   // force `inventory` linkage
 //!
-//! convex_native::run().await
+//! convex_native::run()
 //! # }
 //! ```
+//!
+//! `run` is a **synchronous** entry point — it owns tokio
+//! initialization via [`ProdRuntime`]. Do **not** wrap it in
+//! `#[tokio::main]`; the runtime asserts it is constructed outside
+//! an existing Tokio context.
 //!
 //! Deployers who need finer-grained control — custom CLI, embedded
 //! usage, or the distributed topology — should reach for
@@ -20,8 +25,6 @@
 //! `convex-native/STANDALONE.md` and `convex-native/DISTRIBUTED_PLAN.md`.
 
 #![allow(clippy::needless_doctest_main)]
-
-pub use convex_native_core::*;
 
 use std::time::Duration;
 
@@ -34,6 +37,7 @@ use common::{
     shutdown::ShutdownSignal,
     version::SERVER_VERSION_STR,
 };
+pub use convex_native_core::*;
 use db_connection::{
     connect_persistence,
     ConnectPersistenceFlags,
@@ -66,20 +70,27 @@ use tokio::{
 /// binary, with your `#[convex::*]` / `#[derive(ConvexDocument)]`
 /// registrations picked up via `inventory`.
 ///
+/// This is a **synchronous** entry point — it owns its own tokio
+/// runtime via [`ProdRuntime::init_tokio`]. Call it from a plain
+/// `fn main()`; do not wrap it in `#[tokio::main]` or invoke it
+/// from inside an existing Tokio context, or `ProdRuntime` will
+/// panic on construction.
+///
 /// Returns `Ok(())` after graceful shutdown. Fatal errors (DB
 /// preempt signal, serve-task failure) surface as `Err`.
-pub async fn run() -> anyhow::Result<()> {
+pub fn run() -> anyhow::Result<()> {
     let _guard = config_service();
     let config = LocalConfig::parse();
-    run_with_config(config).await
+    run_with_config(config)
 }
 
 /// Same as [`run`] but takes a caller-constructed `LocalConfig`.
 /// Use when you parse config yourself or embed the backend inside a
-/// larger binary.
-pub async fn run_with_config(config: LocalConfig) -> anyhow::Result<()> {
-    let tokio = ProdRuntime::init_tokio()
-        .map_err(|e| anyhow::anyhow!("failed to init tokio: {e}"))?;
+/// larger binary. Must be called outside any existing Tokio runtime
+/// context — see [`run`] for rationale.
+pub fn run_with_config(config: LocalConfig) -> anyhow::Result<()> {
+    let tokio =
+        ProdRuntime::init_tokio().map_err(|e| anyhow::anyhow!("failed to init tokio: {e}"))?;
     let runtime = ProdRuntime::new(&tokio);
     let runtime_ = runtime.clone();
     runtime.block_on("main", async move { run_server(runtime_, config).await })

@@ -114,7 +114,7 @@ CONVEX_ADMISSION_BIND_ADDR=0.0.0.0:5678 \
     --port 3210 \
     --instance-name mydeploy \
     --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
-    --db-spec sqlite \
+    --db sqlite \
     --local-storage ./_run/mydeploy_storage
 ```
 
@@ -140,7 +140,7 @@ CONVEX_MODE=worker \
     --port 0 \
     --instance-name mydeploy-worker \
     --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
-    --db-spec sqlite \
+    --db sqlite \
     --local-storage ./_run/worker_storage
 ```
 
