@@ -312,36 +312,65 @@ runner.run_action_with_callbacks("send_welcome", ns, args! {
 assert!(history.count(|r| matches!(r, CallRecord::Query { name, .. } if name == "get_by_email")) >= 1);
 ```
 
+## Crons
+
+JS `cron.ts`:
+
+```ts
+import { cronJobs } from "convex/server";
+import { internal } from "./_generated/api";
+const crons = cronJobs();
+crons.cron("nightly-cleanup", "0 3 * * *", internal.tasks.nightlyCleanup);
+export default crons;
+```
+
+Native:
+
+```rust
+#[convex::mutation(internal)]
+async fn nightly_cleanup(_ctx: &mut MutationCtx<'_, Rt>) -> Result<()> { Ok(()) }
+
+#[convex::cron(
+    name = "nightly-cleanup",
+    schedule = "0 3 * * *",
+    target = "nightly_cleanup",
+)]
+fn _nightly_cleanup_cron() {}
+```
+
+The schedule string is parsed with `saffron` at macro-expansion
+time, so typos like `"0 3 * *"` fail the build rather than at
+runtime. `BuiltBackend::validate()` cross-checks every cron
+`target` exists in the registry and has the matching kind; call
+it at startup so misconfigured crons crash the binary loudly.
+
+## Deploying at scale
+
+JS Convex runs one process per deployment. The native runtime
+supports two topologies:
+
+- **Standalone** (default, `CONVEX_MODE` unset or `standalone`):
+  single all-in-one binary. Same shape as JS.
+- **Worker + conductor** (`CONVEX_MODE=worker` +
+  `CONVEX_WORKER_BIND_ADDR` on workers; `CONVEX_MODE=conductor` +
+  `CONVEX_WORKER_ENDPOINTS` on the conductor): P2C load balancing
+  with single-retry failover and an optional
+  `min_registry_version` floor for rolling deploys. See
+  `QUICKSTART.md` for the shell + Rust snippets.
+
 ## Things that aren't covered here yet
 
-- **Components.** JS supports `defineComponent` for reusable modules;
-  native has no analog yet.
-- **Crons.** JS `cron.ts`:
-
-  ```ts
-  import { cronJobs } from "convex/server";
-  import { internal } from "./_generated/api";
-  const crons = cronJobs();
-  crons.cron("nightly-cleanup", "0 3 * * *", internal.tasks.nightlyCleanup);
-  export default crons;
-  ```
-
-  Native:
-
-  ```rust
-  #[convex::mutation(internal)]
-  async fn nightly_cleanup(_ctx: &mut MutationCtx<'_, Rt>) -> Result<()> { Ok(()) }
-
-  #[convex::cron(
-      name = "nightly-cleanup",
-      schedule = "0 3 * * *",
-      target = "nightly_cleanup",
-  )]
-  fn _nightly_cleanup_cron() {}
-  ```
-- **Deploy / dev workflow.** `npx convex dev` doesn't talk to the
-  native runtime yet. You build and run the Rust binary locally and
-  deploy it as a normal Rust service.
-- **Client SDK codegen.** JS generates `_generated/api.d.ts`; native
-  exposes marker types (`GetByEmail`, `SendWelcomeArgs`) as the typed
-  reference surface. There's no codegen step.
+- **Components.** JS supports `defineComponent` for reusable
+  modules; native has no analog yet.
+- **Deploy / dev workflow.** `npx convex dev` doesn't talk to
+  the native runtime yet. You build and run the Rust binary
+  locally and deploy it as a normal Rust service.
+- **Client SDK codegen.** JS generates `_generated/api.d.ts`;
+  native exposes marker types (`GetByEmail`, `SendWelcomeArgs`)
+  as the typed reference surface. There's no codegen step.
+- **Unified `convex-local-backend` with `CONVEX_MODE` switching.**
+  The binary runs only in Standalone today; the worker +
+  conductor topology uses separate binaries
+  (`convex_native_distributed::examples/worker` +
+  `examples/conductor`). A single binary that picks its role
+  based on `CONVEX_MODE` alone isn't shipped.
