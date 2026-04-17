@@ -12,8 +12,11 @@
 //! `Runtime` type — `runtime::prod::ProdRuntime` — via the `Rt` alias in
 //! this module. All generated handlers cast the transaction they receive
 //! to `Transaction<Rt>` at call time. Tests that want to execute native
-//! functions under a different runtime are not supported today; the
-//! pinning decision is revisited alongside Phase 4 hardening work.
+//! functions under a different runtime are not supported; the pinning
+//! is intentional, and paths that need to cross from a generic `RT` back
+//! to `Rt` guard the transition behind a `TypeId::of::<RT>() ==
+//! TypeId::of::<Rt>()` check + a localised unsafe cast (see
+//! `convex_native_backend::composite_runner::dispatch_native`).
 
 use std::{
     collections::HashMap,
