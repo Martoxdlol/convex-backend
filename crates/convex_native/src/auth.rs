@@ -48,3 +48,50 @@ impl<'a> AuthInfo<'a> {
         self.inner
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_identity_reads_as_unauthenticated() {
+        // `Identity::Unknown(None)` is the anonymous / no-creds case —
+        // all the convenience predicates should report "no auth".
+        let id = Identity::Unknown(None);
+        let auth = AuthInfo::new(&id);
+        assert!(!auth.is_authenticated());
+        assert!(!auth.is_admin());
+        assert!(!auth.is_system());
+    }
+
+    #[test]
+    fn system_identity_is_authenticated_and_system() {
+        let id = Identity::system();
+        let auth = AuthInfo::new(&id);
+        assert!(auth.is_authenticated(), "system identity counts as auth");
+        assert!(auth.is_system());
+        assert!(!auth.is_admin(), "system is not admin");
+    }
+
+    #[test]
+    fn raw_returns_the_wrapped_identity_variant() {
+        // The `raw()` escape hatch is how advanced callers reach into
+        // keybroker features not surfaced by `AuthInfo`. Pin the
+        // variant round-trip so we don't accidentally wrap or clone
+        // across the boundary.
+        let id = Identity::system();
+        let auth = AuthInfo::new(&id);
+        assert!(matches!(auth.raw(), Identity::System(_)));
+    }
+
+    #[test]
+    fn is_authenticated_is_true_for_every_non_unknown_variant() {
+        // The predicate's definition is "anything but Unknown".
+        // Exercise the non-Unknown variants we can construct without
+        // dragging in signing keys (System) and confirm the
+        // contract. If the definition flips (e.g. is_authenticated
+        // starts requiring a User identity), this test flags it.
+        let sys = Identity::system();
+        assert!(AuthInfo::new(&sys).is_authenticated());
+    }
+}
