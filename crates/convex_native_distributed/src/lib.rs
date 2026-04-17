@@ -1,7 +1,7 @@
 //! Distributed execution for `convex_native`.
 //!
 //! **NOTE — topology change in progress.** The crate as currently
-//! shipped implements a "worker commits locally, no conductor
+//! shipped implements a "worker commits locally, no backend
 //! coordination" shape that is being replaced. See
 //! `convex-native/DISTRIBUTED_PLAN.md` for the target architecture.
 //! Work is tracked through Phase 1..Phase 7 in that document.
@@ -19,8 +19,9 @@
 //!   can plug it in where `InProcessFunctionRunner` sits today.
 //! - [`tonic_client::TonicWorkerClient`] — real gRPC transport.
 //! - [`mode`] — env-var parsers + server-building helpers. The
-//!   `CONVEX_MODE=conductor` path goes away in Phase 3 (the
-//!   backend image replaces the standalone conductor concept).
+//!   `CONVEX_MODE=conductor` path is being removed in Phase 3 (the
+//!   backend image replaces the standalone-conductor concept); the
+//!   `worker` path stays.
 //!
 //! ## What was removed
 //!

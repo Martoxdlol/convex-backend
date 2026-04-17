@@ -84,15 +84,15 @@ impl FunctionExecutionServer {
     }
 
     /// Attach a worker-local database so the server can dispatch
-    /// queries and mutations. The conductor is still the one that
-    /// chose the worker — the worker just commits locally because
-    /// the wire protocol doesn't carry read/write sets back to the
-    /// conductor.
+    /// queries and mutations. Today the worker commits locally
+    /// against this database because the wire protocol doesn't yet
+    /// carry read/write sets back to the backend.
     ///
-    /// This model fits the "pure worker" topology where each
-    /// worker owns its own Database. If you want the conductor-
-    /// commits topology instead, keep the server without a database
-    /// and the query/mutation branches will surface `Unimplemented`.
+    /// Phase 1 of `convex-native/DISTRIBUTED_PLAN.md` changes this:
+    /// the worker produces a `FunctionFinalTransaction` and the
+    /// backend's Committer does the commit. Leaving the database
+    /// unattached keeps the query/mutation branches surfacing
+    /// `Unimplemented` until Phase 1 lands.
     pub fn with_database(mut self, database: Database<Rt>) -> Self {
         self.database = Some(database);
         self
@@ -114,11 +114,11 @@ impl FunctionExecutionService for FunctionExecutionServer {
     ) -> Result<Response<proto::ExecuteResponse>, Status> {
         let proto_req = request.into_inner();
 
-        // Version gate (Phase 4.7). If the conductor asked for a
+        // Version gate (Phase 4.7). If the backend asked for a
         // minimum registry version, confirm we meet it. String
         // comparison is semver-correct for the canonical
         // MAJOR.MINOR.PATCH format used by Cargo versions; pre-release
-        // tags are handled by the conductor's semver check, not
+        // tags are handled by the backend's semver check, not
         // here.
         if let Some(min) = proto_req.min_registry_version.as_deref()
             && !version_at_least(&self.registry_version, min)
@@ -272,7 +272,7 @@ async fn run_mutation_inline(
 
 /// Snapshot the buffer and render each line as a plain string.
 /// Matches the `repeated string log_lines` field on the proto: one
-/// formatted line per entry, ready for the conductor to forward
+/// formatted line per entry, ready for the backend to forward
 /// into its own log-streaming path without re-parsing.
 fn log_lines_to_pretty_strings(buffer: &convex_native::LogBuffer) -> Vec<String> {
     buffer
@@ -292,7 +292,7 @@ fn log_lines_to_pretty_strings(buffer: &convex_native::LogBuffer) -> Vec<String>
 
 /// Returns true when `have` >= `want` under a simple lexicographic
 /// compare of the MAJOR.MINOR.PATCH form. A full `semver` compare
-/// belongs on the conductor side (that's where the full version
+/// belongs on the backend side (that's where the full version
 /// set is visible); the worker is just checking its own tag.
 fn version_at_least(have: &str, want: &str) -> bool {
     fn parts(s: &str) -> Vec<u64> {
@@ -414,7 +414,7 @@ mod tests {
         // numeric fields. `1.2.3-rc.1` therefore compares as
         // `[1, 2, 3, 1]`, and `1.2.3+build.7` as `[1, 2, 3, 7]`.
         // That's intentional — the worker only checks its own tag
-        // against a floor; full semver lives on the conductor side.
+        // against a floor; full semver lives on the backend side.
         assert!(version_at_least("1.2.3-rc.1", "1.2.3"));
         assert!(version_at_least("1.2.3+build.7", "1.2.3"));
         assert!(!version_at_least("1.2.3", "1.2.3-rc.1"));
@@ -433,7 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_flips_accepts_traffic_when_runner_drains() {
-        // `accepts_traffic` is how the conductor learns a worker is
+        // `accepts_traffic` is how the backend learns a worker is
         // draining so it can steer new RPCs elsewhere. Pin the flip:
         // before draining → true, after `begin_drain()` → false.
         let runner = empty_runner();
@@ -463,7 +463,7 @@ mod tests {
     async fn execute_http_action_kind_is_unimplemented() {
         // The tonic server doesn't dispatch HTTP actions — those go
         // through the HttpRouter path, not FunctionExecutionService.
-        // A conductor that mistakenly forwards an HttpAction UdfType
+        // A caller that mistakenly forwards an HttpAction UdfType
         // must see `Unimplemented`, not a generic error.
         let server = FunctionExecutionServer::new(empty_runner());
         let native = NativeExecuteRequest {

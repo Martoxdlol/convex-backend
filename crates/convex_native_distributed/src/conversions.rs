@@ -20,7 +20,7 @@ use value::{
     TableNamespace,
 };
 
-/// Wire-format name for `TableNamespace::Global`. The conductor and
+/// Wire-format name for `TableNamespace::Global`. The backend and
 /// worker agree on this literal so the round-trip preserves root
 /// component semantics.
 const NAMESPACE_GLOBAL: &str = "global";
@@ -36,7 +36,7 @@ pub fn encode_namespace(ns: TableNamespace) -> String {
 }
 
 /// Inverse of `encode_namespace`. Unknown/malformed strings error
-/// rather than silently falling back, so a conductor/worker version
+/// rather than silently falling back, so a backend/worker version
 /// skew surfaces loudly.
 pub fn decode_namespace(s: &str) -> anyhow::Result<TableNamespace> {
     if s == NAMESPACE_GLOBAL {
@@ -301,7 +301,7 @@ mod tests {
         };
         // A caller-supplied ExecutionContext must survive the
         // proto trip verbatim — request_id + is_root are the
-        // observable bits the conductor cares about for tracing.
+        // observable bits the backend cares about for tracing.
         let request_id = RequestId::new();
         let ctx =
             ExecutionContext::new_from_parts(request_id.clone(), Default::default(), None, true);

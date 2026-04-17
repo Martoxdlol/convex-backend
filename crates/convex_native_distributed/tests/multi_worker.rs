@@ -1,14 +1,14 @@
-//! Phase 3.6 integration tests: multiple live workers behind one
+//! Integration tests: multiple live workers behind one
 //! `DistributedFunctionRunner` over real gRPC.
 //!
 //! Each test spins up N local tonic servers on ephemeral ports,
 //! connects a `TonicWorkerClient` per server, and hands them to a
-//! conductor-side `DistributedFunctionRunner`. The conductor then
-//! dispatches requests and we inspect where they landed via a
-//! counter attached to each server.
+//! dispatch-side `DistributedFunctionRunner`. The dispatcher then
+//! sends requests and we inspect where they landed via a counter
+//! attached to each server.
 //!
 //! These complement the single-worker smoke tests in
-//! `src/tonic_client.rs` and the pure-conductor P2C tests in
+//! `src/tonic_client.rs` and the pure-dispatch P2C tests in
 //! `src/client.rs`. The value here is the interaction of the three
 //! pieces at once: mode helpers + tonic transport + P2C routing.
 
@@ -116,7 +116,7 @@ async fn unreachable_worker_rejects_build() {
 
 #[tokio::test]
 async fn rolling_update_floor_rejects_older_workers() {
-    // Both workers tagged 0.1.0; conductor pins floor to 9.9.9.
+    // Both workers tagged 0.1.0; dispatcher pins floor to 9.9.9.
     // Every dispatch should reject with FailedPrecondition at the
     // per-worker version gate, even after the built-in retry.
     let a = spawn_worker("0.1.0").await;
@@ -173,7 +173,7 @@ async fn per_call_floor_overrides_runner_floor() {
     assert_eq!(status.code(), tonic::Code::FailedPrecondition);
 }
 
-/// Regression: the conductor fails over from a worker that
+/// Regression: the dispatcher fails over from a worker that
 /// returns `Unavailable`. Hard to simulate at the tonic layer
 /// without a fault-injecting service; use a `WorkerClient` mock
 /// wrapping a real `TonicWorkerClient` so the transport path

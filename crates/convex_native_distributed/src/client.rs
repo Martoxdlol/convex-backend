@@ -44,15 +44,15 @@ use convex_native::distributed::{
 use pb::function_execution as proto;
 use tonic::Status;
 
-/// A single worker the conductor can dispatch to. Implementations
-/// are `Arc`-shared.
+/// A single worker the dispatcher can send execution to.
+/// Implementations are `Arc`-shared.
 #[async_trait]
 pub trait WorkerClient: Send + Sync {
     /// Execute one function on the worker. Returns `Ok(response)`
     /// when the worker produced an `ExecuteResponse` (including
     /// handler-level errors surfaced via
     /// `ExecuteResponse.result = Err(...)`); returns `Err(status)`
-    /// for transport / gRPC-level failures the conductor may want
+    /// for transport / gRPC-level failures the dispatcher may want
     /// to retry.
     async fn execute(
         &self,
@@ -60,7 +60,7 @@ pub trait WorkerClient: Send + Sync {
         udf_type: UdfType,
     ) -> Result<ExecuteResponse, Status>;
 
-    /// Fresh health probe. Used by the conductor's readiness and
+    /// Fresh health probe. Used by the dispatcher's readiness and
     /// version-gating paths.
     async fn health(&self) -> Result<proto::HealthResponse, Status>;
 
@@ -77,7 +77,8 @@ pub trait WorkerClient: Send + Sync {
     }
 }
 
-/// Observability hook for the conductor side of the dispatch path.
+/// Observability hook for the dispatch side of the execution path
+/// (inside the backend under `DISTRIBUTED_PLAN.md`).
 ///
 /// Called once per `DistributedFunctionRunner::execute` — after
 /// every attempt has finished (whether a failover retry was needed
@@ -103,16 +104,16 @@ pub trait ConductorMetricsSink: Send + Sync + 'static {
     );
 }
 
-/// Outcome of one conductor-side `execute(...)` dispatch.
+/// Outcome of one dispatch-side `execute(...)` call.
 ///
 /// Mirrors the `native_funrun_request_*` metric families named in
 /// `native-rust-functions.md` §12.3: successes on first try,
 /// successes after a failover retry, and transport / gRPC-level
-/// failures the conductor couldn't recover from.
+/// failures the dispatcher couldn't recover from.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ConductorOutcome {
     /// First-attempt success. The handler returned a value (or a
-    /// handler-level `ExecuteResponse::Err(...)`; the conductor
+    /// handler-level `ExecuteResponse::Err(...)`; the dispatcher
     /// doesn't distinguish handler errors from handler successes at
     /// this layer — both mean "the worker received and processed
     /// the request").
@@ -129,7 +130,7 @@ pub enum ConductorOutcome {
 }
 
 /// Default discards everything — the baseline wiring for deployments
-/// that don't (yet) care about conductor-side metrics.
+/// that don't (yet) care about dispatch-side metrics.
 pub struct NoopConductorMetrics;
 
 impl ConductorMetricsSink for NoopConductorMetrics {
@@ -137,12 +138,12 @@ impl ConductorMetricsSink for NoopConductorMetrics {
 }
 
 /// Observability hook for forwarding worker-side `ctx.log()` output
-/// into the conductor's own log-streaming path.
+/// into the backend's own log-streaming path.
 ///
 /// `FunctionExecutionServer` on the worker snapshots the ctx's
 /// `LogBuffer` after every handler invocation and writes the
 /// rendered lines into `ExecuteResponse::log_lines` (see
-/// `function_execution.proto`). Without a sink the conductor
+/// `function_execution.proto`). Without a sink the backend
 /// receives those lines but has nowhere to route them; wiring one
 /// lets deployments forward them into syslog / Loki / fluentd /
 /// whatever their log stack is.
@@ -315,7 +316,7 @@ pub struct DistributedFunctionRunner {
     /// Applied to every `ExecuteRequest` that doesn't already set
     /// one. Phase 4.7 rolling-update floor: during a deploy the
     /// operator pins a minimum `registry_version` here so the
-    /// conductor routes around older workers. Workers that don't
+    /// dispatcher routes around older workers. Workers that don't
     /// meet the floor reject with `tonic::Code::FailedPrecondition`.
     min_registry_version: Option<String>,
     /// Observability hook. Defaults to [`NoopConductorMetrics`];
@@ -414,7 +415,7 @@ impl DistributedFunctionRunner {
     ) -> Result<ExecuteResponse, Status> {
         let started = Instant::now();
 
-        // Apply the conductor-level rolling-update floor when the
+        // Apply the dispatcher-level rolling-update floor when the
         // request doesn't already pin a minimum.
         if req.min_registry_version.is_none()
             && let Some(floor) = &self.min_registry_version

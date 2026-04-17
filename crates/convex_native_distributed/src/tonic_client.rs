@@ -1,4 +1,4 @@
-//! `TonicWorkerClient` — real gRPC transport for the conductor's
+//! `TonicWorkerClient` — real gRPC transport for the dispatcher's
 //! `WorkerClient` trait.
 //!
 //! Wraps a generated
@@ -41,7 +41,7 @@ use crate::{
 ///
 /// Constructed via [`TonicWorkerClient::connect`] (opens a new
 /// `Channel` to the endpoint) or [`TonicWorkerClient::from_channel`]
-/// (reuses an existing one — useful when the conductor multiplexes
+/// (reuses an existing one — useful when the dispatcher multiplexes
 /// over a shared connection pool).
 pub struct TonicWorkerClient {
     grpc: FunctionExecutionServiceClient<Channel>,
@@ -221,7 +221,7 @@ mod tests {
 
     #[tokio::test]
     async fn distributed_runner_routes_over_real_grpc() {
-        // Full end-to-end: conductor P2C client → TonicWorkerClient
+        // Full end-to-end: dispatcher P2C client → TonicWorkerClient
         // → tonic server → FunctionExecutionServer → NativeFunctionRunner.
         let addr = spawn_test_server().await;
         let worker = TonicWorkerClient::connect(format!("http://{addr}"))

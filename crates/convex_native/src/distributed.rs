@@ -35,15 +35,27 @@ use value::{
 
 /// Operating mode for a process that embeds the convex-native runner.
 ///
-/// Corresponds to the `CONVEX_MODE` env var described in §10.
+/// `CONVEX_MODE` env var. See `convex-native/DISTRIBUTED_PLAN.md`
+/// for how these map onto the target architecture — under the
+/// new plan the standalone "Conductor" role is replaced by the
+/// prebuilt backend image, so `Conductor` is kept here only as a
+/// rejected legacy value. `Standalone` and `Worker` are both
+/// first-class.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ConvexMode {
-    /// All-in-one: conductor, worker, and database in one process.
-    /// This is what the existing local_backend binary does today.
+    /// All-in-one: HTTP, database, and native registry in one
+    /// process. This is what `convex-local-backend` does by default
+    /// and what `STANDALONE.md` documents as the monolith topology.
     Standalone,
-    /// Conductor only: owns the database, dispatches to remote workers.
+    /// Legacy: standalone dispatcher with no database. Removed in
+    /// favour of the prebuilt backend image
+    /// (`DISTRIBUTED_PLAN.md` Phase 5). Parsing this from the env
+    /// is allowed for backwards compatibility; callers are expected
+    /// to reject it early (see `local_backend::lib::make_app`).
     Conductor,
-    /// Worker only: executes native functions when called by a conductor.
+    /// Worker only: executes native functions when called by the
+    /// backend. The backend ↔ worker wire contract is in
+    /// `pb::function_execution`.
     Worker,
 }
 
@@ -68,21 +80,21 @@ impl ConvexMode {
     }
 }
 
-/// Request payload a conductor sends to a worker to execute one
-/// function. Mirrors the proto message described in §10; kept
-/// anyhow/Convex-native for now (no serde-over-gRPC yet).
+/// Request payload the backend sends to a worker to execute one
+/// function. Mirrors `pb::function_execution::ExecuteRequest` in
+/// anyhow/Convex-native form.
 #[derive(Debug, Clone)]
 pub struct ExecuteRequest {
     pub name: String,
     pub namespace: TableNamespace,
     pub args: ConvexObject,
-    /// Soft timeout the worker should honor; the conductor enforces a
-    /// hard timeout on its side.
+    /// Soft timeout the worker should honor; the backend enforces
+    /// a hard timeout on its side.
     pub timeout: Option<Duration>,
-    /// Minimum `registry_version` the worker must be running (Phase
-    /// 4.7). The worker rejects older versions with
+    /// Minimum `registry_version` the worker must be running. The
+    /// worker rejects older versions with
     /// `tonic::Code::FailedPrecondition`, so during a rolling deploy
-    /// the conductor can pin a floor to steer traffic away from
+    /// the backend can pin a floor to steer traffic away from
     /// stragglers. `None` means any worker is acceptable.
     pub min_registry_version: Option<String>,
     /// Execution context to propagate across the gRPC boundary.
@@ -101,7 +113,7 @@ pub struct ExecuteRequest {
 ///
 /// `log_lines` carries the worker's drained `ctx.log()` output
 /// in the pretty-string form `LogLine::to_pretty_strings` emits —
-/// the conductor can forward them into its own log-streaming path
+/// the backend can forward them into its own log-streaming path
 /// alongside JS log lines without translation. Empty when the
 /// handler didn't log anything (the common case) or when the
 /// worker isn't configured to drain logs.
@@ -130,9 +142,10 @@ impl ExecuteResponse {
     }
 }
 
-/// Trait a worker implements to accept remote calls. The distributed
-/// crate wires this over gRPC; in tests or in-process flows the
-/// composite runner can implement it directly.
+/// Trait a worker implements to accept remote calls. The
+/// `convex_native_distributed` crate wires this over gRPC; in
+/// tests or in-process flows a composite runner can implement it
+/// directly.
 #[async_trait::async_trait]
 pub trait FunctionExecutor: Send + Sync + 'static {
     async fn execute(&self, req: ExecuteRequest) -> anyhow::Result<ExecuteResponse>;
@@ -208,7 +221,7 @@ mod tests {
     #[test]
     fn execute_response_clones_and_debug_formats() {
         // Clone + Debug are derived; callers pattern-match + clone
-        // responses across worker/conductor boundaries, so a silent
+        // responses across worker/backend boundaries, so a silent
         // derive drop would break consumers.
         let resp = ExecuteResponse::new(Ok(ConvexValue::Int64(42)));
         let cloned = resp.clone();

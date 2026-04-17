@@ -1,6 +1,6 @@
 [package]
 name = "convex_native_distributed"
-description = "Distributed execution for convex_native: worker gRPC server + conductor client."
+description = "Distributed execution for convex_native: worker gRPC server + dispatcher client."
 version = "0.1.0"
 authors = ["Convex, Inc. <no-reply@convex.dev>"]
 edition = "2024"

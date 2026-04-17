@@ -61,7 +61,7 @@ pub fn read_mode_from_env() -> ConvexMode {
 
 /// Parse a comma-separated list of worker endpoints. Empty strings
 /// after trimming are skipped; the final list is required to be
-/// non-empty (conductors must know of at least one worker).
+/// non-empty (the dispatcher must know of at least one worker).
 pub fn parse_worker_endpoints(raw: &str) -> anyhow::Result<Vec<String>> {
     let endpoints: Vec<String> = raw
         .split(',')
@@ -70,18 +70,19 @@ pub fn parse_worker_endpoints(raw: &str) -> anyhow::Result<Vec<String>> {
         .collect();
     if endpoints.is_empty() {
         anyhow::bail!(
-            "CONVEX_WORKER_ENDPOINTS is empty — conductor mode needs at least one worker URL, \
+            "CONVEX_WORKER_ENDPOINTS is empty — the dispatcher needs at least one worker URL, \
              comma-separated"
         );
     }
     Ok(endpoints)
 }
 
-/// Read the conductor's worker list from `CONVEX_WORKER_ENDPOINTS`.
+/// Read the dispatcher's worker list from `CONVEX_WORKER_ENDPOINTS`.
 pub fn read_worker_endpoints_from_env() -> anyhow::Result<Vec<String>> {
     let raw = std::env::var("CONVEX_WORKER_ENDPOINTS").map_err(|_| {
         anyhow::anyhow!(
-            "CONVEX_WORKER_ENDPOINTS must be set in conductor mode (comma-separated gRPC URLs)"
+            "CONVEX_WORKER_ENDPOINTS must be set on the backend/dispatcher side \
+             (comma-separated gRPC URLs)"
         )
     })?;
     parse_worker_endpoints(&raw)
@@ -166,8 +167,12 @@ where
 
 /// Connect a `TonicWorkerClient` per endpoint and wrap the set in a
 /// `DistributedFunctionRunner`. Failures from any individual
-/// `connect` bubble up — the conductor refuses to start with an
+/// `connect` bubble up — the dispatcher refuses to start with an
 /// unreachable worker rather than quietly serving a reduced pool.
+///
+/// NOTE: name retained for source compatibility; the "conductor"
+/// role is replaced by the backend in `DISTRIBUTED_PLAN.md`. A
+/// rename will land with the Phase 2 `FunctionRunner` impl.
 pub async fn build_conductor_runner(
     endpoints: &[String],
 ) -> anyhow::Result<DistributedFunctionRunner> {
@@ -175,7 +180,7 @@ pub async fn build_conductor_runner(
     for ep in endpoints {
         let client = TonicWorkerClient::connect(ep.clone())
             .await
-            .map_err(|e| anyhow::anyhow!("conductor: connect to worker {ep:?} failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("dispatcher: connect to worker {ep:?} failed: {e}"))?;
         workers.push(client);
     }
     DistributedFunctionRunner::new(workers)
