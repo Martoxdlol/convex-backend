@@ -248,7 +248,9 @@ client calls but internal sub-calls still work.
 Shared methods across all ctxs:
 
 - `ctx.auth() -> AuthInfo<'_>` — `is_authenticated()`, `is_admin()`,
-  `is_system()`, `.raw()` for the escape-hatch to
+  `is_system()`, `user_identity()` (JS-analogue
+  `ctx.auth.getUserIdentity()`), `subject()` shortcut for the JWT
+  `sub` claim, `.raw()` for the escape-hatch to
   `keybroker::Identity`.
 - `ctx.unix_timestamp() -> UnixTimestamp` — runtime-sourced clock,
   so tests driving a mock runtime see the mocked value.
@@ -306,7 +308,15 @@ let with_meta: Option<DocumentWithMeta<User>> =
 // DocumentWithMeta { id, creation_time, doc }; derefs to `&T`.
 
 let batch: Vec<Option<User>> = ctx.db().get_many(ids).await?;
+
+// Validate an untrusted id string against the target table:
+let maybe_id: Option<Id<User>> = ctx.db().normalize_id(raw_string);
 ```
+
+`normalize_id` parses the string and checks the embedded table
+number against `User::table_name()`. Returns `None` on malformed
+input or a different table — the typed counterpart of
+`ctx.db.normalizeId("users", raw)` in JS.
 
 ## 6. Sub-calls from actions
 
@@ -400,8 +410,14 @@ let id: StorageId = ctx.storage()
     .store(Bytes::from(body), "image/png")
     .await?;
 let url: Option<String> = ctx.storage().get_url(id.clone()).await?;
+let meta: Option<FileMetadata> = ctx.storage().get_metadata(id.clone()).await?;
 let existed: bool = ctx.storage().delete(id).await?;
 ```
+
+`FileMetadata { content_type, size, sha256 }` mirrors the JS
+`ctx.storage.getMetadata` shape. `BackendCallbacks` implements it
+via `ActionCallbacks::storage_get_file_entry`; `NoopCallbacks`
+bails.
 
 Wired through `NativeActionCallbacks::storage_store`. The
 `BackendCallbacks` adapter forwards `store` straight into

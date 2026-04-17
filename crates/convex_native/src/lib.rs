@@ -131,6 +131,7 @@ pub use ctx::{
     },
     ActionCtx,
     ActionDb,
+    FileMetadata,
     MutationCtx,
     MutationDb,
     MutationScheduler,

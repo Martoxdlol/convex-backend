@@ -146,6 +146,12 @@ impl<'tx, RT: Runtime> MutationDb<'tx, RT> {
         self.as_query_db().get_with_meta(id).await
     }
 
+    /// Validate an id string against `T`'s table. See
+    /// [`QueryDb::normalize_id`] for the full contract.
+    pub fn normalize_id<T: ConvexDocument>(&mut self, id_str: &str) -> Option<Id<T>> {
+        self.as_query_db().normalize_id::<T>(id_str)
+    }
+
     pub fn query<T: ConvexDocument>(&mut self) -> TypedQueryBuilder<'_, 'tx, RT, T> {
         // Safety: `TypedQueryBuilder` only needs a `&mut QueryDb`. We
         // cannot hand out an intermediate `QueryDb` and store it inside

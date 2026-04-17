@@ -13,7 +13,10 @@
 //! Today the helpers are read-only views. Additional helpers (role
 //! checks etc.) can bolt on as the design evolves.
 
-use keybroker::Identity;
+use keybroker::{
+    Identity,
+    UserIdentity,
+};
 
 /// Borrowed view over the current request's identity. Obtained via
 /// `QueryCtx::auth()` / `MutationCtx::auth()` / `ActionCtx::auth()`.
@@ -40,6 +43,24 @@ impl<'a> AuthInfo<'a> {
     /// True for system-only identities (internal backend calls).
     pub fn is_system(&self) -> bool {
         self.inner.is_system()
+    }
+
+    /// The authenticated user's identity, when the caller presented a
+    /// JWT. Returns `None` for anonymous / admin / system identities —
+    /// those don't carry a JWT subject.
+    ///
+    /// The returned [`UserIdentity`] carries `subject` (the JWT `sub`
+    /// claim), `issuer`, expiration, and attribute map. This is the
+    /// Rust analogue of the JS `ctx.auth.getUserIdentity()` syscall.
+    pub fn user_identity(&self) -> Option<UserIdentity> {
+        self.inner.user_identity()
+    }
+
+    /// Convenience shortcut for `self.user_identity()?.subject`. Most
+    /// callers only need the JWT `sub` claim — this avoids the
+    /// boilerplate of reaching through the full `UserIdentity`.
+    pub fn subject(&self) -> Option<String> {
+        self.user_identity().map(|u| u.subject)
     }
 
     /// Access the underlying `Identity` for use-cases the wrapper
@@ -93,5 +114,26 @@ mod tests {
         // starts requiring a User identity), this test flags it.
         let sys = Identity::system();
         assert!(AuthInfo::new(&sys).is_authenticated());
+    }
+
+    #[test]
+    fn user_identity_is_none_for_unknown_and_system() {
+        // `user_identity()` is the Rust analogue of
+        // `ctx.auth.getUserIdentity()` — it should only return a
+        // value when the caller presented a JWT. The non-user
+        // variants (anonymous, system) return `None`, same as the
+        // JS contract.
+        assert!(AuthInfo::new(&Identity::Unknown(None))
+            .user_identity()
+            .is_none());
+        assert!(AuthInfo::new(&Identity::system()).user_identity().is_none());
+    }
+
+    #[test]
+    fn subject_shortcut_is_none_when_no_user_identity() {
+        // `subject()` is a convenience over `user_identity()?.subject`;
+        // when there's no JWT, it must return `None` rather than
+        // panicking or returning an empty string.
+        assert!(AuthInfo::new(&Identity::system()).subject().is_none());
     }
 }

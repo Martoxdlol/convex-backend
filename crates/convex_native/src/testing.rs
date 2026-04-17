@@ -92,6 +92,9 @@ pub enum CallRecord {
     StorageDelete {
         id: StorageId,
     },
+    StorageGetMetadata {
+        id: StorageId,
+    },
     DocRead {
         table: String,
         id: DeveloperDocumentId,
@@ -297,6 +300,27 @@ impl NativeActionCallbacks for TestCallbacksImpl {
             .unwrap()
             .push(CallRecord::StorageDelete { id });
         Ok(true)
+    }
+
+    async fn storage_get_metadata(
+        &self,
+        _ns: TableNamespace,
+        id: StorageId,
+    ) -> anyhow::Result<Option<crate::ctx::storage::FileMetadata>> {
+        self.history
+            .0
+            .lock()
+            .unwrap()
+            .push(CallRecord::StorageGetMetadata { id });
+        // Tests don't care about the specific metadata contents by
+        // default; return a canned shape. Callers needing richer
+        // behaviour can reach into `MockState` in their own test
+        // harness rather than rely on the builder stub.
+        Ok(Some(crate::ctx::storage::FileMetadata {
+            content_type: Some("application/octet-stream".into()),
+            size: 0,
+            sha256: "0".repeat(64),
+        }))
     }
 
     async fn read_document_at_snapshot(

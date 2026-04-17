@@ -26,6 +26,7 @@ use common::{
     types::RepeatableTimestamp,
 };
 use convex_native::{
+    FileMetadata,
     NativeActionCallbacks,
     NativeFunctionRunner,
     Rt,
@@ -437,6 +438,23 @@ impl<RT: Runtime + 'static> NativeActionCallbacks for BackendCallbacks<RT> {
             .storage_delete(self.identity.clone(), ComponentId::Root, storage_id)
             .await?;
         Ok(true)
+    }
+
+    async fn storage_get_metadata(
+        &self,
+        _ns: TableNamespace,
+        id: StorageId,
+    ) -> anyhow::Result<Option<FileMetadata>> {
+        let storage_id: FileStorageId = id.0.parse()?;
+        let maybe = self
+            .inner
+            .storage_get_file_entry(self.identity.clone(), ComponentId::Root, storage_id)
+            .await?;
+        Ok(maybe.map(|(_component, entry)| FileMetadata {
+            content_type: entry.content_type,
+            size: entry.size,
+            sha256: entry.sha256.as_hex(),
+        }))
     }
 
     async fn read_document_at_snapshot(

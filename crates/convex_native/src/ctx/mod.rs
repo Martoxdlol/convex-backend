@@ -37,6 +37,7 @@ pub use scheduler::{
     Scheduler,
 };
 pub use storage::{
+    FileMetadata,
     StorageCtx,
     StorageId,
 };

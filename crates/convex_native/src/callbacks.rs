@@ -105,6 +105,25 @@ pub trait NativeActionCallbacks: Send + Sync + 'static {
         id: StorageId,
     ) -> anyhow::Result<bool>;
 
+    /// Fetch metadata for a stored file. Returns `None` when the id
+    /// doesn't resolve to a stored file.
+    ///
+    /// The default implementation bails so backends unable to read
+    /// file metadata (`NoopCallbacks`, test stubs) fail loudly; the
+    /// `BackendCallbacks` adapter overrides to reach
+    /// `ActionCallbacks::storage_get_file_entry` and project the
+    /// result into a [`FileMetadata`].
+    async fn storage_get_metadata(
+        &self,
+        namespace: TableNamespace,
+        id: StorageId,
+    ) -> anyhow::Result<Option<crate::ctx::storage::FileMetadata>> {
+        let _ = (namespace, id);
+        anyhow::bail!(
+            "NativeActionCallbacks::storage_get_metadata not implemented by this backend adapter"
+        )
+    }
+
     /// Return "now" for the purposes of action-scoped `run_at`.
     ///
     /// The default implementation uses `SystemTime::now()`, which

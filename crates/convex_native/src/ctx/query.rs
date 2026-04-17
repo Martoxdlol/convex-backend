@@ -164,6 +164,28 @@ impl<'tx, RT: Runtime> QueryDb<'tx, RT> {
     pub async fn count_all<T: ConvexDocument>(&mut self) -> anyhow::Result<usize> {
         self.query::<T>().count().await
     }
+
+    /// Validate an id string received from an untrusted source (e.g.
+    /// query-string arg, webhook body) against a known table `T`.
+    /// Returns `Some(Id<T>)` when the id parses AND embeds `T`'s
+    /// table number; returns `None` when the string is malformed, or
+    /// when it addresses a different table.
+    ///
+    /// This is the typed analogue of the `1.0/db/normalizeId`
+    /// syscall (`ctx.db.normalizeId("users", rawString)` in JS).
+    /// Typical use: sanitise `Id<T>` values handed over from an HTTP
+    /// action body before acting on them.
+    pub fn normalize_id<T: ConvexDocument>(&mut self, id_str: &str) -> Option<Id<T>> {
+        let table_name = T::table_name();
+        let mapping = self.tx.table_mapping().namespace(self.namespace);
+        let expected_number = mapping.id_and_number_if_exists(&table_name)?.table_number;
+        let id_v6 = value::DeveloperDocumentId::decode(id_str).ok()?;
+        if id_v6.table() == expected_number {
+            Some(Id::new(id_v6))
+        } else {
+            None
+        }
+    }
 }
 
 /// Blanket helper that lets generated code recover a typed document from a

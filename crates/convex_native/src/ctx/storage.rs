@@ -13,6 +13,20 @@ use value::TableNamespace;
 
 use crate::callbacks::NativeActionCallbacks;
 
+/// Metadata for a stored file. Returned from [`StorageCtx::get_metadata`].
+///
+/// Mirrors the JS `ctx.storage.getMetadata()` shape, minus the
+/// storage-internal object key (not exposed to developer code).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileMetadata {
+    /// MIME type the file was stored with, when known.
+    pub content_type: Option<String>,
+    /// Size in bytes.
+    pub size: i64,
+    /// Hex-encoded SHA-256 digest of the stored bytes.
+    pub sha256: String,
+}
+
 /// Opaque storage id (uuid-like string). Returned from `store` and
 /// accepted by `get_url` / `delete`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -69,6 +83,14 @@ impl<'a> StorageCtx<'a> {
     /// removed.
     pub async fn delete(&self, id: StorageId) -> anyhow::Result<bool> {
         self.callbacks.storage_delete(self.namespace, id).await
+    }
+
+    /// Fetch metadata for a stored file. Returns `None` when the id
+    /// doesn't resolve to any stored object.
+    pub async fn get_metadata(&self, id: StorageId) -> anyhow::Result<Option<FileMetadata>> {
+        self.callbacks
+            .storage_get_metadata(self.namespace, id)
+            .await
     }
 }
 
