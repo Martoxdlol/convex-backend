@@ -95,3 +95,144 @@ impl<T: ConvexDocument> std::ops::Deref for DocumentWithMeta<T> {
         &self.doc
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::BTreeMap,
+        str::FromStr,
+    };
+
+    use common::document::CreationTime;
+    use value::{
+        DeveloperDocumentId,
+        FieldName,
+    };
+
+    use super::*;
+
+    /// Hand-rolled minimal `ConvexDocument` so this module can be
+    /// tested without invoking the derive macro (which emits
+    /// `::convex_native::...` paths that don't resolve from inside
+    /// this crate).
+    #[derive(Clone, Debug, PartialEq)]
+    struct User {
+        name: String,
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    #[allow(dead_code)]
+    enum Noop {}
+    impl FieldReference for Noop {
+        fn as_str(&self) -> &'static str {
+            match *self {}
+        }
+    }
+    impl IndexReference for Noop {
+        fn as_str(&self) -> &'static str {
+            match *self {}
+        }
+
+        fn fields(&self) -> &'static [&'static str] {
+            match *self {}
+        }
+    }
+
+    impl ConvexDocument for User {
+        type Field = Noop;
+        type Index = Noop;
+        type Patch = ();
+
+        fn table_name() -> TableName {
+            TableName::from_str("users").unwrap()
+        }
+
+        fn table_definition() -> TableDefinition {
+            TableDefinition {
+                table_name: Self::table_name(),
+                indexes: Default::default(),
+                staged_db_indexes: Default::default(),
+                text_indexes: Default::default(),
+                staged_text_indexes: Default::default(),
+                vector_indexes: Default::default(),
+                staged_vector_indexes: Default::default(),
+                document_type: None,
+            }
+        }
+
+        fn to_convex_object(&self) -> anyhow::Result<ConvexObject> {
+            let mut fields: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+            fields.insert(
+                "name".parse().unwrap(),
+                ConvexValue::try_from(self.name.clone())?,
+            );
+            ConvexObject::try_from(fields)
+        }
+
+        fn from_convex_object(obj: ConvexObject) -> anyhow::Result<Self> {
+            let fields: BTreeMap<FieldName, ConvexValue> = obj.into();
+            let name = match fields.get(&"name".parse::<FieldName>().unwrap()) {
+                Some(ConvexValue::String(s)) => s.to_string(),
+                _ => anyhow::bail!("missing or non-string `name`"),
+            };
+            Ok(User { name })
+        }
+    }
+
+    fn user_value(name: &str) -> ConvexValue {
+        let mut fields: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+        fields.insert(
+            "name".parse().unwrap(),
+            ConvexValue::try_from(name.to_string()).unwrap(),
+        );
+        ConvexValue::Object(ConvexObject::try_from(fields).unwrap())
+    }
+
+    #[test]
+    fn document_from_value_round_trips_an_object_through_the_doc_trait() {
+        let v = user_value("alice");
+        let user: User = document_from_value(v).expect("decode");
+        assert_eq!(user.name, "alice");
+    }
+
+    #[test]
+    fn document_from_value_rejects_non_object_input() {
+        // A scalar payload can't convert into `ConvexObject`, so the
+        // helper must surface that as an error rather than silently
+        // producing a bogus document.
+        let scalar = ConvexValue::Int64(7);
+        let err = document_from_value::<User>(scalar).expect_err("non-object must fail");
+        // Error surface comes from `ConvexObject::try_from`; we just
+        // confirm the call errors rather than returning a blank doc.
+        let _ = err;
+    }
+
+    #[test]
+    fn document_from_value_forwards_domain_errors_from_from_convex_object() {
+        // A valid object that's missing a required field must surface
+        // the user's `from_convex_object` error message verbatim —
+        // the helper is a thin wrapper, not a re-error site.
+        let empty = ConvexValue::Object(ConvexObject::try_from(BTreeMap::new()).unwrap());
+        let err = document_from_value::<User>(empty).expect_err("missing name");
+        assert!(
+            format!("{err}").contains("missing or non-string `name`"),
+            "user error surfaces: {err}",
+        );
+    }
+
+    #[test]
+    fn document_with_meta_derefs_to_typed_body() {
+        let doc = User { name: "bob".into() };
+        let ct = CreationTime::try_from(1.0).unwrap();
+        let meta = DocumentWithMeta {
+            id: crate::id::Id::<User>::new(DeveloperDocumentId::MIN),
+            creation_time: ct,
+            doc: doc.clone(),
+        };
+        // Deref lets callers use `*meta` (or method calls) as if the
+        // metadata wrapper wasn't there.
+        let body: &User = &meta;
+        assert_eq!(body, &doc);
+        assert_eq!(meta.creation_time, ct);
+    }
+}
