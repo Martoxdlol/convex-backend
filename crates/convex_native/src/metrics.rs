@@ -114,4 +114,89 @@ mod tests {
             Duration::from_millis(16),
         );
     }
+
+    #[test]
+    fn counting_metrics_segregates_by_function_name() {
+        // Two calls with the same kind + outcome but different names
+        // must be tallied independently — otherwise a noisy function
+        // would corrupt another function's stats.
+        let m = CountingMetrics::new();
+        m.record("foo", UdfType::Query, Outcome::Ok, Duration::ZERO);
+        m.record("bar", UdfType::Query, Outcome::Ok, Duration::ZERO);
+        assert_eq!(m.count("foo", UdfType::Query, Outcome::Ok), 1);
+        assert_eq!(m.count("bar", UdfType::Query, Outcome::Ok), 1);
+        assert_eq!(m.count("missing", UdfType::Query, Outcome::Ok), 0);
+    }
+
+    #[test]
+    fn counting_metrics_segregates_latency_by_udf_type() {
+        // Same function name, different kinds. Latency buckets must
+        // stay separate so the "query vs mutation" distinction stays
+        // observable in dashboards.
+        let m = CountingMetrics::new();
+        m.record(
+            "foo",
+            UdfType::Query,
+            Outcome::Ok,
+            Duration::from_millis(10),
+        );
+        m.record(
+            "foo",
+            UdfType::Mutation,
+            Outcome::Ok,
+            Duration::from_millis(20),
+        );
+        assert_eq!(
+            m.total_latency("foo", UdfType::Query),
+            Duration::from_millis(10),
+        );
+        assert_eq!(
+            m.total_latency("foo", UdfType::Mutation),
+            Duration::from_millis(20),
+        );
+    }
+
+    #[test]
+    fn count_and_total_latency_return_zero_for_unseen_keys() {
+        // Readers rely on "never recorded → zero" rather than
+        // panicking or returning a sentinel. Pin that so a refactor
+        // toward `Option<u64>` return types can't land silently.
+        let m = CountingMetrics::new();
+        assert_eq!(m.count("never-called", UdfType::Action, Outcome::Ok), 0);
+        assert_eq!(
+            m.total_latency("never-called", UdfType::Action),
+            Duration::ZERO,
+        );
+    }
+
+    #[test]
+    fn noop_metrics_never_panics() {
+        // The default sink discards everything; exercising a few
+        // calls at least proves it doesn't panic under normal use.
+        let n = NoopMetrics;
+        n.record("a", UdfType::Query, Outcome::Ok, Duration::from_secs(1));
+        n.record("b", UdfType::Action, Outcome::Err, Duration::ZERO);
+    }
+
+    #[test]
+    fn metrics_sink_is_object_safe() {
+        // The trait is used as `Arc<dyn NativeMetricsSink>` by the
+        // runner. If someone accidentally adds a generic method (or
+        // `Self: Sized` bound) the trait stops being object-safe and
+        // the runner wiring fails to compile. Constructing a
+        // boxed-dyn here is the cheap compile-time guard for that.
+        let _sink: std::sync::Arc<dyn NativeMetricsSink> =
+            std::sync::Arc::new(CountingMetrics::new());
+        let _sink: std::sync::Arc<dyn NativeMetricsSink> = std::sync::Arc::new(NoopMetrics);
+    }
+
+    #[test]
+    fn outcome_ord_places_ok_before_err() {
+        // The derived `Ord` matters because `CountingMetrics` keys
+        // by `Outcome` in a `BTreeMap`. A reorder (e.g. putting Err
+        // before Ok in the enum) changes iteration order and would
+        // silently break consumers that rely on it for dashboard
+        // stability.
+        assert!(Outcome::Ok < Outcome::Err);
+    }
 }
