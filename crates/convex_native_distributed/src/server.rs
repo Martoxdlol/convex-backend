@@ -160,7 +160,8 @@ impl FunctionExecutionService for FunctionExecutionServer {
                     result.map_err(|e| e.to_string()),
                 )
                 .with_log_lines(log_lines);
-                let mut proto_resp = conversions::to_proto_response(&native_response);
+                let mut proto_resp = conversions::to_proto_response(&native_response)
+                    .map_err(|e| Status::internal(format!("encode ExecuteResponse: {e}")))?;
                 proto_resp.served_by_version = Some(self.registry_version.clone());
                 Ok(Response::new(proto_resp))
             },
@@ -202,7 +203,8 @@ impl FunctionExecutionService for FunctionExecutionServer {
                 if let Some(summary) = dispatch.final_tx {
                     native_response = native_response.with_final_tx(summary);
                 }
-                let mut proto_resp = conversions::to_proto_response(&native_response);
+                let mut proto_resp = conversions::to_proto_response(&native_response)
+                    .map_err(|e| Status::internal(format!("encode ExecuteResponse: {e}")))?;
                 proto_resp.served_by_version = Some(self.registry_version.clone());
                 Ok(Response::new(proto_resp))
             },
@@ -355,15 +357,20 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native::distributed::Fi
         .collect();
     let (reads, writes) = tx.into_reads_and_writes();
     let reads_count = reads.num_intervals() as u64;
-    let writes_count = writes
+    let writes_vec: Vec<common::document::DocumentUpdateWithPrevTs> = writes
         .into_flat()
-        .map(|flat| flat.into_coalesced_writes().count())
-        .unwrap_or(0) as u64;
+        .map(|flat| {
+            flat.into_coalesced_writes()
+                .map(std::sync::Arc::unwrap_or_clone)
+                .collect()
+        })
+        .unwrap_or_default();
     convex_native::distributed::FinalTxSummary {
         begin_timestamp,
-        writes_count,
+        writes_count: writes_vec.len() as u64,
         reads_count,
         rows_read_by_tablet,
+        writes: writes_vec,
     }
 }
 

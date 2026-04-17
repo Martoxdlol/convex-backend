@@ -133,7 +133,14 @@ pub fn from_proto_request(
 /// native side are stringified; the proto carries a
 /// `common.FunctionResult` which is richer, but `ExecuteResponse`
 /// itself already lossed the structure.
-pub fn to_proto_response(native: &ExecuteResponse) -> proto::ExecuteResponse {
+///
+/// Returns a `Result` because the `final_tx` path encodes
+/// `DocumentUpdateWithPrevTs` into its proto shape, which is
+/// fallible (inherited from `common::document`'s conversion); see
+/// substep 2.3. Well-formed worker transactions always round-trip
+/// cleanly, so encoder failures indicate a code bug rather than a
+/// user-level error — callers should propagate via `Status::internal`.
+pub fn to_proto_response(native: &ExecuteResponse) -> anyhow::Result<proto::ExecuteResponse> {
     use pb::common;
     let result = match &native.result {
         Ok(v) => {
@@ -152,13 +159,14 @@ pub fn to_proto_response(native: &ExecuteResponse) -> proto::ExecuteResponse {
             })),
         },
     };
-    proto::ExecuteResponse {
+    let final_tx = native.final_tx.clone().map(final_tx_to_proto).transpose()?;
+    Ok(proto::ExecuteResponse {
         result: Some(result),
         user_execution_time: None,
         served_by_version: None,
         log_lines: native.log_lines.clone(),
-        final_tx: native.final_tx.clone().map(final_tx_to_proto),
-    }
+        final_tx,
+    })
 }
 
 /// Decode a proto `ExecuteResponse` into the native shape. Missing
@@ -178,31 +186,46 @@ pub fn from_proto_response(p: &proto::ExecuteResponse) -> anyhow::Result<Execute
         },
         R::JsError(e) => Err(e.message.clone().unwrap_or_default()),
     };
+    let final_tx = p.final_tx.as_ref().map(final_tx_from_proto).transpose()?;
     Ok(ExecuteResponse {
         result,
         log_lines: p.log_lines.clone(),
-        final_tx: p.final_tx.as_ref().map(final_tx_from_proto),
+        final_tx,
     })
 }
 
 /// Encode a native `FinalTxSummary` as the wire message. Substep
-/// 2.1 of `convex-native/STATUS.md` grew the map side of this
-/// pair; substeps 2.2 / 2.3 grow the rest.
-pub fn final_tx_to_proto(summary: FinalTxSummary) -> proto::DistributedFinalTx {
-    proto::DistributedFinalTx {
+/// 2.1 added the rows_read_by_tablet map; substep 2.3 added the
+/// `writes` list (document updates) via the existing
+/// `common.DocumentUpdateWithPrevTs` proto. Substep 2.2 (full
+/// `FunctionReads` content) is still pending.
+pub fn final_tx_to_proto(summary: FinalTxSummary) -> anyhow::Result<proto::DistributedFinalTx> {
+    let writes: Vec<pb::common::DocumentUpdateWithPrevTs> = summary
+        .writes
+        .into_iter()
+        .map(pb::common::DocumentUpdateWithPrevTs::try_from)
+        .collect::<anyhow::Result<_>>()?;
+    Ok(proto::DistributedFinalTx {
         begin_timestamp: summary.begin_timestamp,
         writes_count: summary.writes_count,
         reads_count: summary.reads_count,
         rows_read_by_tablet: summary.rows_read_by_tablet.into_iter().collect(),
-    }
+        writes,
+    })
 }
 
 /// Inverse of `final_tx_to_proto`. Backend-side callers invoke this
 /// on the parsed `ExecuteResponse` so downstream code works off the
-/// tonic-free native shape. `HashMap` → `BTreeMap` so the native
+/// tonic-free native shape. Map lands in a `BTreeMap` so the native
 /// shape has deterministic ordering for tests and diffs.
-pub fn final_tx_from_proto(proto: &proto::DistributedFinalTx) -> FinalTxSummary {
-    FinalTxSummary {
+pub fn final_tx_from_proto(proto: &proto::DistributedFinalTx) -> anyhow::Result<FinalTxSummary> {
+    let writes: Vec<common::document::DocumentUpdateWithPrevTs> = proto
+        .writes
+        .iter()
+        .cloned()
+        .map(common::document::DocumentUpdateWithPrevTs::try_from)
+        .collect::<anyhow::Result<_>>()?;
+    Ok(FinalTxSummary {
         begin_timestamp: proto.begin_timestamp,
         writes_count: proto.writes_count,
         reads_count: proto.reads_count,
@@ -211,7 +234,8 @@ pub fn final_tx_from_proto(proto: &proto::DistributedFinalTx) -> FinalTxSummary 
             .iter()
             .map(|(k, v)| (k.clone(), *v))
             .collect(),
-    }
+        writes,
+    })
 }
 
 fn duration_to_proto(d: Duration) -> prost_types::Duration {
@@ -317,7 +341,7 @@ mod tests {
     #[test]
     fn response_ok_roundtrips() {
         let native = ExecuteResponse::new(Ok(ConvexValue::Int64(42)));
-        let p = to_proto_response(&native);
+        let p = to_proto_response(&native).unwrap();
         let decoded = from_proto_response(&p).unwrap();
         assert_eq!(decoded.result, Ok(ConvexValue::Int64(42)));
         assert!(decoded.log_lines.is_empty());
@@ -326,7 +350,7 @@ mod tests {
     #[test]
     fn response_err_roundtrips() {
         let native = ExecuteResponse::new(Err("boom".to_string()));
-        let p = to_proto_response(&native);
+        let p = to_proto_response(&native).unwrap();
         let decoded = from_proto_response(&p).unwrap();
         assert!(matches!(decoded.result, Err(ref m) if m.contains("boom")));
     }
@@ -367,7 +391,7 @@ mod tests {
         // would silently disappear at the wire.
         let native = ExecuteResponse::new(Ok(ConvexValue::Null))
             .with_log_lines(vec!["[INFO] one".to_string(), "[WARN] two".to_string()]);
-        let p = to_proto_response(&native);
+        let p = to_proto_response(&native).unwrap();
         let decoded = from_proto_response(&p).unwrap();
         assert_eq!(decoded.log_lines, vec!["[INFO] one", "[WARN] two"]);
     }
@@ -386,9 +410,12 @@ mod tests {
             writes_count: 3,
             reads_count: 7,
             rows_read_by_tablet: rows_read_by_tablet.clone(),
+            // Substep 2.3 `writes` content is exercised by
+            // `response_final_tx_writes_roundtrip` below.
+            writes: Vec::new(),
         };
         let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
-        let p = to_proto_response(&native);
+        let p = to_proto_response(&native).unwrap();
         let decoded_proto = p
             .final_tx
             .as_ref()
@@ -398,8 +425,44 @@ mod tests {
         assert_eq!(decoded_proto.reads_count, 7);
         assert_eq!(decoded_proto.rows_read_by_tablet.get("tab1"), Some(&11));
         assert_eq!(decoded_proto.rows_read_by_tablet.get("tab2"), Some(&22));
+        assert!(decoded_proto.writes.is_empty());
         let decoded_native = from_proto_response(&p).unwrap();
         assert_eq!(decoded_native.final_tx, Some(summary));
+    }
+
+    #[test]
+    fn response_final_tx_writes_roundtrip() {
+        // Substep 2.3: `FinalTxSummary.writes` carries the
+        // coalesced document updates the handler produced. Pin the
+        // round-trip with a minimal `DocumentUpdateWithPrevTs`
+        // whose `old_document` / `new_document` are both `None` —
+        // valid per the struct definition and exercises the proto
+        // encoding without needing real ResolvedDocument plumbing.
+        use common::document::DocumentUpdateWithPrevTs;
+        use value::ResolvedDocumentId;
+        let id = ResolvedDocumentId::MIN;
+        let update = DocumentUpdateWithPrevTs {
+            id,
+            old_document: None,
+            new_document: None,
+        };
+        let summary = FinalTxSummary {
+            begin_timestamp: 5,
+            writes_count: 1,
+            reads_count: 0,
+            rows_read_by_tablet: Default::default(),
+            writes: vec![update.clone()],
+        };
+        let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
+        let p = to_proto_response(&native).unwrap();
+        let dft = p.final_tx.as_ref().expect("final_tx populated");
+        assert_eq!(dft.writes.len(), 1);
+        let decoded = from_proto_response(&p).unwrap();
+        let dft_native = decoded.final_tx.expect("final_tx populated on decode");
+        assert_eq!(dft_native.writes.len(), 1);
+        assert_eq!(dft_native.writes[0].id, update.id);
+        assert!(dft_native.writes[0].old_document.is_none());
+        assert!(dft_native.writes[0].new_document.is_none());
     }
 
     #[test]
@@ -408,7 +471,7 @@ mod tests {
         // stays None. Tests downstream (Phase 2 dispatch) rely on this
         // to decide whether to OCC-validate or just forward the result.
         let native = ExecuteResponse::new(Err("boom".to_string()));
-        let p = to_proto_response(&native);
+        let p = to_proto_response(&native).unwrap();
         assert!(p.final_tx.is_none());
         let decoded = from_proto_response(&p).unwrap();
         assert_eq!(decoded.final_tx, None);

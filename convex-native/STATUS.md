@@ -184,12 +184,10 @@ the work is split here into numbered substeps. Each is meant to
 ship as its own commit; the overall phase is done when every
 substep is checked and the integration test is green.
 
-2.1. **Wire `DistributedFinalTx` to carry `rows_read_by_tablet`.**
-     Today the proto message is three scalars; the backend's
-     `Transaction::apply_function_runner_tx(...)` needs the
-     per-tablet row counts so its usage tracker stays consistent
-     with the in-process path. TabletId encodes as its
-     `Display` form (UUID-shaped string) to keep the wire shape
+2.1. ✓ **Wire `DistributedFinalTx` to carry `rows_read_by_tablet`.**
+     Landed. `map<string, uint64> rows_read_by_tablet` on
+     `DistributedFinalTx`; TabletId encodes as its `Display`
+     form (UUID-shaped string) to keep the wire shape
      JSON-readable for Phase 6 consumers.
 
 2.2. **Wire `FunctionReads` content.**
@@ -199,11 +197,19 @@ substep is checked and the integration test is green.
      proto encodings for `ReadSet` / `TransactionReadSize`.
      Round-trip tests prove the encoding is lossless.
 
-2.3. **Wire `FunctionWrites` content.**
-     Grow `DistributedFinalTx` with a `FunctionWrites`
-     sub-message carrying `Vec<DocumentUpdateWithPrevTs>`.
-     Uses the existing `pb::document` types where possible; adds
-     what's missing. Round-trip tests.
+2.3. ✓ **Wire `FunctionWrites` content.**
+     Landed. `repeated common.DocumentUpdateWithPrevTs writes`
+     on `DistributedFinalTx` reuses the existing
+     `pb::common::DocumentUpdateWithPrevTs` type + conversions
+     (`common::document::DocumentUpdateWithPrevTs ↔
+     pb::common::DocumentUpdateWithPrevTs`). `FinalTxSummary`
+     carries the native `Vec`. `server::summarise_tx` drains
+     the flat write-set coalesced updates into the vec.
+     `conversions::{to,from}_proto_response` round-trip it.
+     `to_proto_response` / `from_proto_response` are now
+     fallible (`anyhow::Result`) because the underlying
+     document conversion is; server callers map failures to
+     `Status::internal`.
 
 2.4. **Wire `ExistingWrites` content.**
      Grow the `ExistingWrites` message on `ExecuteRequest` from

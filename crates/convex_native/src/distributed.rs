@@ -161,16 +161,17 @@ impl ExecuteResponse {
 /// 1:1 so the conversions layer can move between them without
 /// losing fields.
 ///
-/// Substeps 2.2 / 2.3 of `convex-native/STATUS.md` grow this
-/// struct — and the matching proto message — with the full
-/// `FunctionReads` / `FunctionWrites` content the backend's
-/// Committer needs to validate OCC and stage writes.
+/// Substep 2.2 of `convex-native/STATUS.md` still needs to land
+/// (full `FunctionReads` content); substep 2.3 landed
+/// `writes: Vec<DocumentUpdateWithPrevTs>`.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct FinalTxSummary {
     /// Raw u64 representation of the `Timestamp` the worker opened
     /// its transaction at.
     pub begin_timestamp: u64,
     /// Number of coalesced document updates the handler produced.
+    /// After substep 2.3 this is redundant with `writes.len()`,
+    /// kept for back-compat with the Phase-1 wire message.
     pub writes_count: u64,
     /// Number of read intervals the handler accumulated. Not
     /// "rows read" exactly — it's the count of `ReadSet` intervals,
@@ -185,6 +186,14 @@ pub struct FinalTxSummary {
     /// in-process dispatch produce identical usage numbers.
     /// Empty on the error / action paths.
     pub rows_read_by_tablet: std::collections::BTreeMap<String, u64>,
+    /// Document updates (insert / replace / delete) the handler
+    /// produced, coalesced so each touched document appears at
+    /// most once. Matches the `FunctionWrites::updates` shape the
+    /// in-process path feeds
+    /// `Transaction::apply_function_runner_tx`. Empty on the
+    /// error / action paths and when the handler committed no
+    /// writes.
+    pub writes: Vec<common::document::DocumentUpdateWithPrevTs>,
 }
 
 /// Trait a worker implements to accept remote calls. The

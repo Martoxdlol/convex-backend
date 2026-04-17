@@ -194,6 +194,21 @@ message DistributedFinalTx {
   // `rows_read_by_tablet` argument so distributed and in-process
   // dispatch produce identical usage-tracking numbers.
   map<string, uint64> rows_read_by_tablet = 4;
+
+  // Substep 2.3: `FunctionWrites` content the backend's Committer
+  // stages against its own transaction. One entry per coalesced
+  // document update the handler produced (insert / replace /
+  // delete). Uses `common.DocumentUpdateWithPrevTs` — the exact
+  // shape the in-process runner already hands the Committer via
+  // `Transaction::apply_function_runner_tx` — so both dispatch
+  // paths feed the commit pipeline identical data.
+  //
+  // Empty for actions (no tx) and for handler errors where the
+  // transaction was dropped before summarisation. Substep 2.5
+  // will also trigger summarisation when a handler succeeds but
+  // produces no writes; a zero-length list of updates is a valid
+  // state distinct from "no final_tx".
+  repeated common.DocumentUpdateWithPrevTs writes = 5;
 }
 
 message HealthRequest {
