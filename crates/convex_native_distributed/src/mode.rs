@@ -270,4 +270,44 @@ mod tests {
         let endpoints = vec!["http://127.0.0.1:1".to_string()];
         assert!(build_conductor_runner(&endpoints).await.is_err());
     }
+
+    #[tokio::test]
+    async fn build_worker_server_drains_on_shutdown_future() {
+        // Exercise the same `serve_with_shutdown` path
+        // `serve_worker_with_shutdown` drives, but without a
+        // Database<Rt> so the test stays self-contained. The only
+        // thing we care about is that firing the shutdown future
+        // causes tonic to return `Ok(())` rather than hanging.
+        //
+        // Bind on an ephemeral port and fire the signal immediately;
+        // `serve_with_shutdown` must complete within the tokio timeout.
+        use std::time::Duration;
+        let native = Arc::new(NativeFunctionRunner::from_inventory().unwrap());
+        let (mut builder, service) = build_worker_server(native);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // release the port so tonic can rebind.
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let serve = tokio::spawn(async move {
+            builder
+                .add_service(service)
+                .serve_with_shutdown(addr, async move {
+                    let _ = rx.await;
+                })
+                .await
+        });
+        // Give tonic a moment to actually start listening before we
+        // signal shutdown — otherwise the serve future can race and
+        // return before binding.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = tx.send(());
+        let result = tokio::time::timeout(Duration::from_secs(2), serve)
+            .await
+            .expect("serve must exit within timeout")
+            .expect("task must not panic");
+        assert!(
+            result.is_ok(),
+            "serve_with_shutdown should return Ok after drain: {result:?}",
+        );
+    }
 }

@@ -47,15 +47,15 @@ Proto contract: `../pb/protos/function_execution.proto` (two RPCs,
   `TonicWorkerClient` in new client-side logic —
   `DistributedFunctionRunner` takes `Vec<Arc<dyn WorkerClient>>`,
   so mock clients can exercise everything except the transport.
-- **Every new feature gets a test.** The crate has 41 tests today
-  (33 unit + 7 multi-worker integration + 1 subprocess smoke);
+- **Every new feature gets a test.** The crate has 42 tests today
+  (34 unit + 7 multi-worker integration + 1 subprocess smoke);
   new work should keep that ratio.
 
 ## Dev workflow
 
 ```sh
 cargo check -p convex_native_distributed
-cargo test -p convex_native_distributed           # 41 tests last known
+cargo test -p convex_native_distributed           # 42 tests last known
 cargo build --examples -p convex_native_distributed
 cargo +nightly fmt -p convex_native_distributed
 
