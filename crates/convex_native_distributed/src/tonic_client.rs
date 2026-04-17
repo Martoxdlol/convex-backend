@@ -184,6 +184,8 @@ mod tests {
             timeout: None,
             min_registry_version: None,
             execution_context: None,
+            begin_timestamp: None,
+            existing_writes: Vec::new(),
         }
     }
 

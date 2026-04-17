@@ -87,33 +87,30 @@ message ExecuteRequest {
   // worker falls back to `database.now_ts_for_reads()` in that case.
   optional uint64 begin_timestamp = 9;
 
-  // Phase 1: writes from earlier UDFs in the same backend request
-  // that haven't been committed yet. When the backend batches
-  // multiple UDFs into one ApplicationFunctionRunner invocation,
-  // each UDF after the first needs to see earlier UDFs' writes as
-  // part of its transaction. The backend populates this with the
-  // metadata required to replay `Transaction::merge_writes` on
-  // the worker side.
+  // Substep 2.4: writes from earlier UDFs in the same backend
+  // request that haven't been committed yet. When the backend
+  // batches multiple UDFs into one ApplicationFunctionRunner
+  // invocation, each UDF after the first needs to see earlier
+  // UDFs' writes as part of its transaction. The backend
+  // populates `ExistingWrites.updates` with the document updates
+  // it staged so far; the worker applies them via
+  // `Transaction::merge_writes` before dispatching the handler.
   //
-  // Today a Phase-1 placeholder: carries a counter so round-trip
-  // tests can assert the field propagates. Phase 2 extends the
-  // message to carry the full `FunctionWrites` content (either by
-  // adding `serde` derives to `FunctionWrites` / `DocumentUpdateWithPrevTs`
-  // and serializing through a `bytes` field, or by growing this
-  // message with nested sub-messages for every write — the
-  // decision is tracked in convex-native/STATUS.md §"Phase 1
-  // blob-encoding decision").
+  // Absent when the backend isn't batching (the common case —
+  // single-UDF requests). Present with an empty `updates` list
+  // is also valid and equivalent to absent; tests pin both shapes.
   optional ExistingWrites existing_writes = 10;
 }
 
-// Phase 1 placeholder for the writes the backend has staged but not
-// yet committed. The worker merges these into its transaction
-// before dispatching the handler so the handler sees them. Today
-// only `count` is populated — the full wire shape lands in Phase 2.
+// Writes the backend has staged but not yet committed, for
+// multi-UDF batched requests. Uses the same
+// `common.DocumentUpdateWithPrevTs` type as
+// `DistributedFinalTx.writes` (see substep 2.3) so both
+// directions of the wire share one document-update encoding and
+// the backend / worker can ship them through the same
+// `FunctionWrites { updates }` shape on both ends.
 message ExistingWrites {
-  // Number of document updates pending. Round-trip tests use this
-  // to assert the field propagates; real semantics land in Phase 2.
-  uint64 count = 1;
+  repeated common.DocumentUpdateWithPrevTs updates = 1;
 }
 
 message ExecuteResponse {

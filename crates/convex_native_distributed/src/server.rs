@@ -265,6 +265,12 @@ async fn run_query_inline(
         let mut tx = database
             .begin_with_ts(Identity::system(), *ts, usage)
             .await?;
+        // Substep 2.4: replay writes the backend staged from
+        // earlier UDFs in the same batched request so the handler
+        // sees them. Empty on single-UDF calls (the common case).
+        if !req.existing_writes.is_empty() {
+            tx.merge_writes(req.existing_writes.clone())?;
+        }
         let value = native
             .run_query_with_log_buffer(
                 &req.name,
@@ -312,6 +318,9 @@ async fn run_mutation_inline(
         let mut tx = database
             .begin_with_ts(Identity::system(), *ts, usage)
             .await?;
+        if !req.existing_writes.is_empty() {
+            tx.merge_writes(req.existing_writes.clone())?;
+        }
         let value = native
             .run_mutation_with_log_buffer(
                 &req.name,
@@ -457,6 +466,8 @@ mod tests {
             timeout: None,
             min_registry_version: None,
             execution_context: None,
+            begin_timestamp: None,
+            existing_writes: Vec::new(),
         };
         let proto_req = conversions::to_proto_request(&native, UdfType::Action).unwrap();
         let resp = server
@@ -480,6 +491,8 @@ mod tests {
             timeout: Some(Duration::from_millis(100)),
             min_registry_version: None,
             execution_context: None,
+            begin_timestamp: None,
+            existing_writes: Vec::new(),
         };
         let proto_req = conversions::to_proto_request(&native, UdfType::Query).unwrap();
         let status = server.execute(Request::new(proto_req)).await.unwrap_err();
@@ -496,6 +509,8 @@ mod tests {
             timeout: None,
             min_registry_version: None,
             execution_context: None,
+            begin_timestamp: None,
+            existing_writes: Vec::new(),
         };
         let mut proto_req = conversions::to_proto_request(&native, UdfType::Action).unwrap();
         proto_req.min_registry_version = Some("9.9.9".to_string());
@@ -577,6 +592,8 @@ mod tests {
             timeout: None,
             min_registry_version: None,
             execution_context: None,
+            begin_timestamp: None,
+            existing_writes: Vec::new(),
         };
         let proto_req = conversions::to_proto_request(&native, UdfType::HttpAction).unwrap();
         let status = server.execute(Request::new(proto_req)).await.unwrap_err();

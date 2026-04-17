@@ -78,13 +78,27 @@ pub fn decode_args(bytes: &[u8]) -> anyhow::Result<ConvexObject> {
 }
 
 /// Build a proto `ExecuteRequest` from the native shape plus the
-/// per-call fields not carried on the native struct (udf_type +
-/// identity). The native `ExecuteRequest` deliberately omits those
-/// because they're context the composite runner supplies.
+/// `udf_type` (which is not carried on the native struct — it's
+/// context the composite runner supplies).
 pub fn to_proto_request(
     native: &ExecuteRequest,
     udf_type: common::types::UdfType,
 ) -> anyhow::Result<proto::ExecuteRequest> {
+    // Substep 2.4: carry staged writes over the wire when the
+    // backend has them. Empty vec → `existing_writes = None` so
+    // the worker's "has the backend batched writes?" check is
+    // cheap on the request-parse path.
+    let existing_writes = if native.existing_writes.is_empty() {
+        None
+    } else {
+        let updates: Vec<pb::common::DocumentUpdateWithPrevTs> = native
+            .existing_writes
+            .iter()
+            .cloned()
+            .map(pb::common::DocumentUpdateWithPrevTs::try_from)
+            .collect::<anyhow::Result<_>>()?;
+        Some(proto::ExistingWrites { updates })
+    };
     Ok(proto::ExecuteRequest {
         name: native.name.clone(),
         udf_type: udf_type_to_i32(udf_type),
@@ -94,12 +108,8 @@ pub fn to_proto_request(
         timeout: native.timeout.map(duration_to_proto),
         execution_context: native.execution_context.clone().map(Into::into),
         min_registry_version: native.min_registry_version.clone(),
-        // Phase 1: backend will populate these when it dispatches
-        // through `impl FunctionRunner` (Phase 2). Today the
-        // composite/in-process path still routes natively so
-        // `to_proto_request` just propagates None.
-        begin_timestamp: None,
-        existing_writes: None,
+        begin_timestamp: native.begin_timestamp,
+        existing_writes,
     })
 }
 
@@ -118,6 +128,16 @@ pub fn from_proto_request(
         .clone()
         .map(common::execution_context::ExecutionContext::try_from)
         .transpose()?;
+    let existing_writes: Vec<common::document::DocumentUpdateWithPrevTs> = match &p.existing_writes
+    {
+        None => Vec::new(),
+        Some(ew) => ew
+            .updates
+            .iter()
+            .cloned()
+            .map(common::document::DocumentUpdateWithPrevTs::try_from)
+            .collect::<anyhow::Result<_>>()?,
+    };
     let native = ExecuteRequest {
         name: p.name.clone(),
         namespace: decode_namespace(&p.namespace)?,
@@ -125,6 +145,8 @@ pub fn from_proto_request(
         timeout: p.timeout.as_ref().map(duration_from_proto),
         min_registry_version: p.min_registry_version.clone(),
         execution_context,
+        begin_timestamp: p.begin_timestamp,
+        existing_writes,
     };
     Ok((native, udf_type))
 }
@@ -328,6 +350,8 @@ mod tests {
             timeout: Some(Duration::from_millis(1500)),
             min_registry_version: None,
             execution_context: None,
+            begin_timestamp: None,
+            existing_writes: Vec::new(),
         };
         let proto_req = to_proto_request(&native, common::types::UdfType::Query).unwrap();
         let (decoded, udf_type) = from_proto_request(&proto_req).unwrap();
@@ -374,6 +398,8 @@ mod tests {
             timeout: None,
             min_registry_version: None,
             execution_context: Some(ctx),
+            begin_timestamp: None,
+            existing_writes: Vec::new(),
         };
         let proto_req = to_proto_request(&native, common::types::UdfType::Query).unwrap();
         let (decoded, _) = from_proto_request(&proto_req).unwrap();
@@ -428,6 +454,65 @@ mod tests {
         assert!(decoded_proto.writes.is_empty());
         let decoded_native = from_proto_response(&p).unwrap();
         assert_eq!(decoded_native.final_tx, Some(summary));
+    }
+
+    #[test]
+    fn request_existing_writes_roundtrip() {
+        // Substep 2.4: the backend stages pending writes on the
+        // `ExistingWrites` field so batched UDFs see earlier UDFs'
+        // writes. Pin a one-entry round-trip here; server-side
+        // merging into `tx.merge_writes(...)` is tested separately
+        // once the handler-dispatch path lands.
+        use common::document::DocumentUpdateWithPrevTs;
+        use value::ResolvedDocumentId;
+        let update = DocumentUpdateWithPrevTs {
+            id: ResolvedDocumentId::MIN,
+            old_document: None,
+            new_document: None,
+        };
+        let native = ExecuteRequest {
+            name: "whatever".into(),
+            namespace: TableNamespace::Global,
+            args: sample_args(),
+            timeout: None,
+            min_registry_version: None,
+            execution_context: None,
+            begin_timestamp: Some(12345),
+            existing_writes: vec![update.clone()],
+        };
+        let p = to_proto_request(&native, common::types::UdfType::Mutation).unwrap();
+        assert_eq!(p.begin_timestamp, Some(12345));
+        assert_eq!(
+            p.existing_writes.as_ref().unwrap().updates.len(),
+            1,
+            "ExistingWrites carries the single staged update",
+        );
+        let (decoded, _) = from_proto_request(&p).unwrap();
+        assert_eq!(decoded.begin_timestamp, Some(12345));
+        assert_eq!(decoded.existing_writes.len(), 1);
+        assert_eq!(decoded.existing_writes[0].id, update.id);
+    }
+
+    #[test]
+    fn request_empty_existing_writes_encodes_as_none() {
+        // Empty `existing_writes` must encode as `None` — otherwise
+        // the worker's fast-path "is this a batched request?"
+        // check would false-positive on every single-UDF call.
+        let native = ExecuteRequest {
+            name: "whatever".into(),
+            namespace: TableNamespace::Global,
+            args: sample_args(),
+            timeout: None,
+            min_registry_version: None,
+            execution_context: None,
+            begin_timestamp: None,
+            existing_writes: Vec::new(),
+        };
+        let p = to_proto_request(&native, common::types::UdfType::Query).unwrap();
+        assert!(
+            p.existing_writes.is_none(),
+            "empty vec must not produce a present proto ExistingWrites",
+        );
     }
 
     #[test]

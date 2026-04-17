@@ -211,18 +211,25 @@ substep is checked and the integration test is green.
      document conversion is; server callers map failures to
      `Status::internal`.
 
-2.4. **Wire `ExistingWrites` content.**
-     Grow the `ExistingWrites` message on `ExecuteRequest` from
-     a counter to the full `FunctionWrites` content the backend
-     stages in batched UDFs. The worker calls
-     `tx.merge_writes(...)` at the begin of each handler.
+2.4. ✓ **Wire `ExistingWrites` content.**
+     Landed. `ExistingWrites` proto message replaced its Phase-1
+     `count` placeholder with
+     `repeated common.DocumentUpdateWithPrevTs updates` — same
+     encoding as `DistributedFinalTx.writes` so both sides share
+     one document-update wire shape.
+     `convex_native::distributed::ExecuteRequest` grew
+     `begin_timestamp: Option<u64>` and
+     `existing_writes: Vec<DocumentUpdateWithPrevTs>`.
+     `run_{query,mutation}_inline` call `tx.merge_writes(...)`
+     on the staged updates before dispatching the handler.
 
-2.5. **Worker applies `existing_writes` + returns full
-     `FunctionFinalTransaction`.**
-     Update `run_query_inline` / `run_mutation_inline` to
-     (a) merge in the staged writes from the request and
-     (b) drain the closed transaction into the full proto
-     `FunctionFinalTransaction` shape.
+2.5. **Drain the transaction into the full
+     `FunctionFinalTransaction` shape.**
+     `tx.merge_writes` on the request side landed with substep
+     2.4; the rest of this substep — making `summarise_tx` fire
+     for successful-with-zero-writes runs and carrying the full
+     `FunctionReads` content (substep 2.2) — lands alongside
+     substep 2.6's backend-side dispatch glue.
 
 2.6. **`impl FunctionRunner<ProdRuntime> for DistributedFunctionRunner`.**
      The trait has eight methods; only `run_function` is

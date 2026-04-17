@@ -105,6 +105,20 @@ pub struct ExecuteRequest {
     /// synthesizes a fresh context (appropriate for internal or
     /// test dispatches).
     pub execution_context: Option<ExecutionContext>,
+    /// Backend-assigned read-snapshot timestamp (substep 2.1 /
+    /// Phase 1 proto field `begin_timestamp`). Raw u64 of
+    /// `common::types::Timestamp`. Populated by the Phase-2
+    /// dispatcher when entering `run_function`; `None` means the
+    /// worker should fall back to its own `now_ts_for_reads()`.
+    /// Absent for actions (no enclosing tx).
+    pub begin_timestamp: Option<u64>,
+    /// Substep 2.4 — document updates the backend has staged but
+    /// not yet committed. Multi-UDF batched requests use this to
+    /// replay earlier UDFs' writes on the worker before running
+    /// the handler. Empty on single-UDF requests (the common
+    /// case). The worker applies them via
+    /// `Transaction::merge_writes`.
+    pub existing_writes: Vec<common::document::DocumentUpdateWithPrevTs>,
 }
 
 /// Response a worker sends back.
