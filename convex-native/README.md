@@ -54,26 +54,20 @@ crate uses.
 ## Status snapshot
 
 Phases 1–5 of `IMPLEMENTATION_PLAN.md` are shipped. `STATUS.md`
-is authoritative and carries effort estimates for what remains.
-Test counts at HEAD:
+is authoritative. Test counts at HEAD:
 
 ```
-cargo test -p convex_native              # 211 tests
+cargo test -p convex_native              # 242 tests
 cargo test -p convex_native_backend      # 10 tests
-cargo test -p convex_native_distributed  # 46 tests
+cargo test -p convex_native_distributed  # 57 tests
 ```
 
-All green.
-
-Outstanding, from `STATUS.md`:
-
-1. End-to-end client smoke test against a live backend.
-2. Document-shape validation in `#[derive(ConvexDocument)]` (today
-   every derived type gets an "any" schema shape).
-3. Native `ActionCtx` snapshot transaction (query sub-calls already
-   share a snapshot ts; direct `ctx.db().get(..)` still unavailable).
-4. Mutation-scoped scheduling (today a no-op bound to
-   `NoopCallbacks`).
+All green (309 total). Every item previously under "outstanding"
+in `STATUS.md` has been closed — mutation-scoped scheduling,
+document-shape validation, snapshot-pinned `ctx.db()` on
+`ActionCtx`, and an end-to-end gRPC client smoke test all ship.
+The residual gaps are external-toolchain or design-decision
+items documented in `STATUS.md`'s "Non-obvious caveats" section.
 
 ## Architecture
 
@@ -100,9 +94,10 @@ crates/convex_native/              -- framework crate, no isolate dep
 │   ├── runner.rs                  -- NativeFunctionRunner (dispatch, timeout, drain)
 │   ├── schema.rs                  -- TableRegistration + NativeSchema::collect()
 │   ├── schema_diff.rs             -- diff(old, new) -> Vec<SchemaChange>
+│   ├── schema_type.rs             -- ConvexSchema trait — primitives / containers / Id<T>
 │   ├── testing.rs                 -- TestCallbacks + args! macro
 │   └── warmup.rs                  -- plan_warmup(schema)
-└── tests/                         -- 17 integration tests; see CLAUDE.md for the per-file map
+└── tests/                         -- integration tests; see CLAUDE.md for the per-file map
 
 crates/convex_native_backend/      -- backend adapter, pulls in isolate
 ├── composite_runner.rs            -- CompositeFunctionRunner<RT>: FunctionRunner impl
@@ -110,8 +105,10 @@ crates/convex_native_backend/      -- backend adapter, pulls in isolate
 
 crates/convex_native_distributed/  -- split-topology gRPC (worker + conductor)
 ├── server.rs                      -- FunctionExecutionServer (worker-side tonic impl)
-├── client.rs                      -- DistributedFunctionRunner (conductor P2C) + WorkerClient
+├── client.rs                      -- DistributedFunctionRunner + ConductorMetricsSink + ConductorLogSink
 ├── tonic_client.rs                -- TonicWorkerClient (real gRPC transport)
+├── worker_callbacks.rs            -- WorkerActionCallbacks: native-only sub-call/schedule adapter
+├── conversions.rs                 -- proto <-> native shape (carries ExecutionContext + log_lines)
 ├── mode.rs                        -- CONVEX_MODE env parsers
 └── examples/                      -- runnable worker + conductor binaries
 

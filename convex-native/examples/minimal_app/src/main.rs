@@ -164,8 +164,8 @@ async fn main() -> anyhow::Result<()> {
     // a deployer something to look at.
     eprintln!(
         "minimal_app: mode={mode:?}, {} native function(s), {} HTTP route(s)",
-        built.functions().map(|r| r.len()).unwrap_or(0),
-        built.router().map(|r| r.len()).unwrap_or(0),
+        built.function_count(),
+        built.route_count(),
     );
 
     use convex_native::distributed::ConvexMode;
