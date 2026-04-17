@@ -86,6 +86,12 @@ pub struct DistributedFunctionRunner {
     workers: Vec<Arc<dyn WorkerClient>>,
     chooser: Arc<dyn Chooser>,
     retries: u32,
+    /// Applied to every `ExecuteRequest` that doesn't already set
+    /// one. Phase 4.7 rolling-update floor: during a deploy the
+    /// operator pins a minimum `registry_version` here so the
+    /// conductor routes around older workers. Workers that don't
+    /// meet the floor reject with `tonic::Code::FailedPrecondition`.
+    min_registry_version: Option<String>,
 }
 
 impl DistributedFunctionRunner {
@@ -99,6 +105,7 @@ impl DistributedFunctionRunner {
             workers,
             chooser: Arc::new(RandomChooser),
             retries: 1,
+            min_registry_version: None,
         })
     }
 
@@ -115,6 +122,17 @@ impl DistributedFunctionRunner {
         self
     }
 
+    /// Pin a minimum `registry_version` every dispatch must meet
+    /// (Phase 4.7 rolling-update routing). Workers that don't meet
+    /// the floor reject with `Code::FailedPrecondition`, which
+    /// propagates here so the operator can catch a half-deployed
+    /// cluster. Per-call `ExecuteRequest::min_registry_version`
+    /// still overrides this floor when set.
+    pub fn with_min_registry_version(mut self, v: impl Into<String>) -> Self {
+        self.min_registry_version = Some(v.into());
+        self
+    }
+
     pub fn worker_count(&self) -> usize {
         self.workers.len()
     }
@@ -124,9 +142,17 @@ impl DistributedFunctionRunner {
     /// the other, then bail.
     pub async fn execute(
         &self,
-        req: ExecuteRequest,
+        mut req: ExecuteRequest,
         udf_type: UdfType,
     ) -> Result<ExecuteResponse, Status> {
+        // Apply the conductor-level rolling-update floor when the
+        // request doesn't already pin a minimum.
+        if req.min_registry_version.is_none()
+            && let Some(floor) = &self.min_registry_version
+        {
+            req.min_registry_version = Some(floor.clone());
+        }
+
         let n = self.workers.len();
         let (i, j) = self.chooser.pick_two(n);
         let (primary, backup) = self.rank(i, j);
@@ -269,6 +295,7 @@ mod tests {
             namespace: TableNamespace::Global,
             args: ConvexObject::try_from(obj).unwrap(),
             timeout: None,
+            min_registry_version: None,
         }
     }
 

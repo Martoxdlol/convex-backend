@@ -22,7 +22,8 @@ full + 3.4 conductor client + P2C + real transport + 3.5 mode
 switching helpers + 3.6 multi-worker integration tests + executor
 trait stub), **Phase 4
 partial** (4.1 fastrace spans + 4.2 metrics sink + 4.3 graceful drain
-+ 4.4 timeouts + 4.5 circuit breaker + 4.6 index-cache warmup plan),
++ 4.4 timeouts + 4.5 circuit breaker + 4.6 index-cache warmup plan
++ 4.7 rolling update routing),
 **Phase 5 partial** (5.1 schema diff + 5.2 compile-time index
 validation + 5.3 text/vector search + 5.4 bulk `get_many`).
 
@@ -440,6 +441,19 @@ shuts down every clone.
   gRPC server on an ephemeral port, bring up a client, exercise
   health + action execute + unimplemented query path, and verify
   `in_flight_estimate` returns to zero after the call drains.
+- **Phase 4.7 — rolling updates with version-aware routing
+  (shipped):** the worker's version gate lands upstream via
+  `ExecuteRequest::min_registry_version` (added to both
+  `convex_native::distributed::ExecuteRequest` and the proto).
+  `DistributedFunctionRunner::with_min_registry_version(v)` sets a
+  cluster-wide floor every dispatch inherits; per-call
+  `ExecuteRequest::min_registry_version` overrides it. Workers
+  that don't meet the floor reject with
+  `tonic::Code::FailedPrecondition` at the top of `execute`, which
+  the conductor surfaces to the caller so half-deployed clusters
+  fail loud. Two integration tests cover the common case (floor
+  rejects older workers; floor accepts compliant workers); a
+  third verifies per-call override. Task 53 closed.
 - **Phase 3.6 — multi-worker integration tests (shipped):** a
   dedicated integration-test binary at
   `crates/convex_native_distributed/tests/multi_worker.rs` spins

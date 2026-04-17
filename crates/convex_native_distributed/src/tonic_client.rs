@@ -178,6 +178,7 @@ mod tests {
             namespace: TableNamespace::Global,
             args: ConvexObject::try_from(obj).unwrap(),
             timeout: None,
+            min_registry_version: None,
         }
     }
 

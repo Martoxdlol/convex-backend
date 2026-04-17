@@ -73,6 +73,12 @@ pub struct ExecuteRequest {
     /// Soft timeout the worker should honor; the conductor enforces a
     /// hard timeout on its side.
     pub timeout: Option<Duration>,
+    /// Minimum `registry_version` the worker must be running (Phase
+    /// 4.7). The worker rejects older versions with
+    /// `tonic::Code::FailedPrecondition`, so during a rolling deploy
+    /// the conductor can pin a floor to steer traffic away from
+    /// stragglers. `None` means any worker is acceptable.
+    pub min_registry_version: Option<String>,
 }
 
 /// Response a worker sends back. In the proto version this becomes

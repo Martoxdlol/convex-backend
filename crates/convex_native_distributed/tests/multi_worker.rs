@@ -72,6 +72,7 @@ fn empty_request() -> ExecuteRequest {
         namespace: TableNamespace::Global,
         args: ConvexObject::try_from(obj).unwrap(),
         timeout: None,
+        min_registry_version: None,
     }
 }
 
@@ -113,26 +114,62 @@ async fn unreachable_worker_rejects_build() {
 }
 
 #[tokio::test]
-async fn version_gate_rejects_request_when_worker_is_older() {
-    // Worker tagged 0.1.0; ask for min 9.9.9 — both workers should
-    // reject at the version gate.
+async fn rolling_update_floor_rejects_older_workers() {
+    // Both workers tagged 0.1.0; conductor pins floor to 9.9.9.
+    // Every dispatch should reject with FailedPrecondition at the
+    // per-worker version gate, even after the built-in retry.
     let a = spawn_worker("0.1.0").await;
     let b = spawn_worker("0.1.0").await;
     let runner = build_conductor_runner(&[format!("http://{a}"), format!("http://{b}")])
         .await
-        .expect("build");
+        .expect("build")
+        .with_min_registry_version("9.9.9");
 
-    // The conductor-side ExecuteRequest has no min_registry_version
-    // field — that's set on the proto. Since our DistributedFunctionRunner
-    // takes the native ExecuteRequest we can't easily set it from this
-    // test without going through the raw proto. Assert instead that
-    // dispatch against 0.1.0 workers succeeds (negative control for
-    // the older-worker rejection in the per-server unit tests).
+    let status = runner
+        .execute(empty_request(), UdfType::Action)
+        .await
+        .expect_err("floor should reject older workers");
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+}
+
+#[tokio::test]
+async fn rolling_update_floor_accepts_compliant_workers() {
+    // Workers tagged 2.0.0 meet the 2.0.0 floor.
+    let a = spawn_worker("2.0.0").await;
+    let b = spawn_worker("2.0.0").await;
+    let runner = build_conductor_runner(&[format!("http://{a}"), format!("http://{b}")])
+        .await
+        .expect("build")
+        .with_min_registry_version("2.0.0");
+
     let resp = runner
         .execute(empty_request(), UdfType::Action)
         .await
         .expect("dispatch");
+    // The handler is missing (expected), but the wire path + floor
+    // check both passed.
     assert!(matches!(resp.result, Err(ref m) if m.contains("absent")));
+}
+
+#[tokio::test]
+async fn per_call_floor_overrides_runner_floor() {
+    // Runner floor is 2.0.0 (workers are 2.0.0, so they'd pass).
+    // Per-call floor is 9.9.9 — that should apply instead and reject.
+    let a = spawn_worker("2.0.0").await;
+    let b = spawn_worker("2.0.0").await;
+    let runner = build_conductor_runner(&[format!("http://{a}"), format!("http://{b}")])
+        .await
+        .expect("build")
+        .with_min_registry_version("2.0.0");
+
+    let mut req = empty_request();
+    req.min_registry_version = Some("9.9.9".to_string());
+
+    let status = runner
+        .execute(req, UdfType::Action)
+        .await
+        .expect_err("per-call floor should override runner floor");
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
 }
 
 /// Regression: the conductor fails over from a worker that

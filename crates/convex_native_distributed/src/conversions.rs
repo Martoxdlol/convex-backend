@@ -92,7 +92,7 @@ pub fn to_proto_request(
         identity: None,
         timeout: native.timeout.map(duration_to_proto),
         execution_context: None,
-        min_registry_version: None,
+        min_registry_version: native.min_registry_version.clone(),
     })
 }
 
@@ -109,6 +109,7 @@ pub fn from_proto_request(
         namespace: decode_namespace(&p.namespace)?,
         args: decode_args(&p.args_json)?,
         timeout: p.timeout.as_ref().map(duration_from_proto),
+        min_registry_version: p.min_registry_version.clone(),
     };
     Ok((native, udf_type))
 }
@@ -252,6 +253,7 @@ mod tests {
             namespace: TableNamespace::Global,
             args: sample_args(),
             timeout: Some(Duration::from_millis(1500)),
+            min_registry_version: None,
         };
         let proto_req = to_proto_request(&native, common::types::UdfType::Query).unwrap();
         let (decoded, udf_type) = from_proto_request(&proto_req).unwrap();
