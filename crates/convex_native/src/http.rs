@@ -100,6 +100,19 @@ impl HttpResponse {
         resp
     }
 
+    /// Build a plain-text response. Sets
+    /// `Content-Type: text/plain; charset=utf-8` and copies `body`
+    /// into the response bytes. Accepts anything that converts to a
+    /// `String` (both `&str` and `String`).
+    pub fn text(status: u16, body: impl Into<String>) -> Self {
+        let s = body.into();
+        let mut resp = Self::new(status);
+        resp.headers
+            .insert("Content-Type", "text/plain; charset=utf-8".parse().unwrap());
+        resp.body = Bytes::from(s);
+        resp
+    }
+
     /// Build a 30x redirect response.
     pub fn redirect(status: u16, location: &str) -> Self {
         let mut resp = Self::new(status);

@@ -648,8 +648,9 @@ sub-queries, sub-mutations, scheduler, and storage through one
 
 - `HttpRequest` / `HttpResponse` types with helpers: `req.header(name)`,
   `req.body_bytes()`, `req.body_text()`, `req.body_json::<T>()`,
-  `HttpResponse::json(status, value)`, `HttpResponse::redirect(status,
-  location)`, `.with_header` / `.with_body`.
+  `HttpResponse::json(status, value)`, `HttpResponse::text(status, body)`,
+  `HttpResponse::redirect(status, location)`, `.with_header` /
+  `.with_body`.
 - `HttpActionCtx` wraps `ActionCtx` and delegates `run_query`,
   `run_mutation`, `run_action`, `scheduler`, `storage`.
 - `HttpRouter::collect()` — runtime enumeration of registered routes

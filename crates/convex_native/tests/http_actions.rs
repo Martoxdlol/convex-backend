@@ -84,4 +84,18 @@ fn http_response_builders() {
         redirect.headers.get("Location").unwrap().to_str().unwrap(),
         "/login"
     );
+
+    // Plain-text response sets Content-Type and copies the body
+    // verbatim. Accepts both &str and String via `impl Into<String>`.
+    let text = HttpResponse::text(200, "hello world");
+    assert_eq!(text.status, 200);
+    assert_eq!(
+        text.headers.get("Content-Type").unwrap().to_str().unwrap(),
+        "text/plain; charset=utf-8"
+    );
+    assert_eq!(&text.body[..], b"hello world");
+
+    let owned = HttpResponse::text(500, String::from("oops"));
+    assert_eq!(owned.status, 500);
+    assert_eq!(&owned.body[..], b"oops");
 }
