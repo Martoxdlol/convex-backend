@@ -141,7 +141,7 @@ pub fn to_proto_response(native: &ExecuteResponse) -> proto::ExecuteResponse {
         result: Some(result),
         user_execution_time: None,
         served_by_version: None,
-        log_lines: vec![],
+        log_lines: native.log_lines.clone(),
     }
 }
 
@@ -162,7 +162,10 @@ pub fn from_proto_response(p: &proto::ExecuteResponse) -> anyhow::Result<Execute
         },
         R::JsError(e) => Err(e.message.clone().unwrap_or_default()),
     };
-    Ok(ExecuteResponse { result })
+    Ok(ExecuteResponse {
+        result,
+        log_lines: p.log_lines.clone(),
+    })
 }
 
 fn duration_to_proto(d: Duration) -> prost_types::Duration {
@@ -266,22 +269,32 @@ mod tests {
 
     #[test]
     fn response_ok_roundtrips() {
-        let native = ExecuteResponse {
-            result: Ok(ConvexValue::Int64(42)),
-        };
+        let native = ExecuteResponse::new(Ok(ConvexValue::Int64(42)));
         let p = to_proto_response(&native);
         let decoded = from_proto_response(&p).unwrap();
         assert_eq!(decoded.result, Ok(ConvexValue::Int64(42)));
+        assert!(decoded.log_lines.is_empty());
     }
 
     #[test]
     fn response_err_roundtrips() {
-        let native = ExecuteResponse {
-            result: Err("boom".to_string()),
-        };
+        let native = ExecuteResponse::new(Err("boom".to_string()));
         let p = to_proto_response(&native);
         let decoded = from_proto_response(&p).unwrap();
         assert!(matches!(decoded.result, Err(ref m) if m.contains("boom")));
+    }
+
+    #[test]
+    fn response_log_lines_roundtrip_through_proto() {
+        // `with_log_lines(...)` round-trips verbatim — the proto
+        // field is the exact shape (repeated string) our encoder
+        // writes and our decoder reads. Without this, log lines
+        // would silently disappear at the wire.
+        let native = ExecuteResponse::new(Ok(ConvexValue::Null))
+            .with_log_lines(vec!["[INFO] one".to_string(), "[WARN] two".to_string()]);
+        let p = to_proto_response(&native);
+        let decoded = from_proto_response(&p).unwrap();
+        assert_eq!(decoded.log_lines, vec!["[INFO] one", "[WARN] two"]);
     }
 
     #[test]

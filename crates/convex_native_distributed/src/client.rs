@@ -479,9 +479,7 @@ impl WorkerClient for MockWorkerClient {
 }
 
 fn default_ok_response() -> ExecuteResponse {
-    ExecuteResponse {
-        result: Ok(value::ConvexValue::Null),
-    }
+    ExecuteResponse::new(Ok(value::ConvexValue::Null))
 }
 
 /// Deterministic chooser for tests.

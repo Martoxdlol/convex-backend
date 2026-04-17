@@ -135,18 +135,22 @@ impl FunctionExecutionService for FunctionExecutionServer {
         match udf_type {
             UdfType::Action => {
                 let callbacks = Arc::new(convex_native::callbacks::NoopCallbacks);
+                let log_buffer = convex_native::LogBuffer::new();
                 let result = self
                     .native
-                    .run_action_with_callbacks(
+                    .run_action_with_callbacks_and_log_buffer(
                         &native_req.name,
                         native_req.namespace,
                         native_req.args,
                         callbacks,
+                        log_buffer.clone(),
                     )
                     .await;
-                let native_response = convex_native::distributed::ExecuteResponse {
-                    result: result.map_err(|e| e.to_string()),
-                };
+                let log_lines = log_lines_to_pretty_strings(&log_buffer);
+                let native_response = convex_native::distributed::ExecuteResponse::new(
+                    result.map_err(|e| e.to_string()),
+                )
+                .with_log_lines(log_lines);
                 let mut proto_resp = conversions::to_proto_response(&native_response);
                 proto_resp.served_by_version = Some(self.registry_version.clone());
                 Ok(Response::new(proto_resp))
@@ -158,16 +162,17 @@ impl FunctionExecutionService for FunctionExecutionServer {
                          Database<Rt>. Construct the server with .with_database(db) to enable it.",
                     ));
                 };
-                let result = match udf_type {
+                let (result, log_lines) = match udf_type {
                     UdfType::Query => run_query_inline(&self.native, database, &native_req).await,
                     UdfType::Mutation => {
                         run_mutation_inline(&self.native, database, &native_req).await
                     },
                     _ => unreachable!(),
                 };
-                let native_response = convex_native::distributed::ExecuteResponse {
-                    result: result.map_err(|e| e.to_string()),
-                };
+                let native_response = convex_native::distributed::ExecuteResponse::new(
+                    result.map_err(|e| e.to_string()),
+                )
+                .with_log_lines(log_lines);
                 let mut proto_resp = conversions::to_proto_response(&native_response);
                 proto_resp.served_by_version = Some(self.registry_version.clone());
                 Ok(Response::new(proto_resp))
@@ -200,16 +205,27 @@ async fn run_query_inline(
     native: &Arc<NativeFunctionRunner>,
     database: &Database<Rt>,
     req: &convex_native::distributed::ExecuteRequest,
-) -> anyhow::Result<value::ConvexValue> {
-    let ts = database.now_ts_for_reads();
-    let usage = FunctionUsageTracker::new();
-    let mut tx = database
-        .begin_with_ts(Identity::system(), *ts, usage)
-        .await?;
-    let result = native
-        .run_query(&req.name, &mut tx, req.namespace, req.args.clone())
-        .await?;
-    Ok(result)
+) -> (anyhow::Result<value::ConvexValue>, Vec<String>) {
+    let log_buffer = convex_native::LogBuffer::new();
+    let result = async {
+        let ts = database.now_ts_for_reads();
+        let usage = FunctionUsageTracker::new();
+        let mut tx = database
+            .begin_with_ts(Identity::system(), *ts, usage)
+            .await?;
+        native
+            .run_query_with_log_buffer(
+                &req.name,
+                &mut tx,
+                req.namespace,
+                req.args.clone(),
+                log_buffer.clone(),
+            )
+            .await
+    }
+    .await;
+    let log_lines = log_lines_to_pretty_strings(&log_buffer);
+    (result, log_lines)
 }
 
 /// Open a fresh transaction, run the native mutation, commit on
@@ -219,19 +235,51 @@ async fn run_mutation_inline(
     native: &Arc<NativeFunctionRunner>,
     database: &Database<Rt>,
     req: &convex_native::distributed::ExecuteRequest,
-) -> anyhow::Result<value::ConvexValue> {
-    let ts = database.now_ts_for_reads();
-    let usage = FunctionUsageTracker::new();
-    let mut tx = database
-        .begin_with_ts(Identity::system(), *ts, usage)
-        .await?;
-    let result = native
-        .run_mutation(&req.name, &mut tx, req.namespace, req.args.clone())
-        .await?;
-    database
-        .commit_with_write_source(tx, WriteSource::system("convex_native_distributed"))
-        .await?;
-    Ok(result)
+) -> (anyhow::Result<value::ConvexValue>, Vec<String>) {
+    let log_buffer = convex_native::LogBuffer::new();
+    let result = async {
+        let ts = database.now_ts_for_reads();
+        let usage = FunctionUsageTracker::new();
+        let mut tx = database
+            .begin_with_ts(Identity::system(), *ts, usage)
+            .await?;
+        let value = native
+            .run_mutation_with_log_buffer(
+                &req.name,
+                &mut tx,
+                req.namespace,
+                req.args.clone(),
+                log_buffer.clone(),
+            )
+            .await?;
+        database
+            .commit_with_write_source(tx, WriteSource::system("convex_native_distributed"))
+            .await?;
+        Ok(value)
+    }
+    .await;
+    let log_lines = log_lines_to_pretty_strings(&log_buffer);
+    (result, log_lines)
+}
+
+/// Snapshot the buffer and render each line as a plain string.
+/// Matches the `repeated string log_lines` field on the proto: one
+/// formatted line per entry, ready for the conductor to forward
+/// into its own log-streaming path without re-parsing.
+fn log_lines_to_pretty_strings(buffer: &convex_native::LogBuffer) -> Vec<String> {
+    buffer
+        .snapshot()
+        .into_iter()
+        .map(|line| {
+            let level = match line.level {
+                convex_native::LogLevel::Debug => "DEBUG",
+                convex_native::LogLevel::Info => "INFO",
+                convex_native::LogLevel::Warn => "WARN",
+                convex_native::LogLevel::Error => "ERROR",
+            };
+            format!("[{level}] {}", line.message)
+        })
+        .collect()
 }
 
 /// Returns true when `have` >= `want` under a simple lexicographic

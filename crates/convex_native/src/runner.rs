@@ -261,6 +261,34 @@ impl NativeFunctionRunner {
         namespace: TableNamespace,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
+        self.run_query_inner(name, tx, namespace, args, None).await
+    }
+
+    /// Same as [`run_query`] but threads an externally-owned
+    /// `LogBuffer` through the ctx so the caller can drain
+    /// `ctx.log()` output after the handler returns. The distributed
+    /// worker uses this to populate `ExecuteResponse::log_lines`.
+    #[fastrace::trace]
+    pub async fn run_query_with_log_buffer(
+        &self,
+        name: &str,
+        tx: &mut Transaction<Rt>,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        log_buffer: crate::logging::LogBuffer,
+    ) -> anyhow::Result<ConvexValue> {
+        self.run_query_inner(name, tx, namespace, args, Some(log_buffer))
+            .await
+    }
+
+    async fn run_query_inner(
+        &self,
+        name: &str,
+        tx: &mut Transaction<Rt>,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        log_buffer: Option<crate::logging::LogBuffer>,
+    ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
         self.check_breaker(name)?;
         let _guard = self.enter();
@@ -274,7 +302,10 @@ impl NativeFunctionRunner {
                 registration.udf_type(),
             );
         };
-        let mut ctx = QueryCtx::new(tx, namespace);
+        let mut ctx = match log_buffer {
+            Some(buf) => QueryCtx::with_log_buffer(tx, namespace, buf),
+            None => QueryCtx::new(tx, namespace),
+        };
         let started = Instant::now();
         let result = self
             .run_with_timeout(handler(&mut ctx, args), name, registration.timeout_ms)
@@ -303,6 +334,32 @@ impl NativeFunctionRunner {
         namespace: TableNamespace,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
+        self.run_mutation_inner(name, tx, namespace, args, None)
+            .await
+    }
+
+    /// Mutation counterpart to [`run_query_with_log_buffer`].
+    #[fastrace::trace]
+    pub async fn run_mutation_with_log_buffer(
+        &self,
+        name: &str,
+        tx: &mut Transaction<Rt>,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        log_buffer: crate::logging::LogBuffer,
+    ) -> anyhow::Result<ConvexValue> {
+        self.run_mutation_inner(name, tx, namespace, args, Some(log_buffer))
+            .await
+    }
+
+    async fn run_mutation_inner(
+        &self,
+        name: &str,
+        tx: &mut Transaction<Rt>,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        log_buffer: Option<crate::logging::LogBuffer>,
+    ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
         self.check_breaker(name)?;
         let _guard = self.enter();
@@ -316,7 +373,10 @@ impl NativeFunctionRunner {
                 registration.udf_type(),
             );
         };
-        let mut ctx = MutationCtx::new(tx, namespace);
+        let mut ctx = match log_buffer {
+            Some(buf) => MutationCtx::with_log_buffer(tx, namespace, buf),
+            None => MutationCtx::new(tx, namespace),
+        };
         let started = Instant::now();
         let result = self
             .run_with_timeout(handler(&mut ctx, args), name, registration.timeout_ms)

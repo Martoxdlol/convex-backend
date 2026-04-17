@@ -89,9 +89,36 @@ pub struct ExecuteRequest {
 /// Response a worker sends back. In the proto version this becomes
 /// `FunctionOutcome + FunctionFinalTransaction + usage stats`. Here
 /// it's the minimal shape the existing `ActionCtx`-driven path needs.
+///
+/// `log_lines` carries the worker's drained `ctx.log()` output
+/// in the pretty-string form `LogLine::to_pretty_strings` emits —
+/// the conductor can forward them into its own log-streaming path
+/// alongside JS log lines without translation. Empty when the
+/// handler didn't log anything (the common case) or when the
+/// worker isn't configured to drain logs.
 #[derive(Debug, Clone)]
 pub struct ExecuteResponse {
     pub result: Result<ConvexValue, String>,
+    pub log_lines: Vec<String>,
+}
+
+impl ExecuteResponse {
+    /// Construct a response carrying no log lines — the previous
+    /// shape. Most existing call sites used `ExecuteResponse { result }`
+    /// struct literals; this constructor keeps those short.
+    pub fn new(result: Result<ConvexValue, String>) -> Self {
+        Self {
+            result,
+            log_lines: Vec::new(),
+        }
+    }
+
+    /// Builder-style accessor for attaching log lines before
+    /// returning.
+    pub fn with_log_lines(mut self, lines: Vec<String>) -> Self {
+        self.log_lines = lines;
+        self
+    }
 }
 
 /// Trait a worker implements to accept remote calls. The distributed
@@ -174,16 +201,12 @@ mod tests {
         // Clone + Debug are derived; callers pattern-match + clone
         // responses across worker/conductor boundaries, so a silent
         // derive drop would break consumers.
-        let resp = ExecuteResponse {
-            result: Ok(ConvexValue::Int64(42)),
-        };
+        let resp = ExecuteResponse::new(Ok(ConvexValue::Int64(42)));
         let cloned = resp.clone();
         assert!(matches!(&cloned.result, Ok(ConvexValue::Int64(42))));
         assert!(!format!("{resp:?}").is_empty(), "Debug format non-empty");
 
-        let err_resp = ExecuteResponse {
-            result: Err("boom".into()),
-        };
+        let err_resp = ExecuteResponse::new(Err("boom".into()));
         let cloned = err_resp.clone();
         assert_eq!(
             cloned.result.as_ref().err().map(String::as_str),
