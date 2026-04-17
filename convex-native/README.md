@@ -41,7 +41,7 @@ registered native functions.
 ### What works
 
 - Current test tallies (all green):
-  - `cargo test -p convex_native` — **74 tests** (unit + derive +
+  - `cargo test -p convex_native` — **80 tests** (unit + derive +
     runtime integration).
   - `cargo test -p convex_native_backend` — **10 tests** (pure
     helpers; deeper paths covered by end-to-end convex-local-backend
@@ -785,9 +785,12 @@ registrations, no schema entries.
   `#[convex::query]` and exercises it through the HTTP client path —
   currently the integration is verified by `cargo test -p
   convex_native` plus the successful binary build.
-- **Non-indexed filters.** `.eq()` currently requires
-  `.with_index(...)`. Full-table-scan + post-scan filtering is a later
-  convenience, not MVP-critical.
+- **Document shape validation is still off** (see next bullet) — the
+  non-indexed filter limitation is gone: `.eq()`/`.gt()`/etc. without a
+  preceding `.with_index(...)` now lower to a full-table scan plus a
+  stack of `QueryOperator::Filter` predicates (covered by
+  `make_query_*` unit tests in `ctx::query_builder`). The indexed path
+  is still faster — use an index when one exists.
 - **Document type validation is off.** `table_definition()` emits
   `document_type: None` — i.e. every derived type currently gets an "any"
   schema shape. Enforcing the shape against the struct's fields is

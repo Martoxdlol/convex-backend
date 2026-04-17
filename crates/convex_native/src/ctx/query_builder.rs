@@ -18,12 +18,11 @@ use std::marker::PhantomData;
 
 use common::{
     query::{
-        FullTableScan,
+        Expression,
         IndexRange,
         IndexRangeExpression,
         Order as ConvexOrder,
         Query,
-        QuerySource,
     },
     runtime::Runtime,
     types::{
@@ -108,6 +107,21 @@ impl RangeOp {
             RangeOp::Gte => IndexRangeExpression::Gte(field, MaybeValue(Some(value))),
             RangeOp::Lt => IndexRangeExpression::Lt(field, MaybeValue(Some(value))),
             RangeOp::Lte => IndexRangeExpression::Lte(field, MaybeValue(Some(value))),
+        }
+    }
+
+    /// Lower to a post-scan `Expression`. Used for full-table-scan
+    /// filtering when no index is selected — each filter becomes a
+    /// predicate evaluated per row.
+    fn to_filter_expr(self, field: common::paths::FieldPath, value: ConvexValue) -> Expression {
+        let field_expr = Box::new(Expression::Field(field));
+        let literal = Box::new(Expression::Literal(MaybeValue(Some(value))));
+        match self {
+            RangeOp::Eq => Expression::Eq(field_expr, literal),
+            RangeOp::Gt => Expression::Gt(field_expr, literal),
+            RangeOp::Gte => Expression::Gte(field_expr, literal),
+            RangeOp::Lt => Expression::Lt(field_expr, literal),
+            RangeOp::Lte => Expression::Lte(field_expr, literal),
         }
     }
 }
@@ -303,7 +317,7 @@ fn make_query<T: ConvexDocument>(
     limit: Option<usize>,
 ) -> anyhow::Result<QueryHolder> {
     let internal_order: ConvexOrder = order.into();
-    let source = match index {
+    let mut query = match index {
         Some(idx) => {
             let mut range: Vec<IndexRangeExpression> = Vec::new();
             for RangeFilter { field, op, value } in filters {
@@ -316,29 +330,260 @@ fn make_query<T: ConvexDocument>(
             }
             let descriptor = IndexDescriptor::new(idx.to_string())?;
             let name = IndexName::new(T::table_name(), descriptor)?;
-            QuerySource::IndexRange(IndexRange {
+            Query::index_range(IndexRange {
                 index_name: name,
                 range,
                 order: internal_order,
             })
         },
         None => {
-            anyhow::ensure!(
-                filters.is_empty(),
-                "TypedQueryBuilder: filters require .with_index(...) in phase 1",
-            );
-            QuerySource::FullTableScan(FullTableScan {
-                table_name: T::table_name(),
-                order: internal_order,
-            })
+            // Full-table scan with post-scan filtering: every filter
+            // lowers to a `QueryOperator::Filter(Expression)` stacked on
+            // top of the scan. Less efficient than an indexed lookup
+            // (reads every row) but preserves the same `.eq/.gt/...`
+            // surface so handlers can be written before their indexes
+            // are in place.
+            let mut query = Query::full_table_scan(T::table_name(), internal_order);
+            for RangeFilter { field, op, value } in filters {
+                let field_path: common::paths::FieldPath = field.parse()?;
+                query = query.filter(op.to_filter_expr(field_path, value));
+            }
+            query
         },
-    };
-    let mut query = Query {
-        source,
-        operators: vec![],
     };
     if let Some(lim) = limit {
         query = query.limit(lim);
     }
     Ok(QueryHolder(Some(query)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use common::{
+        query::{
+            QueryOperator,
+            QuerySource,
+        },
+        schemas::TableDefinition,
+        types::TableName,
+    };
+    use value::ConvexObject;
+
+    use super::*;
+
+    /// Hand-rolled `ConvexDocument` stand-in. The derive macro emits
+    /// `::convex_native::...` paths, which don't resolve inside the crate
+    /// under test — so for unit tests against `make_query` we implement
+    /// the trait directly. This widget has one scalar field and one
+    /// declared index `by_owner(owner)`.
+    #[derive(Clone, Debug)]
+    struct Widget;
+
+    #[derive(Copy, Clone, Debug)]
+    enum WidgetField {
+        Owner,
+        Count,
+    }
+    impl FieldReference for WidgetField {
+        fn as_str(&self) -> &'static str {
+            match self {
+                WidgetField::Owner => "owner",
+                WidgetField::Count => "count",
+            }
+        }
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    #[allow(dead_code)]
+    enum WidgetIndex {
+        ByOwner,
+    }
+    impl IndexReference for WidgetIndex {
+        fn as_str(&self) -> &'static str {
+            "by_owner"
+        }
+
+        fn fields(&self) -> &'static [&'static str] {
+            &["owner"]
+        }
+    }
+
+    impl ConvexDocument for Widget {
+        type Field = WidgetField;
+        type Index = WidgetIndex;
+        type Patch = ();
+
+        fn table_name() -> TableName {
+            TableName::from_str("widgets").unwrap()
+        }
+
+        fn table_definition() -> TableDefinition {
+            TableDefinition {
+                table_name: Self::table_name(),
+                indexes: Default::default(),
+                staged_db_indexes: Default::default(),
+                text_indexes: Default::default(),
+                staged_text_indexes: Default::default(),
+                vector_indexes: Default::default(),
+                staged_vector_indexes: Default::default(),
+                document_type: None,
+            }
+        }
+
+        fn to_convex_object(&self) -> anyhow::Result<ConvexObject> {
+            ConvexObject::try_from(std::collections::BTreeMap::new())
+        }
+
+        fn from_convex_object(_obj: ConvexObject) -> anyhow::Result<Self> {
+            Ok(Widget)
+        }
+    }
+
+    fn eq_filter(field: &'static str, value: ConvexValue) -> RangeFilter {
+        RangeFilter {
+            field,
+            op: RangeOp::Eq,
+            value,
+        }
+    }
+
+    #[test]
+    fn make_query_without_index_and_filters_is_full_table_scan() {
+        let mut holder = make_query::<Widget>(None, &[], vec![], Order::Asc, None).expect("build");
+        let q = holder.take();
+        match &q.source {
+            QuerySource::FullTableScan(fts) => {
+                assert_eq!(&fts.table_name.to_string(), "widgets");
+                assert_eq!(fts.order, ConvexOrder::Asc);
+            },
+            other => panic!("expected FullTableScan, got {other:?}"),
+        }
+        assert!(q.operators.is_empty(), "no filters => no operators");
+    }
+
+    #[test]
+    fn make_query_without_index_with_eq_filter_stacks_filter_operator() {
+        // Non-indexed filters should lower to a full-table scan plus a
+        // `QueryOperator::Filter(Expression::Eq(...))` on top.
+        let filters = vec![eq_filter(
+            "owner",
+            ConvexValue::try_from("alice".to_string()).unwrap(),
+        )];
+        let mut holder = make_query::<Widget>(None, &[], filters, Order::Asc, None).expect("build");
+        let q = holder.take();
+        assert!(matches!(&q.source, QuerySource::FullTableScan(_)));
+        assert_eq!(q.operators.len(), 1, "exactly one filter operator");
+        match &q.operators[0] {
+            QueryOperator::Filter(Expression::Eq(l, r)) => {
+                match l.as_ref() {
+                    Expression::Field(fp) => {
+                        // FieldPath's Display wraps the name in quotes; the
+                        // Debug form is stable. We just need to see the
+                        // field name appear in the rendered form.
+                        let rendered = fp.to_string();
+                        assert!(
+                            rendered.contains("owner"),
+                            "lhs field mentions owner: {rendered}",
+                        );
+                    },
+                    other => panic!("lhs should be Field, got {other:?}"),
+                }
+                match r.as_ref() {
+                    Expression::Literal(MaybeValue(Some(ConvexValue::String(s)))) => {
+                        assert_eq!(s.as_ref(), "alice");
+                    },
+                    other => panic!("rhs should be literal string, got {other:?}"),
+                }
+            },
+            other => panic!("expected Filter(Eq), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn make_query_without_index_stacks_multiple_range_filters() {
+        // gte + lt on the same non-indexed field should stack as two
+        // Filter operators, in the order they were declared.
+        let filters = vec![
+            RangeFilter {
+                field: "count",
+                op: RangeOp::Gte,
+                value: ConvexValue::Int64(10),
+            },
+            RangeFilter {
+                field: "count",
+                op: RangeOp::Lt,
+                value: ConvexValue::Int64(100),
+            },
+        ];
+        let mut holder = make_query::<Widget>(None, &[], filters, Order::Asc, None).expect("build");
+        let q = holder.take();
+        assert_eq!(q.operators.len(), 2);
+        assert!(
+            matches!(
+                &q.operators[0],
+                QueryOperator::Filter(Expression::Gte(_, _))
+            ),
+            "first operator must be Gte",
+        );
+        assert!(
+            matches!(&q.operators[1], QueryOperator::Filter(Expression::Lt(_, _))),
+            "second operator must be Lt",
+        );
+    }
+
+    #[test]
+    fn make_query_without_index_honours_limit_after_filters() {
+        // Limit must come after filters so the filter runs on every
+        // matching row, not just the first N rows of the scan.
+        let filters = vec![eq_filter("count", ConvexValue::Int64(7))];
+        let mut holder =
+            make_query::<Widget>(None, &[], filters, Order::Asc, Some(5)).expect("build");
+        let q = holder.take();
+        assert_eq!(q.operators.len(), 2);
+        assert!(matches!(&q.operators[0], QueryOperator::Filter(_)));
+        assert!(matches!(&q.operators[1], QueryOperator::Limit(5)));
+    }
+
+    #[test]
+    fn make_query_with_index_preserves_existing_behaviour() {
+        // Indexed path must still build an IndexRange with the range
+        // expression attached directly to the source (not as a filter
+        // operator).
+        let filters = vec![eq_filter(
+            "owner",
+            ConvexValue::try_from("bob".to_string()).unwrap(),
+        )];
+        let mut holder =
+            make_query::<Widget>(Some("by_owner"), &["owner"], filters, Order::Asc, None)
+                .expect("build");
+        let q = holder.take();
+        match &q.source {
+            QuerySource::IndexRange(ir) => {
+                assert_eq!(ir.range.len(), 1);
+                assert!(matches!(ir.range[0], IndexRangeExpression::Eq(_, _)));
+            },
+            other => panic!("expected IndexRange, got {other:?}"),
+        }
+        assert!(q.operators.is_empty(), "indexed filter lives on source");
+    }
+
+    #[test]
+    fn make_query_with_index_rejects_filter_on_non_index_field() {
+        // Filtering an indexed query on a field that isn't part of the
+        // index is a declaration error — the old behaviour must be
+        // preserved now that we no longer refuse all non-indexed
+        // filters up front.
+        let filters = vec![eq_filter("count", ConvexValue::Int64(1))];
+        let result = make_query::<Widget>(Some("by_owner"), &["owner"], filters, Order::Asc, None);
+        let err = match result {
+            Ok(_) => panic!("expected error for non-index field"),
+            Err(e) => e,
+        };
+        assert!(
+            format!("{err}").contains("is not part of index"),
+            "error mentions the bad field: {err}",
+        );
+    }
 }
