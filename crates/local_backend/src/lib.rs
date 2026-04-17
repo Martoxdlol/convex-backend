@@ -259,6 +259,25 @@ pub async fn make_app(
         "Native function registry: {} registered",
         native_runner.len(),
     );
+    // Substep 5.2 of `convex-native/DISTRIBUTED_PLAN.md`: when
+    // `CONVEX_REFUSE_NATIVE_HANDLERS=1` is set, the backend
+    // binary must carry no `#[convex::*]` registrations. The
+    // Phase-5 prebuilt image ships with an empty inventory;
+    // this env var pins that invariant so a deployer who
+    // accidentally links their worker code into the backend
+    // image fails loud at boot instead of silently shadowing
+    // the remote pool's handlers.
+    if convex_native_distributed::read_refuse_native_handlers_from_env() && native_runner.len() > 0
+    {
+        anyhow::bail!(
+            "CONVEX_REFUSE_NATIVE_HANDLERS=1: backend binary has {} native function \
+             registration(s) linked in, but the Phase-5 distributed-topology backend is supposed \
+             to carry none (workers ship the inventory via WorkerAdmissionService). Drop the \
+             `#[convex::*]`-decorated code from your backend's compile graph or unset the env var \
+             to override.",
+            native_runner.len(),
+        );
+    }
     // Native-dispatch routing:
     //
     // - Substep 3.8: when `CONVEX_ADMISSION_BIND_ADDR=host:port` is set, spawn a

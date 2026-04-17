@@ -823,16 +823,29 @@ supply everything at admission time.
      flow end-to-end (backend + worker on the same Docker
      network).
 
-5.2. **`local_backend` strips inventory when present.**
-     Optional safety net. Today `NativeFunctionRunner::from_inventory()`
-     picks up every `#[convex::*]`-decorated handler linked
-     into the backend binary. For the distributed topology
-     the backend binary shouldn't link any, but a deployer
-     might accidentally pull in `convex_native` as a
-     transitive dep. A follow-up substep adds a
-     `CONVEX_REFUSE_NATIVE_HANDLERS=1` opt-in that errors at
-     boot when the backend has non-empty native registry —
-     catches the accidental-link case in CI.
+5.2. ✓ **`CONVEX_REFUSE_NATIVE_HANDLERS` safety net.** Landed.
+     Opt-in env var that fails boot when the backend binary
+     has non-empty native inventory. Set to any non-empty,
+     non-whitespace value (`1`, `true`, etc.) to enable;
+     unset or empty = no enforcement (default behaviour).
+
+     - New helper `read_refuse_native_handlers_from_env()` on
+       `convex_native_distributed::mode` (re-exported at the
+       crate root).
+     - `local_backend::make_app` consults the helper after
+       `NativeFunctionRunner::from_inventory()` and bails with
+       a guided message when the flag is set and the registry
+       is non-empty.
+
+     Operators using the Phase-5 prebuilt image wire this
+     into their image-build CI (`ENV CONVEX_REFUSE_NATIVE_HANDLERS=1`
+     in the Dockerfile for a production tag, for example)
+     so an accidental link-in of worker code fails loud at
+     boot instead of silently shadowing the remote pool's
+     handlers.
+
+     Tests: three unit tests on `mode::tests::read_refuse_native_handlers_*`
+     covering unset / set / empty-value.
 
 5.3. **CI / release pipeline.** Push tagged images
      (`getconvex/convex-backend:X.Y.Z`) to GHCR on release

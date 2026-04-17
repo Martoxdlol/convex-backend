@@ -146,6 +146,26 @@ pub fn read_admission_bind_addr_from_env() -> anyhow::Result<Option<SocketAddr>>
     }
 }
 
+/// Substep 5.2 env-var: `CONVEX_REFUSE_NATIVE_HANDLERS`. Opt-in
+/// safety net for the Phase-5 prebuilt backend image. When set
+/// to any non-empty value, `local_backend` errors at boot if
+/// the binary has any `#[convex::*]` handlers baked in — which
+/// would indicate a deployer accidentally pulled worker code
+/// into the backend image.
+///
+/// The backend image is supposed to carry no deployer-specific
+/// inventory (workers ship that separately and register at
+/// admission time). This env var pins that invariant in CI.
+///
+/// Returns `true` when the variable is set to a non-empty value,
+/// `false` otherwise. Unset / empty / whitespace-only is treated
+/// as "not enforcing" so the default backend boot stays tolerant.
+pub fn read_refuse_native_handlers_from_env() -> bool {
+    std::env::var("CONVEX_REFUSE_NATIVE_HANDLERS")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
 /// Substep 3.5 env-var: `CONVEX_BACKEND_ENDPOINT`. When the
 /// worker binary starts it dials this URL, opens the
 /// `WorkerAdmissionService::Register` stream, and stays
@@ -373,6 +393,47 @@ mod tests {
         // SAFETY: Serialized via env_guard so no concurrent writer.
         unsafe {
             std::env::remove_var("CONVEX_ADMISSION_BIND_ADDR");
+        }
+    }
+
+    #[test]
+    fn read_refuse_native_handlers_unset_returns_false() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_REFUSE_NATIVE_HANDLERS");
+        }
+        assert!(!read_refuse_native_handlers_from_env());
+    }
+
+    #[test]
+    fn read_refuse_native_handlers_set_returns_true() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_REFUSE_NATIVE_HANDLERS", "1");
+        }
+        assert!(read_refuse_native_handlers_from_env());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_REFUSE_NATIVE_HANDLERS");
+        }
+    }
+
+    #[test]
+    fn read_refuse_native_handlers_empty_string_returns_false() {
+        // Empty / whitespace-only values don't trip the guard —
+        // matches the "unset" treatment so a misconfigured
+        // empty-env-var doesn't silently flip the safety net.
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_REFUSE_NATIVE_HANDLERS", "   ");
+        }
+        assert!(!read_refuse_native_handlers_from_env());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_REFUSE_NATIVE_HANDLERS");
         }
     }
 
