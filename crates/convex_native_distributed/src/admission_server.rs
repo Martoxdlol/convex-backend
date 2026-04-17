@@ -195,6 +195,27 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
             .as_ref()
             .map(|inv| inv.functions.iter().map(|f| f.name.clone()).collect())
             .unwrap_or_default();
+        // Substep 7.3 of `convex-native/STATUS.md` — log the
+        // inventory diff against the pool's current active
+        // version when the incoming worker introduces a new
+        // `registry_version`. `diff_against_active_inventory`
+        // returns `None` when the incoming version already is
+        // the active one (nothing to log) or when the pool is
+        // empty (no comparison possible).
+        if let Some(diff) = self
+            .pool
+            .diff_against_active_inventory(&envelope.registry_version, &functions)
+        {
+            eprintln!(
+                "[convex-admission] inventory diff: active={} incoming={} added={:?} removed={:?} \
+                 carried_over={}",
+                diff.active_version,
+                diff.incoming_version,
+                diff.added,
+                diff.removed,
+                diff.carried_over.len(),
+            );
+        }
         let entry = WorkerEntry {
             client,
             registry_version: envelope.registry_version.clone(),

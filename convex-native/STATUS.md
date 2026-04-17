@@ -18,16 +18,18 @@ active phase is.
 
 Framework-level pieces (derives, ctx surface, schema reflection,
 registry, introspection) are solid and reused. The distributed
-dispatch layer is rebuilt per `DISTRIBUTED_PLAN.md` — **Phases
-1, 2, 3, and 4 have shipped** (except substeps 2.8b and 4.6b's
-live-database assertions, which are blocked on in-repo DB test
-fixtures). Workers auto-register against the backend's
-`WorkerAdmissionService` and the backend dispatches native
-Query/Mutation/Action through a dynamic, churn-tolerant
-`WorkerPool`; action sub-calls route back through the
-`BackendCallbackService` so OCC + subscription invalidation
-stay intact. **Phase 5 (prebuilt `getconvex/convex-backend`
-container image)** is the next major step.
+dispatch layer is rebuilt per `DISTRIBUTED_PLAN.md` — **every
+phase has shipped** (1 wire contract, 2 `FunctionRunner` impl,
+3 dynamic pool + admission, 4 action sub-call callbacks, 5
+prebuilt backend image + safety net + k8s manifests, 6 JS
+interop foundations, 7 operator tooling). Two substeps remain
+deferred (2.8b full Committer assertion, 4.6b live-DB
+action→sub-mutation assertion), both blocked on in-repo
+`Database<Rt>` test fixtures that don't yet exist. Substep 5.3
+(CI/release image push) and 6.3 (reference JS worker binary)
+live outside this repo's Rust source tree. The plan's target
+architecture works end-to-end in source; the remaining work is
+release tooling + downstream JS worker implementation.
 
 ---
 
@@ -1016,10 +1018,34 @@ surface.
      / drain-without-admission → 501). 125 tests total on
      `convex_native_distributed`.
 
-7.3. **Inventory diff log.** When a new `registry_version`
-     appears in the admission stream, log the
-     added / removed / changed function set against the
-     current active version. Self-documenting deploy log.
+7.3. ✓ **Inventory diff log.** Landed. New
+     `pool::InventoryDiff` struct
+     (`#[derive(serde::Serialize)]`) with
+     `active_version` / `incoming_version` / `added` /
+     `removed` / `carried_over` fields. Computed by
+     `WorkerPool::diff_against_active_inventory(version,
+     functions)`:
+
+     - Picks the "active" version as the one with the
+       largest worker count (tie-broken lexicographically so
+       the choice is deterministic).
+     - Returns `None` when the pool is empty or the incoming
+       version matches the active one (nothing interesting
+       to log).
+     - Output field sets are sorted alphabetically so the
+       log line is stable.
+
+     `WorkerAdmissionServer`'s `register` handler calls the
+     helper right before admitting a worker; when a diff is
+     present it writes a one-line summary to stderr via
+     `eprintln!` (tracing integration lives in the embedding
+     binary — production deployments already capture stderr
+     into their log pipeline).
+
+     Tests: four new unit tests on `pool::tests` cover
+     empty-pool → None, same-version → None, added + removed
+     names, and "active is most-populated". 129 tests green
+     total.
 
 Exit criteria: operators can see pool state at a glance, bump
 the floor during a rolling update, preference-pin functions to

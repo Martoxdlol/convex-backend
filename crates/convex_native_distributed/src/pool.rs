@@ -83,6 +83,34 @@ pub struct PoolSnapshot {
     pub workers: Vec<PoolWorkerSnapshot>,
 }
 
+/// Substep 7.3 of `convex-native/STATUS.md` — structured
+/// inventory diff a new `registry_version` produces against
+/// the pool's current active version. Emitted by the
+/// admission server into the tracing log on each version
+/// change so the deploy history reads as "v2.0.0 added
+/// [foo, bar], removed [legacy]".
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct InventoryDiff {
+    /// `registry_version` that currently has the largest
+    /// worker count (ties broken lexicographically). The
+    /// incoming worker's diff is computed against this
+    /// version's function set.
+    pub active_version: String,
+    /// `registry_version` the newly-admitted worker
+    /// advertised.
+    pub incoming_version: String,
+    /// Function names the incoming version serves that the
+    /// active version doesn't. Sorted alphabetically.
+    pub added: Vec<String>,
+    /// Function names the active version serves that the
+    /// incoming version doesn't. Sorted alphabetically.
+    pub removed: Vec<String>,
+    /// Function names present in both (sanity-check for log
+    /// readers — a healthy rolling deploy keeps most names
+    /// in this bucket).
+    pub carried_over: Vec<String>,
+}
+
 /// Per-worker slice of the pool snapshot.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct PoolWorkerSnapshot {
@@ -369,6 +397,80 @@ impl WorkerPool {
             *out.entry(entry.kind).or_default() += 1;
         }
         out
+    }
+
+    /// Substep 7.3 of `convex-native/STATUS.md` — compute the
+    /// `InventoryDiff` between a proposed worker's advertised
+    /// function set and the pool's current "active"
+    /// inventory. The active inventory is the function set of
+    /// the **most populated** `registry_version` currently in
+    /// the pool, tie-broken by version string (lexicographic).
+    ///
+    /// Callers pass the envelope's `(registry_version,
+    /// functions)` pair; the helper returns the diff against
+    /// the active version **and** the active version string
+    /// itself, so the admission handler can log something like:
+    ///
+    ///   registry 2.1.0 joining alongside active 2.0.0:
+    ///     +added [new_user, set_avatar]
+    ///     -removed [legacy_stub]
+    ///     carried-over [get_user, list_users]
+    ///
+    /// Returns `None` when the pool is empty or when the
+    /// incoming version is already the most-populated version
+    /// (nothing interesting to log).
+    pub fn diff_against_active_inventory(
+        &self,
+        incoming_version: &str,
+        incoming_functions: &[String],
+    ) -> Option<InventoryDiff> {
+        use std::collections::HashSet;
+        let inner = self.inner.read();
+        if inner.workers.is_empty() {
+            return None;
+        }
+        // Group function sets by version.
+        let mut by_version: BTreeMap<&str, (usize, HashSet<&str>)> = BTreeMap::new();
+        for entry in inner.workers.values() {
+            let slot = by_version
+                .entry(entry.registry_version.as_str())
+                .or_insert_with(|| (0, HashSet::new()));
+            slot.0 += 1;
+            for f in &entry.functions {
+                slot.1.insert(f.as_str());
+            }
+        }
+        // Pick the most-populated version, tie-broken
+        // lexicographically (deterministic).
+        let (active_version, (_count, active_fns)) = by_version
+            .iter()
+            .max_by(|(ak, av), (bk, bv)| av.0.cmp(&bv.0).then_with(|| ak.cmp(bk)))?;
+        if *active_version == incoming_version {
+            return None;
+        }
+        let incoming: HashSet<&str> = incoming_functions.iter().map(String::as_str).collect();
+        let mut added: Vec<String> = incoming
+            .difference(active_fns)
+            .map(|s| s.to_string())
+            .collect();
+        let mut removed: Vec<String> = active_fns
+            .difference(&incoming)
+            .map(|s| s.to_string())
+            .collect();
+        let mut carried: Vec<String> = active_fns
+            .intersection(&incoming)
+            .map(|s| s.to_string())
+            .collect();
+        added.sort();
+        removed.sort();
+        carried.sort();
+        Some(InventoryDiff {
+            active_version: active_version.to_string(),
+            incoming_version: incoming_version.to_string(),
+            added,
+            removed,
+            carried_over: carried,
+        })
     }
 
     /// Substep 7.1 of `convex-native/STATUS.md` — one-shot
@@ -689,6 +791,71 @@ mod tests {
         // kind enum member this binary doesn't know about) maps
         // to `Unspecified` rather than panicking.
         assert_eq!(WorkerKind::from_proto_i32(99), WorkerKind::Unspecified);
+    }
+
+    #[test]
+    fn inventory_diff_returns_none_for_empty_pool() {
+        let pool = WorkerPool::new();
+        let diff = pool.diff_against_active_inventory("1.0.0", &["get".to_string()]);
+        assert!(diff.is_none(), "no active version to diff against yet");
+    }
+
+    #[test]
+    fn inventory_diff_returns_none_when_versions_match() {
+        // Incoming registry_version equals the active one →
+        // nothing interesting to log; caller silently drops.
+        let pool = WorkerPool::new();
+        pool.admit(entry("a", "1.0.0", &["get", "list"]));
+        let diff =
+            pool.diff_against_active_inventory("1.0.0", &["get".to_string(), "list".to_string()]);
+        assert!(diff.is_none());
+    }
+
+    #[test]
+    fn inventory_diff_reports_added_and_removed_function_names() {
+        // Substep 7.3 rollout-log shape: active v1.0.0 serves
+        // [get, list, legacy]; incoming v2.0.0 serves
+        // [get, list, create]. Diff names the delta +
+        // carryover explicitly.
+        let pool = WorkerPool::new();
+        pool.admit(entry("a", "1.0.0", &["get", "list", "legacy"]));
+        pool.admit(entry("b", "1.0.0", &["get", "list", "legacy"]));
+        let diff = pool
+            .diff_against_active_inventory(
+                "2.0.0",
+                &["get".to_string(), "list".to_string(), "create".to_string()],
+            )
+            .expect("different version ⇒ diff populated");
+        assert_eq!(diff.active_version, "1.0.0");
+        assert_eq!(diff.incoming_version, "2.0.0");
+        assert_eq!(diff.added, vec!["create".to_string()]);
+        assert_eq!(diff.removed, vec!["legacy".to_string()]);
+        assert_eq!(
+            diff.carried_over,
+            vec!["get".to_string(), "list".to_string()],
+        );
+    }
+
+    #[test]
+    fn inventory_diff_active_is_most_populated_version() {
+        // When workers on several versions coexist, "active"
+        // picks the one with the highest count (tie-broken
+        // lexicographically). Pin the shape so a later-version
+        // lone worker doesn't masquerade as "active" the
+        // moment a single new pod comes up.
+        let pool = WorkerPool::new();
+        pool.admit(entry("a", "1.0.0", &["get"]));
+        pool.admit(entry("b", "1.0.0", &["get"]));
+        pool.admit(entry("c", "1.0.0", &["get"]));
+        pool.admit(entry("d", "2.0.0", &["get"]));
+        let diff = pool
+            .diff_against_active_inventory("2.1.0", &["get".to_string()])
+            .expect("incoming 2.1.0 differs from active 1.0.0");
+        assert_eq!(
+            diff.active_version, "1.0.0",
+            "3x 1.0.0 beats 1x 2.0.0 as active",
+        );
+        assert_eq!(diff.incoming_version, "2.1.0");
     }
 
     #[test]
