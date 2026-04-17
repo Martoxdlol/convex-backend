@@ -318,6 +318,18 @@ impl DistributedFunctionRunner {
         self.workers.len()
     }
 
+    /// Snapshot each worker's `(label, in_flight_estimate())` — the
+    /// shape behind the `native_funrun_in_flight_per_worker` metric
+    /// named in `convex-native/native-rust-functions.md` §12.3.
+    /// Callers typically render these onto a gauge so operators can
+    /// see the P2C load distribution across the pool in one view.
+    pub fn in_flight_per_worker(&self) -> Vec<(String, u64)> {
+        self.workers
+            .iter()
+            .map(|w| (w.label().to_string(), w.in_flight_estimate()))
+            .collect()
+    }
+
     /// Power-of-2-choices: pick two indices, send to the one with
     /// fewer in-flight requests. On `Unavailable` retry against
     /// the other, then bail.
@@ -697,6 +709,20 @@ mod tests {
             1,
             "final record when every attempt failed has no worker label",
         );
+    }
+
+    #[tokio::test]
+    async fn in_flight_per_worker_snapshots_label_and_count_for_every_worker() {
+        // Dashboard-shaped gauge: one entry per worker, ordered as
+        // they were handed to `DistributedFunctionRunner::new`.
+        // `MockWorkerClient::label()` returns the `name` passed at
+        // construction; the in-flight count is whatever `initial_in_flight`
+        // was set to (atomic-read, no side effects).
+        let a = MockWorkerClient::new("A", 3);
+        let b = MockWorkerClient::new("B", 7);
+        let runner = DistributedFunctionRunner::new(vec![a, b]).unwrap();
+        let snap = runner.in_flight_per_worker();
+        assert_eq!(snap, vec![("A".to_string(), 3), ("B".to_string(), 7)]);
     }
 
     #[tokio::test]
