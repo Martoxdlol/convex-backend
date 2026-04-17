@@ -4,11 +4,18 @@
 #   kubectl apply -f worker-deployment.yaml
 #
 # The Service in front of the pool exposes a stable DNS name
-# (`convex-worker`) that the conductor resolves to the set of
+# (`convex-worker`) that the backend resolves to the set of
 # healthy pod IPs. Every deploy of the worker image rolls the
-# pool one pod at a time (`maxUnavailable: 1`). The conductor's
+# pool one pod at a time (`maxUnavailable: 1`). The backend's
 # P2C routing + `min_registry_version` floor handle the
 # version-skew gap that opens during the roll.
+#
+# NOTE (pre-Phase-3): today the backend knows the worker set via
+# `CONVEX_WORKER_ENDPOINTS` on the backend side. After Phase 3 of
+# convex-native/DISTRIBUTED_PLAN.md, workers discover the backend
+# via `CONVEX_BACKEND_ENDPOINT` and register themselves through
+# `WorkerAdmissionService`; this manifest will need that env var
+# added and the headless Service will become optional.
 
 apiVersion: v1
 kind: Namespace
@@ -97,7 +104,7 @@ metadata:
   namespace: convex
 spec:
   type: ClusterIP
-  clusterIP: None  # headless — conductor resolves pod IPs directly.
+  clusterIP: None  # headless — backend resolves pod IPs directly.
   selector:
     app: convex-worker
   ports:

@@ -51,9 +51,9 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
 # Read-write paths your binary needs. If the worker doesn't touch
-# disk (it usually doesn't — the Database lives on the conductor
-# or in a separate storage process), leave this empty and the
-# strict ProtectSystem above will bite any accidental writes.
+# disk (it usually doesn't — the Database lives on the backend or
+# in a separate storage process), leave this empty and the strict
+# ProtectSystem above will bite any accidental writes.
 # ReadWritePaths=/var/lib/convex
 
 [Install]
