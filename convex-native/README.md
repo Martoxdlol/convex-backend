@@ -5,18 +5,26 @@ actions, HTTP actions, crons) in native Rust. Developers compile
 their handlers into a worker binary; the backend coordinates
 transactions, subscriptions, and reactivity.
 
-## Status — planning reset
+## Status — all phases shipped in source
 
-The project is mid-architectural-pivot. The framework surface
-(derives, ctx, registry, schema reflection) is stable and reused.
-The distributed topology that was shipped previously has been
-removed because it was wrong against the actual goal — it
-committed on workers, which breaks OCC, subscriptions, and every
-other coordination property that defines Convex.
+The `DISTRIBUTED_PLAN.md` rewrite is land-complete in the Rust
+source tree. Every phase (1 wire contract → 7 operator
+tooling) has shipped; the distributed topology runs end-to-end
+with OCC + subscription invalidation intact because the backend
+owns the Committer and workers only return transaction
+summaries over gRPC.
 
-`DISTRIBUTED_PLAN.md` is the new plan. `STATUS.md` is the shipped-
-vs-outstanding tracker. Nothing else describes the current state
-authoritatively.
+`STATUS.md` is the authoritative shipped-vs-outstanding
+tracker. The remaining four items (2.8b + 4.6b live-DB test
+assertions, 5.3 release pipeline, 6.3 reference JS worker
+binary) are each blocked on infrastructure outside the plan's
+in-source scope — DB test fixtures, CI/release tooling, and a
+separate JS worker implementation respectively. None block the
+production topology.
+
+The framework surface (derives, ctx, registry, schema
+reflection) is unchanged by the distributed work and continues
+to be the stable developer entry point.
 
 ## Target architecture (summary)
 
@@ -76,14 +84,16 @@ crates/convex_native_backend/    monolith-topology adapter.
                                  (STANDALONE.md path).
 
 crates/convex_native_distributed/ distributed-topology plumbing.
-                                 Under active rebuild per
-                                 DISTRIBUTED_PLAN.md — Phase 1
-                                 shipped (wire contract +
-                                 worker stops committing);
-                                 Phase 2 (backend-side
-                                 FunctionRunner impl) is the
-                                 active substep work. See
-                                 STATUS.md §"Phase 2 — active".
+                                 All phases of DISTRIBUTED_PLAN.md
+                                 shipped: wire contract, worker
+                                 FunctionRunner impl, dynamic
+                                 WorkerPool + admission service,
+                                 action sub-call callbacks,
+                                 prebuilt backend image + k8s
+                                 manifests, WorkerKind (JS
+                                 interop hooks), operator
+                                 tooling (snapshot/floor/drain/
+                                 kind_preference admin HTTP).
 ```
 
 ## At a glance (developer surface — unchanged)
@@ -138,10 +148,8 @@ Priority order when docs drift:
    deployer's worker crate will see.
 4. **This README** — landing page, stays short.
 
-Code-wise: Phase 1 of `DISTRIBUTED_PLAN.md` has landed — worker
-stops committing, `ExecuteResponse` carries a `DistributedFinalTx`
-summary. Phase 2 (backend-side `FunctionRunner` impl) is the
-active work; `STATUS.md` breaks it into substeps 2.1..2.8.
-Everything under `convex_native_distributed` is still in
-transition until Phase 3's admission service lands — don't build
-on top of anything the plan marks as provisional.
+Code-wise: every phase of `DISTRIBUTED_PLAN.md` has landed in
+source. New work plugs into the stable surface
+(`WorkerPool`, `PoolFunctionRunner`, `BackendCallbackService`,
+`admin_http::router`); `STATUS.md` is authoritative for what's
+wire-proven vs. blocked on out-of-source prerequisites.
