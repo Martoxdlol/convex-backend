@@ -14,12 +14,18 @@
 //! in-flight locally. Tests use the in-memory `MockWorkerClient`
 //! below.
 
-use std::sync::{
-    atomic::{
-        AtomicU64,
-        Ordering,
+use std::{
+    sync::{
+        atomic::{
+            AtomicU64,
+            Ordering,
+        },
+        Arc,
     },
-    Arc,
+    time::{
+        Duration,
+        Instant,
+    },
 };
 
 use async_trait::async_trait;
@@ -54,6 +60,159 @@ pub trait WorkerClient: Send + Sync {
     /// Cheap local estimate of outstanding requests. Consumed by
     /// the P2C load balancer; no network round-trip.
     fn in_flight_estimate(&self) -> u64;
+
+    /// Stable identifier for metrics / log labels. Real clients
+    /// return the endpoint URL; mock clients return their test name.
+    /// Default falls back to a constant so older implementors don't
+    /// get broken when this is added.
+    fn label(&self) -> &str {
+        "unknown"
+    }
+}
+
+/// Observability hook for the conductor side of the dispatch path.
+///
+/// Called once per `DistributedFunctionRunner::execute` — after
+/// every attempt has finished (whether a failover retry was needed
+/// or not). Implementors wire this into Prometheus / OpenTelemetry
+/// / tracing the way their deployment's metrics stack expects.
+///
+/// The [`ConductorOutcome::RetryAttempted`] marker lets dashboards
+/// separate "first attempt succeeded" from "backup salvaged the
+/// call" so operators can tell the cluster is degrading before
+/// requests actually start failing.
+pub trait ConductorMetricsSink: Send + Sync + 'static {
+    /// Report one completed dispatch. `worker` is the endpoint of
+    /// the worker the final attempt landed on (or `None` when no
+    /// worker was reachable — e.g. every attempt returned
+    /// `Unavailable`). `latency` spans the entire `execute(...)`
+    /// call, including any failover retry.
+    fn record(
+        &self,
+        worker: Option<&str>,
+        udf_type: UdfType,
+        outcome: ConductorOutcome,
+        latency: Duration,
+    );
+}
+
+/// Outcome of one conductor-side `execute(...)` dispatch.
+///
+/// Mirrors the `native_funrun_request_*` metric families named in
+/// `native-rust-functions.md` §12.3: successes on first try,
+/// successes after a failover retry, and transport / gRPC-level
+/// failures the conductor couldn't recover from.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ConductorOutcome {
+    /// First-attempt success. The handler returned a value (or a
+    /// handler-level `ExecuteResponse::Err(...)`; the conductor
+    /// doesn't distinguish handler errors from handler successes at
+    /// this layer — both mean "the worker received and processed
+    /// the request").
+    Ok,
+    /// First attempt failed with `Unavailable`; the backup picked
+    /// up and returned a response. Operators want to alert on this
+    /// rising before a user-visible failure mode appears.
+    Retried,
+    /// Every attempt failed at the transport / gRPC layer; the
+    /// caller received an `Err(Status)`. `Status::code()` is
+    /// carried through the sink for label construction (e.g.
+    /// `status.code()` as a Prometheus label).
+    Error(tonic::Code),
+}
+
+/// Default discards everything — the baseline wiring for deployments
+/// that don't (yet) care about conductor-side metrics.
+pub struct NoopConductorMetrics;
+
+impl ConductorMetricsSink for NoopConductorMetrics {
+    fn record(&self, _: Option<&str>, _: UdfType, _: ConductorOutcome, _: Duration) {}
+}
+
+/// In-memory counter sink for tests. Records every call so
+/// assertions can verify routing + outcome attribution.
+#[derive(Default)]
+pub struct CountingConductorMetrics {
+    inner: std::sync::Mutex<CountingConductorInner>,
+}
+
+#[derive(Default)]
+struct CountingConductorInner {
+    /// `(worker_endpoint_or_none, udf_type, outcome) -> count`. Using
+    /// `Option<String>` for the endpoint keeps the "no worker
+    /// reachable" state distinguishable from any specific worker's
+    /// bucket.
+    calls: std::collections::BTreeMap<(Option<String>, UdfType, ConductorOutcome), u64>,
+    total_latency: std::collections::BTreeMap<(Option<String>, UdfType), Duration>,
+}
+
+impl CountingConductorMetrics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn count(&self, worker: Option<&str>, udf_type: UdfType, outcome: ConductorOutcome) -> u64 {
+        self.inner
+            .lock()
+            .unwrap()
+            .calls
+            .get(&(worker.map(|s| s.to_string()), udf_type, outcome))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn total_latency(&self, worker: Option<&str>, udf_type: UdfType) -> Duration {
+        self.inner
+            .lock()
+            .unwrap()
+            .total_latency
+            .get(&(worker.map(|s| s.to_string()), udf_type))
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+// `BTreeMap` keys need `Ord`. Order between variants is irrelevant
+// for counting semantics — we just need a total order for map keys.
+impl PartialOrd for ConductorOutcome {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ConductorOutcome {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let key = |o: &ConductorOutcome| -> (u8, u16) {
+            match o {
+                ConductorOutcome::Ok => (0, 0),
+                ConductorOutcome::Retried => (1, 0),
+                ConductorOutcome::Error(c) => (2, *c as u16),
+            }
+        };
+        key(self).cmp(&key(other))
+    }
+}
+
+impl ConductorMetricsSink for CountingConductorMetrics {
+    fn record(
+        &self,
+        worker: Option<&str>,
+        udf_type: UdfType,
+        outcome: ConductorOutcome,
+        latency: Duration,
+    ) {
+        let worker_owned = worker.map(|s| s.to_string());
+        let mut inner = self.inner.lock().unwrap();
+        *inner
+            .calls
+            .entry((worker_owned.clone(), udf_type, outcome))
+            .or_insert(0) += 1;
+        let total = inner
+            .total_latency
+            .entry((worker_owned, udf_type))
+            .or_default();
+        *total += latency;
+    }
 }
 
 /// Strategy the runner uses to pick a worker for each request.
@@ -98,6 +257,10 @@ pub struct DistributedFunctionRunner {
     /// conductor routes around older workers. Workers that don't
     /// meet the floor reject with `tonic::Code::FailedPrecondition`.
     min_registry_version: Option<String>,
+    /// Observability hook. Defaults to [`NoopConductorMetrics`];
+    /// deployments that care about `native_funrun_*` metrics
+    /// swap in their own sink via [`with_metrics`].
+    metrics: Arc<dyn ConductorMetricsSink>,
 }
 
 impl DistributedFunctionRunner {
@@ -112,7 +275,15 @@ impl DistributedFunctionRunner {
             chooser: Arc::new(RandomChooser),
             failover: true,
             min_registry_version: None,
+            metrics: Arc::new(NoopConductorMetrics),
         })
+    }
+
+    /// Attach a metrics sink. Called once per `execute(...)` with
+    /// the final outcome + latency. See [`ConductorMetricsSink`].
+    pub fn with_metrics(mut self, metrics: Arc<dyn ConductorMetricsSink>) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// Replace the chooser. Tests use this to make dispatch
@@ -155,6 +326,8 @@ impl DistributedFunctionRunner {
         mut req: ExecuteRequest,
         udf_type: UdfType,
     ) -> Result<ExecuteResponse, Status> {
+        let started = Instant::now();
+
         // Apply the conductor-level rolling-update floor when the
         // request doesn't already pin a minimum.
         if req.min_registry_version.is_none()
@@ -176,20 +349,48 @@ impl DistributedFunctionRunner {
         };
 
         let mut last_err: Option<Status> = None;
+        let mut unavailable_retried = false;
         for &idx in attempts {
             let worker = &self.workers[idx];
             match worker.execute(req.clone(), udf_type).await {
-                Ok(resp) => return Ok(resp),
+                Ok(resp) => {
+                    let outcome = if unavailable_retried {
+                        ConductorOutcome::Retried
+                    } else {
+                        ConductorOutcome::Ok
+                    };
+                    self.metrics
+                        .record(Some(worker.label()), udf_type, outcome, started.elapsed());
+                    return Ok(resp);
+                },
                 Err(e) if e.code() == tonic::Code::Unavailable => {
+                    unavailable_retried = true;
                     last_err = Some(e);
                     continue;
                 },
-                Err(e) => return Err(e),
+                Err(e) => {
+                    self.metrics.record(
+                        Some(worker.label()),
+                        udf_type,
+                        ConductorOutcome::Error(e.code()),
+                        started.elapsed(),
+                    );
+                    return Err(e);
+                },
             }
         }
-        Err(last_err.unwrap_or_else(|| {
+        let err = last_err.unwrap_or_else(|| {
             Status::unavailable("DistributedFunctionRunner: all workers failed")
-        }))
+        });
+        // Every attempt failed transport-side — no single "final
+        // worker" to attribute to, so omit the worker label.
+        self.metrics.record(
+            None,
+            udf_type,
+            ConductorOutcome::Error(err.code()),
+            started.elapsed(),
+        );
+        Err(err)
     }
 
     /// Return `(less_busy, more_busy)`. Ties break toward `a`.
@@ -270,6 +471,10 @@ impl WorkerClient for MockWorkerClient {
 
     fn in_flight_estimate(&self) -> u64 {
         self.in_flight.load(Ordering::SeqCst)
+    }
+
+    fn label(&self) -> &str {
+        self.name
     }
 }
 
@@ -416,5 +621,109 @@ mod tests {
         let encoded =
             crate::conversions::to_proto_request(&native, UdfType::Action).expect("encode");
         assert_eq!(encoded.name, "get_user");
+    }
+
+    #[tokio::test]
+    async fn metrics_sink_records_ok_outcome_against_the_attributed_worker() {
+        // A routine `Ok` dispatch records against the worker that
+        // actually handled the call (the backup label for workers
+        // in this test is "B"), tagged as `Ok` — `Retried` is
+        // reserved for the "primary Unavailable, backup salvaged"
+        // path.
+        let a = MockWorkerClient::new("A", 10);
+        let b = MockWorkerClient::new("B", 0);
+        let metrics = Arc::new(CountingConductorMetrics::new());
+        let runner = DistributedFunctionRunner::new(vec![a, b])
+            .unwrap()
+            .with_chooser(Arc::new(FixedChooser((0, 1))))
+            .with_metrics(metrics.clone());
+        runner.execute(req(), UdfType::Action).await.unwrap();
+        assert_eq!(
+            metrics.count(Some("B"), UdfType::Action, ConductorOutcome::Ok),
+            1
+        );
+        assert_eq!(
+            metrics.count(Some("A"), UdfType::Action, ConductorOutcome::Ok),
+            0,
+            "loaded worker never saw the request",
+        );
+        assert_eq!(
+            metrics.count(Some("B"), UdfType::Action, ConductorOutcome::Retried),
+            0,
+            "first-attempt success is not tagged Retried",
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_sink_records_retried_when_backup_salvages() {
+        // Primary returns Unavailable, backup succeeds → the final
+        // record should be against the backup's label and tagged
+        // `Retried` so dashboards can alert before the error rate
+        // climbs.
+        let primary = MockWorkerClient::with_handler("A", 0, |_, _| {
+            Err(Status::unavailable("simulated primary outage"))
+        });
+        let backup = MockWorkerClient::with_handler("B", 1, |_, _| Ok(default_ok_response()));
+        let metrics = Arc::new(CountingConductorMetrics::new());
+        let runner = DistributedFunctionRunner::new(vec![primary, backup])
+            .unwrap()
+            .with_chooser(Arc::new(FixedChooser((0, 1))))
+            .with_metrics(metrics.clone());
+        runner.execute(req(), UdfType::Action).await.unwrap();
+        assert_eq!(
+            metrics.count(Some("B"), UdfType::Action, ConductorOutcome::Retried),
+            1,
+            "backup-salvaged call surfaces as Retried",
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_sink_records_error_when_every_attempt_fails_transport() {
+        // All workers `Unavailable` → the final record has no worker
+        // attribution (no single "final attempt worker" landed the
+        // response) and is tagged `Error(Unavailable)`.
+        let a = MockWorkerClient::with_handler("A", 0, |_, _| Err(Status::unavailable("down")));
+        let b = MockWorkerClient::with_handler("B", 0, |_, _| Err(Status::unavailable("down")));
+        let metrics = Arc::new(CountingConductorMetrics::new());
+        let runner = DistributedFunctionRunner::new(vec![a, b])
+            .unwrap()
+            .with_chooser(Arc::new(FixedChooser((0, 1))))
+            .with_metrics(metrics.clone());
+        assert!(runner.execute(req(), UdfType::Action).await.is_err());
+        assert_eq!(
+            metrics.count(
+                None,
+                UdfType::Action,
+                ConductorOutcome::Error(tonic::Code::Unavailable),
+            ),
+            1,
+            "final record when every attempt failed has no worker label",
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_sink_records_error_with_specific_code_on_non_retryable_failure() {
+        // A non-`Unavailable` error bubbles up on the first attempt.
+        // The record should carry the worker that actually failed
+        // (not `None`) and the exact gRPC code so dashboards can
+        // separate `InvalidArgument` from `Internal`.
+        let a = MockWorkerClient::with_handler("A", 0, |_, _| {
+            Err(Status::invalid_argument("bad args"))
+        });
+        let b = MockWorkerClient::new("B", 10);
+        let metrics = Arc::new(CountingConductorMetrics::new());
+        let runner = DistributedFunctionRunner::new(vec![a, b])
+            .unwrap()
+            .with_chooser(Arc::new(FixedChooser((0, 1))))
+            .with_metrics(metrics.clone());
+        assert!(runner.execute(req(), UdfType::Action).await.is_err());
+        assert_eq!(
+            metrics.count(
+                Some("A"),
+                UdfType::Action,
+                ConductorOutcome::Error(tonic::Code::InvalidArgument),
+            ),
+            1,
+        );
     }
 }

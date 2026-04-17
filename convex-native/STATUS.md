@@ -23,9 +23,9 @@ blocked on `rush install` rather than on native-dispatch behaviour
 ## Test tallies
 
 ```
-cargo test -p convex_native              # 227 tests
+cargo test -p convex_native              # 229 tests
 cargo test -p convex_native_backend      # 10 tests
-cargo test -p convex_native_distributed  # 48 tests
+cargo test -p convex_native_distributed  # 52 tests
 ```
 
 All green at HEAD.
@@ -95,6 +95,13 @@ All green at HEAD.
 - Rolling updates with version-aware routing:
   `min_registry_version` floor + per-call override in
   `ExecuteRequest`.
+- Conductor-side metrics hook
+  (`convex_native_distributed::ConductorMetricsSink` +
+  `CountingConductorMetrics`) records every
+  `DistributedFunctionRunner::execute` with the attributed worker
+  label, `ConductorOutcome::{Ok, Retried, Error(tonic::Code)}`, and
+  total latency — the `native_funrun_{requests,duration,errors}`
+  surface named in design §12.3.
 
 ### Phase 5 — developer ergonomics
 - Compile-time index-field validation.

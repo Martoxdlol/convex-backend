@@ -40,7 +40,11 @@ pub mod server;
 pub mod tonic_client;
 
 pub use client::{
+    ConductorMetricsSink,
+    ConductorOutcome,
+    CountingConductorMetrics,
     DistributedFunctionRunner,
+    NoopConductorMetrics,
     WorkerClient,
 };
 pub use mode::{

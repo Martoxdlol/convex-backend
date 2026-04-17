@@ -120,6 +120,10 @@ impl WorkerClient for TonicWorkerClient {
     fn in_flight_estimate(&self) -> u64 {
         self.in_flight.load(Ordering::SeqCst)
     }
+
+    fn label(&self) -> &str {
+        &self.endpoint
+    }
 }
 
 #[cfg(test)]
