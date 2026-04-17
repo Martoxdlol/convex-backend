@@ -12,6 +12,7 @@ doctest = false
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+axum = { workspace = true }
 bytes = { workspace = true }
 common = { workspace = true }
 convex_native = { workspace = true }
@@ -44,6 +45,7 @@ vector = { workspace = true }
 # only list here what's strictly test-only.
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread"] }
 tokio-stream = { workspace = true, features = ["net"] }
+tower = { workspace = true }
 
 [lints]
 workspace = true

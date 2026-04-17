@@ -982,12 +982,39 @@ surface.
      so a future refactor can't silently drop an operator-
      visible field.
 
-7.2. **Admin HTTP surface.** Small axum router exposing
-     `GET /admin/pool` (snapshot), `POST /admin/pool/floor`
-     (set `min_registry_version`),
-     `POST /admin/pool/kind_preference`,
-     `POST /admin/pool/drain`. Gated behind the same
-     admin-auth the existing backend admin surface uses.
+7.2. ✓ **Admin HTTP surface.** Landed. New module
+     `convex_native_distributed::admin_http` with an axum
+     router serving:
+
+     - `GET /admin/pool` — returns a
+       `PoolSnapshot` as JSON.
+     - `POST /admin/pool/floor` with body
+       `{"min_registry_version": "X.Y.Z"}` sets the floor
+       (null clears).
+     - `POST /admin/pool/kind_preference` with body
+       `{"function_name": "n", "kind": "native-rust"}` pins
+       a per-function routing preference (accepts
+       `"native-rust"`, `"javascript"`, `"unspecified"`, or
+       null to clear; unknown kinds → 400).
+     - `POST /admin/pool/drain` with body
+       `{"worker_id": 42, "reason": "..."}` sends a
+       `DrainNotice`. Returns 501 when the router was built
+       without an admission server.
+
+     Construction: `AdminState::new(pool)` for read-only;
+     `.with_admission(server)` to enable drain. `router(state)`
+     returns an `axum::Router` the operator mounts alongside
+     the public HTTP server (typically on a loopback-only
+     port behind existing admin auth).
+
+     Cargo deps: adds `axum` as direct, `tower` as dev-dep
+     (for `ServiceExt::oneshot` in tests).
+
+     Tests: six unit tests on `admin_http::tests` cover each
+     route's happy path + error shape (GET snapshot /
+     set-floor / clear-floor / set-kind-preference / bad-kind
+     / drain-without-admission → 501). 125 tests total on
+     `convex_native_distributed`.
 
 7.3. **Inventory diff log.** When a new `registry_version`
      appears in the admission stream, log the
