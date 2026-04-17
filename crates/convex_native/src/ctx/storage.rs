@@ -71,3 +71,109 @@ impl<'a> StorageCtx<'a> {
         self.callbacks.storage_delete(self.namespace, id).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::{
+            hash_map::DefaultHasher,
+            HashSet,
+        },
+        hash::{
+            Hash,
+            Hasher,
+        },
+        str::FromStr,
+    };
+
+    use super::*;
+    use crate::callbacks::NoopCallbacks;
+
+    fn hash_one<T: Hash>(t: &T) -> u64 {
+        let mut h = DefaultHasher::new();
+        t.hash(&mut h);
+        h.finish()
+    }
+
+    #[test]
+    fn display_emits_the_inner_string_verbatim() {
+        let id = StorageId("abc-123".into());
+        assert_eq!(id.to_string(), "abc-123");
+    }
+
+    #[test]
+    fn from_str_wraps_the_input_without_validation() {
+        // StorageId is an opaque token; from_str accepts any string
+        // because the backend owns the id format. We only pin the
+        // round-trip: what goes in comes out.
+        let id: StorageId = "arbitrary_opaque_token".parse().unwrap();
+        assert_eq!(id.to_string(), "arbitrary_opaque_token");
+    }
+
+    #[test]
+    fn equal_ids_hash_identically() {
+        let a = StorageId("x".into());
+        let b = StorageId("x".into());
+        assert_eq!(a, b);
+        assert_eq!(hash_one(&a), hash_one(&b));
+    }
+
+    #[test]
+    fn storage_id_is_usable_as_hashset_key() {
+        // The `Eq + Hash` derives are load-bearing — callers stash
+        // `StorageId` in `HashSet`/`HashMap` to dedupe references.
+        // A silent removal of either would break that without a
+        // type-level signal, so pin the behaviour.
+        let mut set: HashSet<StorageId> = HashSet::new();
+        set.insert(StorageId("a".into()));
+        set.insert(StorageId("a".into()));
+        set.insert(StorageId("b".into()));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn storage_ctx_delegates_store_errors_from_noop_callbacks() {
+        // End-to-end shape check: `StorageCtx.store(...)` must forward
+        // the error from the callbacks layer rather than swallowing it.
+        // Tested via `NoopCallbacks` so we don't need a real backend.
+        let ctx = StorageCtx::new_with_callbacks(TableNamespace::Global, Arc::new(NoopCallbacks));
+        let err = ctx
+            .store(Bytes::from_static(b"data"), "text/plain")
+            .await
+            .expect_err("noop callbacks bail");
+        assert!(format!("{err}").contains("cannot store"));
+    }
+
+    #[tokio::test]
+    async fn storage_ctx_delegates_delete_and_get_url_to_callbacks() {
+        // Same delegation-shape check for get_url + delete — the
+        // methods are tiny forwarders but "tiny forwarders" are
+        // exactly where silent off-by-one mistakes (wrong namespace,
+        // dropped argument) tend to sneak in.
+        let ctx = StorageCtx::new_with_callbacks(TableNamespace::Global, Arc::new(NoopCallbacks));
+        assert!(ctx
+            .get_url(StorageId("x".into()))
+            .await
+            .expect_err("noop bails")
+            .to_string()
+            .contains("cannot read"));
+        assert!(ctx
+            .delete(StorageId("x".into()))
+            .await
+            .expect_err("noop bails")
+            .to_string()
+            .contains("cannot delete"));
+    }
+
+    #[test]
+    fn from_str_never_fails_on_any_utf8_string() {
+        // Confirms the `Err = anyhow::Error` in the `FromStr` impl is
+        // structural, not a hidden validation. If we ever want to
+        // reject malformed ids, this test will flip and force a
+        // deliberate API change.
+        for s in ["", " ", "a b c", "with/slashes/and/stuff", "🎉"] {
+            let id = StorageId::from_str(s).expect("never errors");
+            assert_eq!(id.to_string(), s);
+        }
+    }
+}
