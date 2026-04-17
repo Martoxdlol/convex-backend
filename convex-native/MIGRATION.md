@@ -129,6 +129,7 @@ Query chain cheatsheet:
 | `.order("asc" / "desc")` | `.order(Order::Asc / Desc)` |
 | `.take(n)` | `.take(n)` |
 | `.first()` / `.unique()` / `.collect()` | same |
+| `.paginate(paginationOpts)` | `.page(start_cursor, page_size) -> TypedPage<T>` |
 
 ## Mutation
 

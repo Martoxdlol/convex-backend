@@ -32,6 +32,7 @@ pub use crate::{
     ConvexActionFunction,
     ConvexMutationFunction,
     ConvexQueryFunction,
+    Cursor,
     HttpActionCtx,
     HttpRequest,
     HttpResponse,
@@ -40,6 +41,7 @@ pub use crate::{
     QueryCtx,
     Rt,
     StorageId,
+    TypedPage,
 };
 // Derive macros are re-exported from the crate root; bring them into
 // scope via the prelude too so `use convex_native::prelude::*;` is

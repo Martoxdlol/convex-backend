@@ -805,12 +805,18 @@ registrations, no schema entries.
   by `ConvexDocument` / `ConvexPatch`.
 - `TypedQueryBuilder` type-checks against `T::Index` and `T::Field`.
   Terminals `.collect()` / `.first()` / `.unique()` / `.take(n)` /
-  `.count()` execute via `database::DeveloperQuery`. Index-range
-  source when `.with_index()` was used, otherwise a full-table scan
-  with each `.eq` / `.gt` / `.gte` / `.lt` / `.lte` lowered to a
-  stacked `QueryOperator::Filter(Expression)` predicate — prefer an
-  indexed lookup when one exists; the filter path reads every row.
+  `.count()` / `.page(start_cursor, page_size)` execute via
+  `database::DeveloperQuery`. Index-range source when `.with_index()`
+  was used, otherwise a full-table scan with each `.eq` / `.gt` /
+  `.gte` / `.lt` / `.lte` lowered to a stacked
+  `QueryOperator::Filter(Expression)` predicate — prefer an indexed
+  lookup when one exists; the filter path reads every row.
   `.unique()` errors if more than one doc matches.
+  `.page()` returns `TypedPage<T> { items, cursor, is_done }` and is
+  bounded via `PaginationOptions::ManualPagination` so each call
+  reads at most `page_size` rows — pass the returned `cursor` back
+  into the next call; `is_done` flips to `true` once the underlying
+  scan has been exhausted.
 
 ### What doesn't work yet
 

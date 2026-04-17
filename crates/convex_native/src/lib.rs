@@ -99,6 +99,7 @@ pub use circuit_breaker::{
     CircuitBreaker,
     CircuitBreakerConfig,
 };
+pub use common::query::Cursor;
 pub use convert::{
     FromConvex,
     ToConvex,
@@ -108,7 +109,10 @@ pub use cron::{
     CronRegistry,
 };
 pub use ctx::{
-    query_builder::Order,
+    query_builder::{
+        Order,
+        TypedPage,
+    },
     ActionCtx,
     MutationCtx,
     MutationDb,

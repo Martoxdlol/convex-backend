@@ -18,6 +18,7 @@ use std::marker::PhantomData;
 
 use common::{
     query::{
+        Cursor,
         Expression,
         IndexRange,
         IndexRangeExpression,
@@ -32,7 +33,10 @@ use common::{
     },
 };
 use database::{
-    query::TableFilter,
+    query::{
+        PaginationOptions,
+        TableFilter,
+    },
     DeveloperQuery,
     Transaction,
 };
@@ -56,6 +60,19 @@ use crate::{
 pub enum Order {
     Asc,
     Desc,
+}
+
+/// One page of results from `TypedQueryBuilder::page`.
+///
+/// `cursor` is the opaque cursor for fetching the next page — pass it
+/// back into the next `.page(Some(cursor), ...)` call. `is_done`
+/// is `true` when the underlying scan has been exhausted (the page
+/// returned fewer rows than requested).
+#[derive(Debug, Clone)]
+pub struct TypedPage<T> {
+    pub items: Vec<T>,
+    pub cursor: Option<Cursor>,
+    pub is_done: bool,
 }
 
 impl From<Order> for ConvexOrder {
@@ -268,6 +285,89 @@ impl<'db, 'tx, RT: Runtime, T: ConvexDocument> TypedQueryBuilder<'db, 'tx, RT, T
             out.push(parsed);
         }
         Ok(out)
+    }
+
+    /// Terminal: fetch one page of results starting at `start_cursor`
+    /// (or from the beginning when `None`). The query is bounded by
+    /// `page_size` rows via the database's
+    /// [`PaginationOptions::ManualPagination`] mode, so each call reads
+    /// at most `page_size` rows from storage. The returned `next_cursor`
+    /// is suitable for the next call; `is_done` flips to `true` when
+    /// the page didn't fill (no more rows to read).
+    ///
+    /// Notes vs `.collect()`:
+    /// - `.collect()` reads the entire range; `.page()` reads at most
+    ///   `page_size` rows.
+    /// - The cursor is opaque — pass it back unchanged. A cursor is only valid
+    ///   against the same query (same index, same filters, same order); the
+    ///   database guards this with a fingerprint.
+    /// - For reactive paginated queries, this isn't enough by itself — the sync
+    ///   layer calls a different code path. `.page()` is the right shape for
+    ///   one-shot scrolls inside a query/mutation.
+    pub async fn page(
+        self,
+        start_cursor: Option<Cursor>,
+        page_size: usize,
+    ) -> anyhow::Result<TypedPage<T>> {
+        anyhow::ensure!(
+            page_size > 0,
+            "TypedQueryBuilder::page page_size must be > 0"
+        );
+        let TypedQueryBuilder {
+            tx,
+            namespace,
+            index,
+            index_fields,
+            filters,
+            order,
+            limit,
+            ..
+        } = self;
+        // `limit` and `page_size` overlap. We honour `limit` as an
+        // additional cap on this page — but the page itself is bounded
+        // by `page_size` via PaginationOptions. If a smaller .limit() is
+        // set, that wins.
+        let cap = match limit {
+            Some(l) => l.min(page_size),
+            None => page_size,
+        };
+        let mut query = make_query::<T>(index, index_fields, filters, order, None)?;
+        let mut dq = DeveloperQuery::<RT>::new_bounded(
+            tx,
+            namespace,
+            query.take(),
+            PaginationOptions::ManualPagination {
+                start_cursor,
+                maximum_rows_read: Some(cap),
+                maximum_bytes_read: None,
+            },
+            None,
+            TableFilter::ExcludePrivateSystemTables,
+        )?;
+        let mut items = Vec::with_capacity(cap);
+        let mut exhausted = false;
+        while items.len() < cap {
+            match dq.next(tx, None).await? {
+                Some(doc) => {
+                    let value = doc.into_value();
+                    items.push(T::from_convex_object(value.0)?);
+                },
+                None => {
+                    exhausted = true;
+                    break;
+                },
+            }
+        }
+        // If we hit `cap` without ever calling next() and seeing None,
+        // we don't yet know whether the underlying scan is done — the
+        // honest answer is "ask the database" via the cursor. We surface
+        // `is_done` only when the inner iterator returned None.
+        let next_cursor = dq.cursor();
+        Ok(TypedPage {
+            items,
+            cursor: next_cursor,
+            is_done: exhausted,
+        })
     }
 
     /// Terminal: return the first matching document, if any.
@@ -586,5 +686,26 @@ mod tests {
             format!("{err}").contains("is not part of index"),
             "error mentions the bad field: {err}",
         );
+    }
+
+    /// `TypedPage<T>` carries the page contents plus pagination state.
+    /// We can't drive the full `.page()` path without a real
+    /// `Database<RT>` (covered by end-to-end backend tests), but the
+    /// shape itself must stay clonable + debug-printable so callers
+    /// can store it across requests and log it.
+    #[test]
+    fn typed_page_is_clone_and_debug() {
+        let page: TypedPage<i64> = TypedPage {
+            items: vec![1, 2, 3],
+            cursor: None,
+            is_done: true,
+        };
+        let cloned = page.clone();
+        assert_eq!(cloned.items, vec![1, 2, 3]);
+        assert!(cloned.is_done);
+        assert!(cloned.cursor.is_none());
+        let rendered = format!("{page:?}");
+        assert!(rendered.contains("items"));
+        assert!(rendered.contains("is_done"));
     }
 }
