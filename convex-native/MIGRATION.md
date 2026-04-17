@@ -337,6 +337,24 @@ return Err(convex_native::errors::unauthenticated(
 ).into());
 ```
 
+Available helpers mirror the HTTP status code they produce:
+
+| Helper                              | HTTP | Use for                                        |
+|-------------------------------------|------|------------------------------------------------|
+| `errors::bad_request(short, msg)`   | 400  | Invalid input, malformed payload.              |
+| `errors::unauthenticated(..)`       | 401  | Missing or invalid credentials.                |
+| `errors::forbidden(..)`             | 403  | Authenticated but not allowed.                 |
+| `errors::not_found(..)`             | 404  | Resource does not exist.                       |
+| `errors::conflict(..)`              | 409  | Unique-constraint / optimistic-locking clash.  |
+| `errors::rate_limited(..)`          | 429  | Caller exceeded a rate limit.                  |
+| `errors::overloaded(..)`            | 503  | Defensive backpressure — please retry.         |
+
+All take `impl Into<Cow<'static, str>>` so both `&'static str` and
+`String` compile. Prefer a bare `anyhow::bail!(...)` over
+`errors::overloaded(...)` unless a specific custom message helps the
+caller recover — the bare bail produces a generic 500 response and
+is the safer default for uncategorised internal errors.
+
 ## Testing
 
 JS-side `convex-test` has no direct Rust analog yet, but:
