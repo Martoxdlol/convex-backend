@@ -474,6 +474,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pool_dispatcher_routes_through_eligible_worker() {
+        use std::sync::atomic::AtomicU64;
+
+        use async_trait::async_trait;
+        use common::types::UdfType;
+        use convex_native_core::distributed::{
+            ExecuteRequest as NativeExecuteRequest,
+            ExecuteResponse as NativeExecuteResponse,
+        };
+        use pb::function_execution as fproto;
+        use tonic::Status;
+        use value::ConvexValue;
+
+        use crate::{
+            client::WorkerClient,
+            pool::WorkerPool,
+        };
+
+        struct StubClient {
+            calls: Arc<AtomicU64>,
+            label: String,
+        }
+
+        #[async_trait]
+        impl WorkerClient for StubClient {
+            async fn execute(
+                &self,
+                _req: NativeExecuteRequest,
+                _udf_type: UdfType,
+            ) -> Result<NativeExecuteResponse, Status> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(NativeExecuteResponse::new(Ok(ConvexValue::Null)))
+            }
+
+            async fn health(&self) -> Result<fproto::HealthResponse, Status> {
+                Err(Status::unimplemented("stub"))
+            }
+
+            fn in_flight_estimate(&self) -> u64 {
+                0
+            }
+
+            fn label(&self) -> &str {
+                &self.label
+            }
+        }
+
+        let pool = Arc::new(WorkerPool::new());
+        let calls = Arc::new(AtomicU64::new(0));
+        pool.admit(crate::pool::WorkerEntry {
+            client: Arc::new(StubClient {
+                calls: calls.clone(),
+                label: "w".to_string(),
+            }),
+            registry_version: "1.0.0".to_string(),
+            functions: vec!["nightly_cleanup".to_string()],
+            kind: crate::pool::WorkerKind::NativeRust,
+            http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
+        });
+        let dispatcher = PoolDispatcher::new(pool);
+        dispatcher
+            .fire("nightly_cleanup", CronTargetKind::Mutation)
+            .await
+            .expect("dispatch ok");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn pool_dispatcher_errors_when_no_worker_serves_target() {
+        use crate::pool::WorkerPool;
+        let pool = Arc::new(WorkerPool::new());
+        let dispatcher = PoolDispatcher::new(pool);
+        let err = dispatcher
+            .fire("nightly_cleanup", CronTargetKind::Mutation)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("no worker"),
+            "error mentions missing worker: {err}",
+        );
+    }
+
+    #[tokio::test]
     async fn invalid_schedule_fails_to_install() {
         let dispatcher = Arc::new(RecordingDispatcher {
             fired: AtomicU64::new(0),
