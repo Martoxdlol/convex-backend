@@ -65,8 +65,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Optionally dial backend admission. The handle is held for
     // the binary's lifetime; dropping it cleanly retires the
-    // worker on the backend side.
-    let _registration: Option<WorkerRegistration> = match read_backend_endpoint_from_env()? {
+    // worker on the backend side. When wired we also spawn a
+    // 5-second heartbeat loop so the backend's
+    // `WorkerStatus`-driven dashboards have fresh data; the
+    // example reports `0` for in-flight (it doesn't own the
+    // server's gauge from out here — a real deployer threads
+    // their `FunctionExecutionServer::in_flight()` through).
+    let _registration: Option<Arc<WorkerRegistration>> = match read_backend_endpoint_from_env()? {
         Some(backend_endpoint) => {
             let registry_version = convex_native_core::VERSION.to_string();
             let execute_endpoint = format!("http://{addr}");
@@ -74,6 +79,10 @@ async fn main() -> anyhow::Result<()> {
                 WorkerRegistration::register(backend_endpoint, execute_endpoint, registry_version)
                     .await?;
             eprintln!("examples/worker: registered with backend admission service");
+            let reg = Arc::new(reg);
+            let _heartbeat = reg
+                .clone()
+                .spawn_heartbeat_loop(std::time::Duration::from_secs(5), || 0);
             Some(reg)
         },
         None => None,

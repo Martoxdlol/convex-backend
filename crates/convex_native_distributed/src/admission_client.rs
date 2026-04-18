@@ -222,6 +222,51 @@ impl WorkerRegistration {
         self.drain_notify.notified().await;
     }
 
+    /// Spawn a background heartbeat loop that pushes the
+    /// supplied in-flight estimate every `interval`. Returns a
+    /// `tokio::task::JoinHandle` the caller can drop to stop
+    /// heartbeating. The loop exits cleanly when the stream
+    /// closes (backend drained us, transport failure, etc.) so
+    /// dropping the handle is the only thing the caller needs to
+    /// do for clean shutdown.
+    ///
+    /// `in_flight_provider` is called on every tick — the worker
+    /// passes a closure that reads its `FunctionExecutionServer`
+    /// in-flight gauge. CPU is left at 0 here; binaries that
+    /// can sample CPU cheaply should call `push_status(...)`
+    /// directly.
+    pub fn spawn_heartbeat_loop<F>(
+        self: Arc<Self>,
+        interval: std::time::Duration,
+        mut in_flight_provider: F,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        F: FnMut() -> u64 + Send + 'static,
+    {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            // First tick fires immediately; skip it so we wait
+            // a full interval before the first heartbeat.
+            tick.tick().await;
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        let in_flight = in_flight_provider();
+                        if self.push_status(in_flight, 0).await.is_err() {
+                            // Stream closed; the binary already
+                            // observes this through `drain_signaled`
+                            // / `drain_requested`. Exit quietly.
+                            return;
+                        }
+                    },
+                    _ = self.drain_notify.notified() => {
+                        return;
+                    },
+                }
+            }
+        })
+    }
+
     /// Convenience: poll the drain signal without awaiting.
     /// Lets a heartbeat loop check on each tick whether it
     /// should bail. Uses `Notify::notified` internally but
@@ -371,5 +416,67 @@ mod tests {
             pool.is_empty(),
             "dropping WorkerRegistration retires the worker from the pool",
         );
+    }
+
+    #[tokio::test]
+    async fn heartbeat_loop_pushes_status_periodically() {
+        let pool = Arc::new(WorkerPool::new());
+        let admission_addr = spawn_admission(pool.clone()).await;
+        let exec_addr = spawn_worker_exec().await;
+        let reg = WorkerRegistration::register(
+            format!("http://{admission_addr}"),
+            format!("http://{exec_addr}"),
+            "3.5-test".to_string(),
+        )
+        .await
+        .expect("register");
+        for _ in 0..20 {
+            if pool.len() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let worker_id = pool
+            .snapshot()
+            .workers
+            .first()
+            .map(|w| crate::pool::WorkerId(w.worker_id))
+            .expect("one worker admitted");
+
+        let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counter_clone = counter.clone();
+        let reg_arc = Arc::new(reg);
+        let handle =
+            reg_arc
+                .clone()
+                .spawn_heartbeat_loop(std::time::Duration::from_millis(40), move || {
+                    counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    7
+                });
+
+        // Wait for at least two heartbeats to land on the pool.
+        let mut observed_in_flight = 0;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let snapshot = pool.snapshot();
+            if let Some(w) = snapshot.workers.first()
+                && w.reported_in_flight == 7
+            {
+                observed_in_flight = w.reported_in_flight;
+                break;
+            }
+        }
+        assert_eq!(
+            observed_in_flight, 7,
+            "heartbeat-pushed in_flight={observed_in_flight} should reach the pool snapshot",
+        );
+        assert!(
+            counter.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "in_flight_provider closure was invoked at least once",
+        );
+        let _ = worker_id; // silence unused
+
+        handle.abort();
+        drop(reg_arc);
     }
 }
