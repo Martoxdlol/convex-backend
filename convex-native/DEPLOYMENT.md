@@ -161,7 +161,11 @@ Unchanged from `DISTRIBUTED_PLAN.md §9.2` once Phase 3 is live:
 2. Push.
 3. Roll the worker Deployment (k8s / ECS / whatever).
 4. v2 workers register, sit in the pool alongside v1.
-5. Operator bumps `CONVEX_MIN_REGISTRY_VERSION=v2` on the backend.
+5. Operator bumps the floor — either through the admin HTTP route
+   `POST /admin/pool/floor {"min_registry_version":"v2"}` (no
+   restart needed) or by updating the `CONVEX_MIN_REGISTRY_VERSION`
+   env var and rolling the backend pod (env var is consulted at
+   boot only — admin HTTP is the runtime path).
 6. Backend routes new traffic to v2 only. v1 workers drain.
 7. Autoscaler scales v1 replica count to zero.
 

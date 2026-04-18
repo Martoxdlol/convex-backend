@@ -272,8 +272,11 @@ pub struct FinalTxSummary {
     /// Substep 2.2b: indexed reads the handler accumulated — one
     /// entry per (tablet, index). Empty list = the handler opened
     /// a tx but read nothing indexable (and a valid state
-    /// distinct from "no final_tx"). Search reads deferred; see
-    /// `convex-native/STATUS.md`.
+    /// distinct from "no final_tx"). Search reads aren't carried
+    /// here because native handlers have no tx-level search
+    /// surface — vector / text search arrives via the
+    /// `NativeActionCallbacks::vector_search` sub-call path and
+    /// doesn't accumulate on the worker's `TransactionReadSet`.
     pub index_reads: Vec<IndexReadsSummary>,
     /// Per-invocation observed-determinism flags drained off
     /// the handler's `Observed` handle. The backend writes

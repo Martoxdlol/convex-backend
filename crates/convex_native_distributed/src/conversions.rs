@@ -383,8 +383,11 @@ pub fn final_tx_summary_to_function_tx(
         .collect::<anyhow::Result<_>>()?;
 
     // Rebuild the indexed-side of `ReadSet` from the per-
-    // (tablet, index) summary. Search-side is empty because the
-    // wire contract doesn't carry search reads yet (Phase 2 TODO).
+    // (tablet, index) summary. Search-side stays empty by design:
+    // native handlers don't expose a tx-level search surface
+    // (search hits arrive through `NativeActionCallbacks::vector_search`
+    // as a sub-call, not as part of the transactional read set),
+    // so a worker's tx never accumulates `SearchQueryReads`.
     let indexed: BTreeMap<TabletIndexName, IndexReads> = index_reads
         .into_iter()
         .map(|ir| -> anyhow::Result<_> {

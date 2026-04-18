@@ -70,6 +70,7 @@ pub use mode::{
     read_backend_callback_endpoint_from_env,
     read_backend_endpoint_from_env,
     read_callback_bind_addr_from_env,
+    read_min_registry_version_from_env,
     read_mode_from_env,
     read_native_workers_from_env,
     read_refuse_native_handlers_from_env,

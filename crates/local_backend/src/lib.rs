@@ -363,6 +363,13 @@ pub async fn make_app(
                 .with_admission(admission_handle.clone());
             convex_native_distributed::admin_http::spawn_admin_server(admin_addr, state).await?;
         }
+        // Seed the operator-set floor from the env var. The
+        // admin HTTP route (`POST /admin/pool/floor`) can raise
+        // / lower it later without a backend restart.
+        if let Some(floor) = convex_native_distributed::read_min_registry_version_from_env()? {
+            tracing::info!("CONVEX_MIN_REGISTRY_VERSION={floor:?} — seeding pool floor",);
+            pool.set_min_registry_version(Some(floor));
+        }
         admission_pool = Some(pool.clone());
         admission_server_handle = Some(admission_handle);
         Some(Arc::new(

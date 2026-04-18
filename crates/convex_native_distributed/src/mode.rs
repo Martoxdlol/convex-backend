@@ -257,6 +257,33 @@ pub fn read_refuse_native_handlers_from_env() -> bool {
         .unwrap_or(false)
 }
 
+/// `CONVEX_MIN_REGISTRY_VERSION`. Initial value for the
+/// admission pool's `min_registry_version` floor. Workers whose
+/// `registry_version` doesn't meet this floor are skipped on
+/// dispatch (see `WorkerPool::set_min_registry_version`).
+///
+/// `Ok(None)` when unset (no floor enforced); `Ok(Some(s))`
+/// when set to a non-empty value (operators can still raise /
+/// lower it at runtime through the admin HTTP `POST
+/// /admin/pool/floor` route — the env var only seeds the boot
+/// value). Empty / whitespace-only ⇒ `Err` so a misconfig
+/// fails loud.
+pub fn read_min_registry_version_from_env() -> anyhow::Result<Option<String>> {
+    match std::env::var("CONVEX_MIN_REGISTRY_VERSION") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_MIN_REGISTRY_VERSION set but empty — unset it or set a valid version \
+                     string",
+                )
+            }
+            Ok(Some(trimmed.to_string()))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
 /// Substep 3.5 env-var: `CONVEX_BACKEND_ENDPOINT`. When the
 /// worker binary starts it dials this URL, opens the
 /// `WorkerAdmissionService::Register` stream, and stays
@@ -597,6 +624,46 @@ mod tests {
         // SAFETY: Serialized via env_guard so no concurrent writer.
         unsafe {
             std::env::remove_var("CONVEX_REFUSE_NATIVE_HANDLERS");
+        }
+    }
+
+    #[test]
+    fn read_min_registry_version_unset_returns_none() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_MIN_REGISTRY_VERSION");
+        }
+        assert_eq!(read_min_registry_version_from_env().unwrap(), None);
+    }
+
+    #[test]
+    fn read_min_registry_version_returns_value() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_MIN_REGISTRY_VERSION", "v2.1.0");
+        }
+        let value = read_min_registry_version_from_env().unwrap();
+        assert_eq!(value.as_deref(), Some("v2.1.0"));
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_MIN_REGISTRY_VERSION");
+        }
+    }
+
+    #[test]
+    fn read_min_registry_version_rejects_empty() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_MIN_REGISTRY_VERSION", "   ");
+        }
+        let err = read_min_registry_version_from_env().unwrap_err();
+        assert!(err.to_string().contains("CONVEX_MIN_REGISTRY_VERSION"));
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_MIN_REGISTRY_VERSION");
         }
     }
 
