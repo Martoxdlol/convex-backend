@@ -627,16 +627,21 @@ impl WorkerPool {
     /// needs in one RPC.
     pub fn snapshot(&self) -> PoolSnapshot {
         let inner = self.inner.read();
-        let workers: Vec<PoolWorkerSnapshot> = inner
+        let mut workers: Vec<PoolWorkerSnapshot> = inner
             .workers
             .iter()
             .map(|(id, entry)| {
                 let live = *entry.status.lock();
+                let mut functions = entry.functions.clone();
+                // Sort the function list per-worker so snapshots
+                // remain stable across calls regardless of
+                // admission-envelope iteration order.
+                functions.sort();
                 PoolWorkerSnapshot {
                     worker_id: id.0,
                     registry_version: entry.registry_version.clone(),
                     kind: entry.kind.as_str().to_string(),
-                    functions: entry.functions.clone(),
+                    functions,
                     in_flight: entry.client.in_flight_estimate(),
                     label: entry.client.label().to_string(),
                     reported_in_flight: live.in_flight,
@@ -644,6 +649,10 @@ impl WorkerPool {
                 }
             })
             .collect();
+        // Sort workers by admission id so `/admin/pool` returns
+        // them in a deterministic admission order — operator
+        // dashboards and snapshot tests rely on stable output.
+        workers.sort_by_key(|w| w.worker_id);
         let mut by_version: BTreeMap<String, usize> = BTreeMap::new();
         let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
         for entry in inner.workers.values() {
@@ -979,6 +988,28 @@ mod tests {
             .map(|(_, client, _)| client.label().to_string())
             .collect();
         assert_eq!(eligible, vec!["rust-worker".to_string()]);
+    }
+
+    #[test]
+    fn snapshot_workers_are_ordered_by_id() {
+        // Admit workers in an order that, under HashMap
+        // iteration, would likely produce a different ordering
+        // than the admission order. The snapshot must still
+        // return them sorted by worker_id.
+        let pool = WorkerPool::new();
+        pool.admit(entry("b", "1.0", &["get"]));
+        pool.admit(entry("d", "1.0", &["get"]));
+        pool.admit(entry("a", "1.0", &["get"]));
+        pool.admit(entry("c", "1.0", &["get"]));
+        let snapshot = pool.snapshot();
+        let ids: Vec<u64> = snapshot.workers.iter().map(|w| w.worker_id).collect();
+        assert_eq!(ids, vec![0, 1, 2, 3]);
+        // And per-worker function lists are sorted.
+        for worker in &snapshot.workers {
+            let mut sorted = worker.functions.clone();
+            sorted.sort();
+            assert_eq!(worker.functions, sorted);
+        }
     }
 
     #[test]
