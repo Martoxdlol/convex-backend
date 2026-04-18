@@ -339,6 +339,9 @@ pub async fn make_app(
     let mut admission_server_handle: Option<
         convex_native_distributed::admission_server::WorkerAdmissionServer,
     > = None;
+    // Captured so the cron-driver block below can mount the
+    // admin HTTP surface with a live driver attached.
+    let mut admin_bind_addr_opt: Option<std::net::SocketAddr> = None;
     let remote_native_pool: Option<Arc<dyn FunctionRunner<ProdRuntime>>> = if let Some(bind_addr) =
         admission_bind_addr
     {
@@ -357,12 +360,9 @@ pub async fn make_app(
         // kind preferences + drain triggers) on the operator-
         // facing port. Loopback-only bind is the expected
         // production shape.
-        if let Some(admin_addr) = convex_native_distributed::read_admin_bind_addr_from_env()? {
-            tracing::info!("CONVEX_ADMIN_BIND_ADDR={admin_addr:?} — mounting admin HTTP surface",);
-            let state = convex_native_distributed::admin_http::AdminState::new(pool.clone())
-                .with_admission(admission_handle.clone());
-            convex_native_distributed::admin_http::spawn_admin_server(admin_addr, state).await?;
-        }
+        // Defer admin HTTP spawn until after the cron driver
+        // setup so `/admin/crons` can see the live driver.
+        admin_bind_addr_opt = convex_native_distributed::read_admin_bind_addr_from_env()?;
         // Seed the operator-set floor from the env var. The
         // admin HTTP route (`POST /admin/pool/floor`) can raise
         // / lower it later without a backend restart.
@@ -502,7 +502,39 @@ pub async fn make_app(
             if let Some(handle) = admission_server_handle.as_ref() {
                 handle.set_cron_driver(driver.clone());
             }
-            NATIVE_CRON_DRIVER.set(driver).ok();
+            NATIVE_CRON_DRIVER.set(driver.clone()).ok();
+            // Mount the admin HTTP surface with the cron driver
+            // attached so `/admin/crons` returns live data.
+            if let Some(admin_addr) = admin_bind_addr_opt.take() {
+                tracing::info!(
+                    "CONVEX_ADMIN_BIND_ADDR={admin_addr:?} — mounting admin HTTP surface",
+                );
+                let mut state = convex_native_distributed::admin_http::AdminState::new(
+                    admission_pool
+                        .clone()
+                        .expect("admission_pool set with admin"),
+                )
+                .with_cron_driver(driver);
+                if let Some(handle) = admission_server_handle.as_ref() {
+                    state = state.with_admission(handle.clone());
+                }
+                convex_native_distributed::admin_http::spawn_admin_server(admin_addr, state)
+                    .await?;
+            }
+        }
+    }
+    // Pool-mode admin spawn fallback: when the admission pool is
+    // attached but no native crons exist (so the cron block above
+    // didn't take the addr), still mount the admin surface for
+    // pool introspection / floor / drain.
+    if let Some(admin_addr) = admin_bind_addr_opt.take() {
+        if let Some(pool) = admission_pool.clone() {
+            tracing::info!("CONVEX_ADMIN_BIND_ADDR={admin_addr:?} — mounting admin HTTP surface",);
+            let mut state = convex_native_distributed::admin_http::AdminState::new(pool);
+            if let Some(handle) = admission_server_handle.as_ref() {
+                state = state.with_admission(handle.clone());
+            }
+            convex_native_distributed::admin_http::spawn_admin_server(admin_addr, state).await?;
         }
     }
 

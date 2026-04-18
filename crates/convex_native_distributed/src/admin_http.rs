@@ -22,6 +22,11 @@
 //!   null }` to clear.
 //! - `POST /admin/pool/drain { "worker_id": 42, "reason": "..." }` sends a
 //!   `DrainNotice` to the specified worker.
+//! - `GET /admin/crons` — returns the live `NativeCronDriver` job list as JSON.
+//!   Returns 501 when the driver isn't attached.
+//! - `POST /admin/crons/remove { "name": "..." }` drops a cron from the firing
+//!   schedule. Idempotent; `{"removed": true|false}` reports whether the name
+//!   was actually present.
 //!
 //! The router is intentionally tiny — operator tooling lives
 //! on top of it (Phase 7 CLI / dashboard work); it just
@@ -62,6 +67,11 @@ use crate::{
 pub struct AdminState {
     pub pool: Arc<WorkerPool>,
     pub admission: Option<WorkerAdmissionServer>,
+    /// Optional native cron driver. When set, the
+    /// `/admin/crons` routes return live data and the
+    /// `/admin/crons/remove` route can drop a cron from the
+    /// firing schedule. Unset ⇒ both routes return 501.
+    pub cron_driver: Option<Arc<crate::cron_driver::NativeCronDriver>>,
 }
 
 impl AdminState {
@@ -69,11 +79,20 @@ impl AdminState {
         Self {
             pool,
             admission: None,
+            cron_driver: None,
         }
     }
 
     pub fn with_admission(mut self, admission: WorkerAdmissionServer) -> Self {
         self.admission = Some(admission);
+        self
+    }
+
+    pub fn with_cron_driver(
+        mut self,
+        cron_driver: Arc<crate::cron_driver::NativeCronDriver>,
+    ) -> Self {
+        self.cron_driver = Some(cron_driver);
         self
     }
 }
@@ -86,6 +105,8 @@ pub fn router(state: AdminState) -> Router {
         .route("/admin/pool/floor", post(set_floor))
         .route("/admin/pool/kind_preference", post(set_kind_preference))
         .route("/admin/pool/drain", post(drain_worker))
+        .route("/admin/crons", get(get_crons))
+        .route("/admin/crons/remove", post(remove_cron))
         .with_state(state)
 }
 
@@ -216,6 +237,77 @@ async fn drain_worker(
     Ok(Json(DrainAck {
         worker_id: req.worker_id,
         delivered,
+    }))
+}
+
+#[derive(Serialize)]
+struct CronsList {
+    jobs: Vec<CronJobView>,
+}
+
+#[derive(Serialize)]
+struct CronJobView {
+    name: String,
+    schedule: String,
+    target: String,
+    kind: String,
+}
+
+async fn get_crons(
+    State(state): State<AdminState>,
+) -> Result<Json<CronsList>, (StatusCode, String)> {
+    let driver = state.cron_driver.as_ref().ok_or_else(|| {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            "AdminState built without a NativeCronDriver — install one via \
+             `.with_cron_driver(driver)` to enable /admin/crons."
+                .to_string(),
+        )
+    })?;
+    let jobs = driver
+        .jobs()
+        .into_iter()
+        .map(|j| CronJobView {
+            name: j.name,
+            schedule: j.schedule_expr,
+            target: j.target,
+            kind: match j.target_kind {
+                crate::cron_driver::CronTargetKind::Mutation => "mutation".to_string(),
+                crate::cron_driver::CronTargetKind::Action => "action".to_string(),
+            },
+        })
+        .collect();
+    Ok(Json(CronsList { jobs }))
+}
+
+#[derive(Deserialize)]
+struct RemoveCronRequest {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct RemoveCronAck {
+    name: String,
+    removed: bool,
+}
+
+async fn remove_cron(
+    State(state): State<AdminState>,
+    Json(req): Json<RemoveCronRequest>,
+) -> Result<Json<RemoveCronAck>, (StatusCode, String)> {
+    let driver = state.cron_driver.as_ref().ok_or_else(|| {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            "AdminState built without a NativeCronDriver — install one via \
+             `.with_cron_driver(driver)` to enable /admin/crons/remove."
+                .to_string(),
+        )
+    })?;
+    let was_present = driver.jobs().iter().any(|j| j.name == req.name);
+    driver.remove(&req.name);
+    Ok(Json(RemoveCronAck {
+        name: req.name,
+        removed: was_present,
     }))
 }
 
@@ -409,5 +501,88 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn get_crons_without_driver_returns_not_implemented() {
+        let pool = stub_pool_with_one_worker();
+        let app = router(AdminState::new(pool));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/crons")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn get_crons_with_driver_lists_jobs() {
+        use std::sync::atomic::AtomicU64;
+
+        use async_trait::async_trait;
+
+        struct StubDispatcher;
+        #[async_trait]
+        impl crate::cron_driver::CronDispatcher for StubDispatcher {
+            async fn fire(
+                &self,
+                _name: &str,
+                _kind: crate::cron_driver::CronTargetKind,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+        let _ = AtomicU64::new(0);
+
+        let pool = stub_pool_with_one_worker();
+        let driver = Arc::new(crate::cron_driver::NativeCronDriver::new(Arc::new(
+            StubDispatcher,
+        )));
+        driver
+            .install(vec![crate::cron_driver::CronJob {
+                name: "every_hour".to_string(),
+                schedule_expr: "0 * * * *".to_string(),
+                target: "do_work".to_string(),
+                target_kind: crate::cron_driver::CronTargetKind::Mutation,
+            }])
+            .unwrap();
+        let state = AdminState::new(pool).with_cron_driver(driver.clone());
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/crons")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["jobs"].as_array().unwrap().len(), 1);
+        assert_eq!(json["jobs"][0]["name"], "every_hour");
+        assert_eq!(json["jobs"][0]["schedule"], "0 * * * *");
+        assert_eq!(json["jobs"][0]["target"], "do_work");
+        assert_eq!(json["jobs"][0]["kind"], "mutation");
+        // Drop the cron via the remove route.
+        let app = router(AdminState::new(stub_pool_with_one_worker()).with_cron_driver(driver));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/crons/remove")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"every_hour"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["removed"], true);
     }
 }
