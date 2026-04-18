@@ -188,6 +188,58 @@ async fn action_dispatch_never_carries_final_tx() {
 }
 
 #[tokio::test]
+async fn http_action_request_round_trips_through_the_wire() {
+    // Pin the HTTP-action wire shape end-to-end: build an
+    // ExecuteRequest with a populated `http_request` payload,
+    // dispatch through `DistributedFunctionRunner` over real
+    // tonic, the worker decodes the proto into a native
+    // `HttpRequest`, looks up an unknown handler, and returns
+    // a handler-level error verbatim. Regression guard for the
+    // `HttpActionRequest` proto + `HttpActionRequestPayload`
+    // native struct + `to_proto_request` / `from_proto_request`
+    // round-trip.
+    use convex_native_core::distributed::HttpActionRequestPayload;
+    let addr = spawn_worker().await;
+    let client = TonicWorkerClient::connect(format!("http://{addr}"))
+        .await
+        .expect("connect");
+    let runner = DistributedFunctionRunner::new(vec![client]).unwrap();
+    let req = ExecuteRequest {
+        name: "__http::POST:/missing".to_string(),
+        namespace: TableNamespace::Global,
+        args: empty_object(),
+        timeout: None,
+        min_registry_version: None,
+        execution_context: None,
+        begin_timestamp: None,
+        existing_writes: Vec::new(),
+        http_request: Some(HttpActionRequestPayload {
+            method: "POST".to_string(),
+            url: "http://example.invalid/missing".to_string(),
+            headers: vec![("content-type".to_string(), "text/plain".to_string())],
+            body: bytes::Bytes::from_static(b"hello"),
+            routed_path: "/missing".to_string(),
+        }),
+        identity: Vec::new(),
+    };
+    let resp = runner
+        .execute(req, UdfType::HttpAction)
+        .await
+        .expect("dispatch");
+    assert!(
+        matches!(resp.result, Err(ref m) if m.contains("__http::POST:/missing")),
+        "handler-level error surfaces verbatim through the wire: {:?}",
+        resp.result,
+    );
+    // Worker reports no http_response on a handler error — error
+    // flows through `result` instead.
+    assert!(
+        resp.http_response.is_none(),
+        "handler error ⇒ no http_response payload",
+    );
+}
+
+#[tokio::test]
 async fn action_request_carries_phase2_fields_through_the_wire() {
     // Even when the server rejects the call at the handler layer,
     // the Phase-2 request fields (`begin_timestamp`,
