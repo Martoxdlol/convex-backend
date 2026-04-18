@@ -30,7 +30,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use convex_native_core::{
     callbacks::NativeActionCallbacks,
-    ctx::storage::StorageId,
+    ctx::storage::{
+        FileMetadata,
+        StorageId,
+    },
 };
 use pb::backend_callbacks::{
     self as proto,
@@ -42,6 +45,7 @@ use value::{
     ConvexObject,
     ConvexValue,
     DeveloperDocumentId,
+    TableName,
     TableNamespace,
 };
 
@@ -322,6 +326,115 @@ impl NativeActionCallbacks for BackendCallbackClient {
         // the NativeActionCallbacks signature; a richer backend
         // response shape can grow the proto later.
         Ok(true)
+    }
+
+    async fn cancel_scheduled(
+        &self,
+        _namespace: TableNamespace,
+        id: DeveloperDocumentId,
+    ) -> anyhow::Result<()> {
+        let request = proto::CancelJobRequest {
+            ctx: Some(self.context()),
+            scheduled_job_id: id.encode(),
+        };
+        let _ = self
+            .client
+            .lock()
+            .await
+            .cancel_job(tonic::Request::new(request))
+            .await?;
+        Ok(())
+    }
+
+    async fn storage_get_metadata(
+        &self,
+        _namespace: TableNamespace,
+        id: StorageId,
+    ) -> anyhow::Result<Option<FileMetadata>> {
+        use tokio_stream::StreamExt;
+        let request = proto::StorageGetRequest {
+            ctx: Some(self.context()),
+            storage_id: id.0,
+        };
+        let mut stream = match self
+            .client
+            .lock()
+            .await
+            .storage_get(tonic::Request::new(request))
+            .await
+        {
+            Ok(resp) => resp.into_inner(),
+            Err(status) if status.code() == tonic::Code::NotFound => return Ok(None),
+            Err(status) => return Err(status.into()),
+        };
+        let first = stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("storage_get stream closed before metadata frame"))??;
+        match first.content {
+            Some(proto::storage_get_chunk::Content::Meta(meta)) => {
+                let mut sha_hex = String::with_capacity(meta.sha256.len() * 2);
+                for b in &meta.sha256 {
+                    use std::fmt::Write;
+                    write!(&mut sha_hex, "{b:02x}")?;
+                }
+                Ok(Some(FileMetadata {
+                    content_type: if meta.content_type.is_empty() {
+                        None
+                    } else {
+                        Some(meta.content_type)
+                    },
+                    size: i64::try_from(meta.content_length)?,
+                    sha256: sha_hex,
+                }))
+            },
+            _ => anyhow::bail!("storage_get first frame was not a meta frame"),
+        }
+    }
+
+    async fn read_document_at_snapshot(
+        &self,
+        namespace: TableNamespace,
+        table: TableName,
+        id: DeveloperDocumentId,
+    ) -> anyhow::Result<Option<ConvexObject>> {
+        // Route through `RunQuery` against the system "_internal/db.get"
+        // query so backends with a wired query path return the document.
+        // The fallback bail kept the trait honest before; with the
+        // `RunQuery` RPC available, build the args envelope and let the
+        // backend reply. Backends without that system query register
+        // the bail at handler dispatch time.
+        let _ = namespace;
+        let mut args = std::collections::BTreeMap::new();
+        let table_field: value::FieldName = "table".parse()?;
+        let id_field: value::FieldName = "id".parse()?;
+        args.insert(table_field, ConvexValue::try_from(String::from(table))?);
+        args.insert(id_field, ConvexValue::try_from(id.encode())?);
+        let args_obj = ConvexObject::try_from(args)?;
+        let request = proto::RunQueryRequest {
+            ctx: Some(self.context()),
+            function_name: "_system/db:get".to_string(),
+            args_json: encode_args(args_obj)?,
+        };
+        let response = self
+            .client
+            .lock()
+            .await
+            .run_query(tonic::Request::new(request))
+            .await?
+            .into_inner();
+        let result = response.result.ok_or_else(|| {
+            anyhow::anyhow!("RunQuery (read_document_at_snapshot) missing result")
+        })?;
+        let v = decode_function_result(result)?;
+        match v {
+            ConvexValue::Null => Ok(None),
+            ConvexValue::Object(obj) => Ok(Some(obj)),
+            other => anyhow::bail!(
+                "read_document_at_snapshot expected object|null, got: {:?}",
+                other
+            ),
+        }
     }
 }
 

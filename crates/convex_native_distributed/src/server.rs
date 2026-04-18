@@ -11,8 +11,8 @@
 //! ## What ships here today (post Phase-1)
 //!
 //! - `health`: fully implemented, reports registry version (derived from the
-//!   `convex_native_core` crate version), `accepts_traffic` (false when the runner
-//!   is draining), `registered_functions`, and `in_flight`.
+//!   `convex_native_core` crate version), `accepts_traffic` (false when the
+//!   runner is draining), `registered_functions`, and `in_flight`.
 //! - `execute` for `UdfType::Action`: dispatches via
 //!   `NativeFunctionRunner::run_action_with_callbacks` with `NoopCallbacks`. A
 //!   real `BackendCallbackService` implementation lands in Phase 4 of
