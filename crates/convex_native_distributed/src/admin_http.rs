@@ -12,6 +12,9 @@
 //!
 //! ## Routes
 //!
+//! - `GET /admin/health` — lightweight status check: convex_native_core
+//!   version, pool size, current floor, cron/admission wiring flags. Use for
+//!   operator dashboards + external monitoring probes.
 //! - `GET /admin/pool` — returns a `PoolSnapshot` as JSON.
 //! - `POST /admin/pool/floor { "min_registry_version": "X.Y.Z" }` sets the
 //!   pool-wide `min_registry_version` floor. Send `{ "min_registry_version":
@@ -107,6 +110,7 @@ impl AdminState {
 /// provided pool + admission server.
 pub fn router(state: AdminState) -> Router {
     Router::new()
+        .route("/admin/health", get(get_health))
         .route("/admin/pool", get(get_pool))
         .route("/admin/pool/floor", post(set_floor))
         .route("/admin/pool/kind_preference", post(set_kind_preference))
@@ -146,6 +150,41 @@ pub async fn spawn_admin_server(
 
 async fn get_pool(State(state): State<AdminState>) -> Json<PoolSnapshot> {
     Json(state.pool.snapshot())
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    /// `convex_native_core`'s crate version — the backend/worker
+    /// wire-compat baseline.
+    convex_native_version: &'static str,
+    /// Total workers currently in the pool.
+    pool_size: usize,
+    /// Current `min_registry_version` floor, or `null` when
+    /// unset.
+    min_registry_version: Option<String>,
+    /// Whether a `NativeCronDriver` is installed.
+    cron_driver_attached: bool,
+    /// Cron job count when a driver is attached, else 0.
+    cron_jobs: usize,
+    /// Whether a `WorkerAdmissionServer` is attached (i.e.
+    /// operator-initiated drain is available).
+    admission_attached: bool,
+}
+
+async fn get_health(State(state): State<AdminState>) -> Json<HealthResponse> {
+    let cron_jobs = state
+        .cron_driver
+        .as_ref()
+        .map(|d| d.jobs().len())
+        .unwrap_or(0);
+    Json(HealthResponse {
+        convex_native_version: convex_native_core::VERSION,
+        pool_size: state.pool.len(),
+        min_registry_version: state.pool.min_registry_version(),
+        cron_driver_attached: state.cron_driver.is_some(),
+        cron_jobs,
+        admission_attached: state.admission.is_some(),
+    })
 }
 
 #[derive(Deserialize)]
@@ -425,6 +464,30 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_health_returns_status_shape() {
+        let pool = stub_pool_with_one_worker();
+        let app = router(AdminState::new(pool));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["pool_size"], 1);
+        assert_eq!(json["cron_driver_attached"], false);
+        assert_eq!(json["admission_attached"], false);
+        assert!(
+            json["convex_native_version"].as_str().is_some(),
+            "convex_native_version exposed: {json}",
+        );
     }
 
     #[tokio::test]

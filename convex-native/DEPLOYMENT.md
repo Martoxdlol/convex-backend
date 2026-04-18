@@ -161,6 +161,10 @@ roadmap you're signing up for.
     carried_over function names against the pool's current
     active version (or `null` when pool is empty or versions
     match). Same shape as the auto-logged diff.
+  - `GET /admin/health` — lightweight status check:
+    `convex_native_version`, `pool_size`, `min_registry_version`,
+    `cron_driver_attached`, `cron_jobs`, `admission_attached`.
+    Use for liveness probes / external monitoring.
   - `GET /admin/crons` — list live `NativeCronDriver` jobs
     (name, schedule, target, kind). Returns 501 when no cron
     driver is attached.
