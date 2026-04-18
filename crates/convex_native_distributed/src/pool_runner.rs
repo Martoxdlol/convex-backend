@@ -427,6 +427,7 @@ mod tests {
             registry_version: "1.0.0".into(),
             functions: vec!["get".into()],
             kind: crate::pool::WorkerKind::NativeRust,
+            http_routes: Vec::new(),
         });
         let runner = PoolFunctionRunner::new(pool);
         let resp = runner
@@ -453,6 +454,7 @@ mod tests {
             registry_version: "1.0.0".into(),
             functions: vec!["other".into()],
             kind: crate::pool::WorkerKind::NativeRust,
+            http_routes: Vec::new(),
         });
         let runner = PoolFunctionRunner::new(pool);
         let err = runner
@@ -501,6 +503,7 @@ mod tests {
             registry_version: "1.0.0".into(),
             functions: vec!["get".into()],
             kind: crate::pool::WorkerKind::NativeRust,
+            http_routes: Vec::new(),
         });
         pool.admit(WorkerEntry {
             client: Arc::new(StubClient {
@@ -510,6 +513,7 @@ mod tests {
             registry_version: "1.0.0".into(),
             functions: vec!["get".into()],
             kind: crate::pool::WorkerKind::NativeRust,
+            http_routes: Vec::new(),
         });
         let runner = PoolFunctionRunner::new(pool);
         // Retry the dispatch a few times — the P2C pick is

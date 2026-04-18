@@ -282,6 +282,7 @@ mod tests {
             registry_version: "1.0.0".to_string(),
             functions: vec!["get".to_string()],
             kind: WorkerKind::NativeRust,
+            http_routes: Vec::new(),
         });
         pool
     }

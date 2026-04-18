@@ -208,6 +208,24 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
             .as_ref()
             .map(|inv| inv.functions.iter().map(|f| f.name.clone()).collect())
             .unwrap_or_default();
+        // HTTP routes the worker advertised — drained into the
+        // pool's `by_http_route` index so the backend can dispatch
+        // HTTP actions to a remote worker when the local
+        // `HttpRouter` has no match.
+        let http_routes: Vec<crate::pool::HttpRouteEntry> = envelope
+            .inventory
+            .as_ref()
+            .map(|inv| {
+                inv.routes
+                    .iter()
+                    .map(|r| crate::pool::HttpRouteEntry {
+                        method: r.method.clone(),
+                        path: r.path.clone(),
+                        name: r.handler.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         // Substep 7.3 of `convex-native/STATUS.md` — log the
         // inventory diff against the pool's current active
         // version when the incoming worker introduces a new
@@ -239,6 +257,7 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
             // proto values fall back to `Unspecified`
             // (forward-compat for a future kind variant).
             kind: WorkerKind::from_proto_i32(envelope.kind),
+            http_routes,
         };
         let worker_id = self.pool.admit(entry);
 

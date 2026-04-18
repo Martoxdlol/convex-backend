@@ -192,6 +192,27 @@ pub struct WorkerEntry {
     /// `eligible_for`'s perspective, but operator dashboards
     /// use this to show the NativeRust vs JS mix.
     pub kind: WorkerKind,
+    /// HTTP routes the worker advertised. Each entry pairs
+    /// `(method, path)` with the synthetic function name the
+    /// worker dispatches the route through (matches
+    /// `convex_native_core::HttpRouteRegistration::{method,
+    /// path, name}`). Enables distributed HTTP-action dispatch:
+    /// the backend can route an incoming HTTP request to the
+    /// worker whose `(method, path)` matches.
+    pub http_routes: Vec<HttpRouteEntry>,
+}
+
+/// Pool-side representation of an HTTP route advertised by a
+/// worker. Mirrors `pb::worker_admission::HttpRouteRegistration`
+/// without the proto type leak.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpRouteEntry {
+    pub method: String,
+    pub path: String,
+    /// Synthetic dotted name the worker registered the handler
+    /// under (typically `__http::<METHOD>:<path>`). The backend
+    /// uses this as the `ExecuteRequest.name` when dispatching.
+    pub name: String,
 }
 
 /// Dynamic pool of workers. Thread-safe via a single `RwLock`
@@ -213,6 +234,14 @@ struct PoolInner {
     ///   `retire` removes the id from every list it appears in (and drops empty
     ///   lists).
     by_function: HashMap<String, Vec<WorkerId>>,
+    /// HTTP (method, path) → `(worker_id, synthetic function
+    /// name)` lookup. Populated from `WorkerEntry.http_routes`.
+    /// Keys are `(method.to_uppercase(), path)` so dispatchers
+    /// can pass the method verbatim from the incoming request
+    /// without worrying about case. Invariants mirror
+    /// `by_function`: every listed id is in `workers`; admit
+    /// appends, retire drops empty lists.
+    by_http_route: HashMap<(String, String), Vec<(WorkerId, String)>>,
     /// `min_registry_version` floor. Workers whose
     /// `registry_version` doesn't meet the floor are skipped in
     /// `eligible_for`. `None` means no floor.
@@ -241,6 +270,7 @@ impl WorkerPool {
             inner: RwLock::new(PoolInner {
                 workers: HashMap::new(),
                 by_function: HashMap::new(),
+                by_http_route: HashMap::new(),
                 min_registry_version: None,
                 kind_preferences: HashMap::new(),
             }),
@@ -256,6 +286,14 @@ impl WorkerPool {
         let mut inner = self.inner.write();
         for name in &entry.functions {
             inner.by_function.entry(name.clone()).or_default().push(id);
+        }
+        for route in &entry.http_routes {
+            let key = (route.method.to_uppercase(), route.path.clone());
+            inner
+                .by_http_route
+                .entry(key)
+                .or_default()
+                .push((id, route.name.clone()));
         }
         inner.workers.insert(id, entry);
         id
@@ -275,6 +313,13 @@ impl WorkerPool {
             }
         }
         inner.by_function.retain(|_, list| !list.is_empty());
+        for route in &entry.http_routes {
+            let key = (route.method.to_uppercase(), route.path.clone());
+            if let Some(list) = inner.by_http_route.get_mut(&key) {
+                list.retain(|(wid, _)| *wid != id);
+            }
+        }
+        inner.by_http_route.retain(|_, list| !list.is_empty());
         true
     }
 
@@ -344,6 +389,42 @@ impl WorkerPool {
             }
         }
         base.into_iter().map(|(id, c, _)| (id, c)).collect()
+    }
+
+    /// Distributed HTTP-action dispatch lookup. Returns the
+    /// floor-filtered workers that advertise a handler for the
+    /// given `(method, path)` pair, each paired with the
+    /// synthetic function name the worker dispatches that route
+    /// through. Used by `local_backend::native_http_dispatch`
+    /// when the local `HttpRouter` has no match so the backend
+    /// can route HTTP requests to a remote worker.
+    ///
+    /// Returns an empty vec when no worker serves the route.
+    /// Method comparison is case-insensitive (upper-cased on
+    /// lookup).
+    pub fn eligible_for_http(
+        &self,
+        method: &str,
+        path: &str,
+    ) -> Vec<(WorkerId, Arc<dyn WorkerClient>, String)> {
+        let inner = self.inner.read();
+        let key = (method.to_uppercase(), path.to_string());
+        let Some(entries) = inner.by_http_route.get(&key) else {
+            return Vec::new();
+        };
+        let floor = inner.min_registry_version.as_deref();
+        entries
+            .iter()
+            .filter_map(|(id, name)| {
+                let entry = inner.workers.get(id)?;
+                if let Some(f) = floor
+                    && !meets_floor(&entry.registry_version, f)
+                {
+                    return None;
+                }
+                Some((*id, entry.client.clone(), name.clone()))
+            })
+            .collect()
     }
 
     /// Substep 6.2: pin a routing preference for `function_name`
@@ -589,6 +670,7 @@ mod tests {
             registry_version: version.to_string(),
             functions: functions.iter().map(|s| s.to_string()).collect(),
             kind: WorkerKind::NativeRust,
+            http_routes: Vec::new(),
         }
     }
 
@@ -680,6 +762,7 @@ mod tests {
             registry_version: version.to_string(),
             functions: functions.iter().map(|s| s.to_string()).collect(),
             kind: WorkerKind::Javascript,
+            http_routes: Vec::new(),
         }
     }
 
@@ -764,18 +847,21 @@ mod tests {
             registry_version: "1.0".to_string(),
             functions: vec!["get".to_string()],
             kind: WorkerKind::NativeRust,
+            http_routes: Vec::new(),
         });
         pool.admit(WorkerEntry {
             client: stub("b"),
             registry_version: "1.0".to_string(),
             functions: vec!["list".to_string()],
             kind: WorkerKind::Javascript,
+            http_routes: Vec::new(),
         });
         pool.admit(WorkerEntry {
             client: stub("c"),
             registry_version: "1.0".to_string(),
             functions: vec!["crunch".to_string()],
             kind: WorkerKind::NativeRust,
+            http_routes: Vec::new(),
         });
         let mix = pool.by_kind();
         assert_eq!(mix.get(&WorkerKind::NativeRust), Some(&2));
