@@ -67,10 +67,11 @@ async fn main() -> anyhow::Result<()> {
     // the binary's lifetime; dropping it cleanly retires the
     // worker on the backend side. When wired we also spawn a
     // 5-second heartbeat loop so the backend's
-    // `WorkerStatus`-driven dashboards have fresh data; the
-    // example reports `0` for in-flight (it doesn't own the
-    // server's gauge from out here — a real deployer threads
-    // their `FunctionExecutionServer::in_flight()` through).
+    // `WorkerStatus`-driven dashboards have fresh data. The
+    // in-flight gauge comes from `NativeFunctionRunner::in_flight()`
+    // — the same counter the health RPC exposes — so the
+    // worker's pool-side `reported_in_flight` tracks its real
+    // concurrent handler count.
     let _registration: Option<Arc<WorkerRegistration>> = match read_backend_endpoint_from_env()? {
         Some(backend_endpoint) => {
             let registry_version = convex_native_core::VERSION.to_string();
@@ -80,9 +81,12 @@ async fn main() -> anyhow::Result<()> {
                     .await?;
             eprintln!("examples/worker: registered with backend admission service");
             let reg = Arc::new(reg);
+            let runner = native.clone();
             let _heartbeat = reg
                 .clone()
-                .spawn_heartbeat_loop(std::time::Duration::from_secs(5), || 0);
+                .spawn_heartbeat_loop(std::time::Duration::from_secs(5), move || {
+                    runner.in_flight()
+                });
             Some(reg)
         },
         None => None,
