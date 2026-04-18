@@ -1,9 +1,13 @@
 # Status
 
-Every phase of `DISTRIBUTED_PLAN.md` has shipped in source.
-This file tracks the per-substep detail + the four deferred
-items blocked on out-of-source infrastructure. `DISTRIBUTED_PLAN.md`
-is the architecture source of truth.
+Every phase of `DISTRIBUTED_PLAN.md` has shipped in source. The
+previously-deferred infrastructure items (live-DB assertion
+fixture, CI/release pipeline, JS worker reference shell) have
+also landed. `DISTRIBUTED_PLAN.md` is the architecture source
+of truth; this file tracks per-substep detail and the
+cross-phase fixes that don't fit neatly into one phase
+(native HTTP-action serving, identity forwarding, native cron
+driver, `CONVEX_MIN_REGISTRY_VERSION`).
 
 ---
 
@@ -288,10 +292,13 @@ substep is checked and the integration test is green.
        FunctionUsageStats)` via `final_tx_summary_to_function_tx`
        + a minimal `UdfOutcome` builder. Observed flags
        (`observed_identity` / `observed_rng` / `observed_time`)
-       default to false and `rng_seed` defaults to zeros — the
-       wire protocol doesn't carry those yet; a follow-up
-       substep extends the proto if the backend needs them for
-       non-cached subscription-reuse semantics.
+       and `rng_seed` are now carried over the wire — the
+       `DistributedFinalTx` proto grew the fields, the worker
+       seeds `Observed::from_seed(rng)` and drains the flags
+       back into `FinalTxSummary`, and `build_outcome_triple`
+       hydrates the `UdfOutcome` so subscription-reuse +
+       OCC + analytics see identical fidelity on the
+       distributed path.
      - `UdfType::Action` returns a clear error pointing at
        Phase 4's `BackendCallbackService`.
      - `UdfType::HttpAction` returns a clear error pointing at
@@ -1181,13 +1188,69 @@ via `local_backend::native_http_dispatch`:
   timestamp; misses fall through to the JS path with the
   unconsumed body.
 
-Crosses phases — monolith (`STANDALONE.md`) and any
-distributed deployment whose backend image also carries native
-inventory both pick this up. Distributed-topology backends
-whose image is empty still dispatch HTTP actions through the
-JS path today; pool-backed distributed HTTP dispatch is
-tracked as a follow-up on
-`convex_native_distributed::WorkerPool`.
+Crosses phases — monolith (`STANDALONE.md`) and distributed
+both pick this up. Distributed dispatch added in the same
+session: `WorkerPool` grew an `HttpRouteEntry` index per
+worker, `eligible_for_http(method, path)` returns the workers
+serving a route + the synthetic handler name, and the
+`NativeHttpDispatcher` falls through to a pool dispatch when
+the local router misses. The wire carries the request /
+response payload via the new `http_request` /
+`http_response` fields on `ExecuteRequest` /
+`ExecuteResponse`.
+
+### Identity forwarding on distributed dispatch (resolved 2026-04-18)
+
+Pre-fix the dispatcher hard-coded `identity: None` on every
+proto request, so a query / mutation / action / HTTP action
+that landed on a remote worker ran under `Identity::system()`
+even when the inbound request carried a valid token.
+`ctx.auth()` always reported the system principal, which is a
+security correctness gap. Fix:
+
+- `ExecuteRequest` grew an `identity: Vec<u8>` field encoded
+  through the `pb::convex_identity::UncheckedIdentity` proto
+  shape (empty vec ⇒ system).
+- New `function_runner_impl::encode_identity_for_wire` helper.
+  Query/mutation/action/HTTP dispatch paths all encode the
+  caller's identity into the request.
+- The worker decodes via `decode_identity_bytes`, opens
+  query/mutation transactions under the decoded identity, and
+  threads it into the action / HTTP-action ctx through new
+  `with_identity` builders so `ctx.auth()` returns a
+  meaningful view.
+- Composite runner mirrors the same change for monolith
+  actions via `run_action_with_callbacks_identity_log_buffer`.
+
+### Native cron driver (resolved 2026-04-18)
+
+`#[convex::cron(...)]` registrations were collected via
+`CronRegistry` but nothing drove them. JS `CronJobExecutor`
+reads `_cron_jobs` rows that pure-native deployments never
+write. Fix: `convex_native_distributed::cron_driver`:
+
+- `NativeCronDriver` parses each schedule with `saffron`,
+  spawns one tokio task per cron, and is idempotent on
+  `(name, schedule, target, kind)`. Per-cron loop computes
+  `next_after(now)`, sleeps, fires through a `CronDispatcher`,
+  logs, repeats. At-most-once semantics (missed fires
+  skipped).
+- `InProcessDispatcher` runs mutations inline against the
+  backend's `Database` (commits tagged
+  `WriteSource::system("native_cron")`); actions fire through
+  `NativeFunctionRunner::run_action_with_callbacks` with
+  `NoopCallbacks`.
+- `PoolDispatcher` routes through the admission pool's
+  `WorkerClient` for distributed deployments where the
+  backend image carries no handlers.
+- `WorkerAdmissionServer::set_cron_driver(driver)` lets
+  worker admission feed `inventory.crons` into the driver on
+  register; the proto `CronRegistration` grew a `kind` field
+  so the backend knows whether to dispatch as mutation or
+  action.
+- `local_backend::make_app` picks the dispatcher based on
+  topology and parks the driver in a process-global `OnceLock`
+  so dropping it doesn't tear down live fire tasks.
 
 ### Native schema publication (resolved 2026-04-17)
 
