@@ -457,7 +457,7 @@ impl WorkerPool {
             return Vec::new();
         };
         let floor = inner.min_registry_version.as_deref();
-        entries
+        let base: Vec<(WorkerId, Arc<dyn WorkerClient>, String, WorkerKind)> = entries
             .iter()
             .filter_map(|(id, name)| {
                 let entry = inner.workers.get(id)?;
@@ -466,9 +466,29 @@ impl WorkerPool {
                 {
                     return None;
                 }
-                Some((*id, entry.client.clone(), name.clone()))
+                Some((*id, entry.client.clone(), name.clone(), entry.kind))
             })
-            .collect()
+            .collect();
+        // Apply the per-handler kind preference when set. The
+        // preference key is the synthetic HTTP handler name
+        // (e.g. `__http::POST:/api/foo`) that the macro emits —
+        // same namespace `set_kind_preference` stores under, so
+        // operator tooling sets it with the same route name
+        // workers advertise.
+        let first_name = base.first().map(|(_, _, n, _)| n.clone());
+        if let Some(name) = first_name
+            && let Some(&pref) = inner.kind_preferences.get(&name)
+        {
+            let preferred: Vec<(WorkerId, Arc<dyn WorkerClient>, String)> = base
+                .iter()
+                .filter(|(_, _, _, k)| *k == pref)
+                .map(|(id, c, n, _)| (*id, c.clone(), n.clone()))
+                .collect();
+            if !preferred.is_empty() {
+                return preferred;
+            }
+        }
+        base.into_iter().map(|(id, c, n, _)| (id, c, n)).collect()
     }
 
     /// Substep 6.2: pin a routing preference for `function_name`
@@ -916,6 +936,49 @@ mod tests {
         assert_eq!(pool.eligible_for("x").len(), 1);
         pool.clear_kind_preference("x");
         assert_eq!(pool.eligible_for("x").len(), 2);
+    }
+
+    #[test]
+    fn http_kind_preference_filters_eligible_set() {
+        // A mixed-kind pool where both workers serve the same
+        // HTTP route. A kind preference pinned to the synthetic
+        // handler name routes to the preferred-kind worker
+        // while both are healthy, and falls back to the full
+        // set when the preferred kind is absent.
+        let pool = WorkerPool::new();
+        let http_route_rust = HttpRouteEntry {
+            method: "POST".to_string(),
+            path: "/api/stripe".to_string(),
+            name: "__http::POST:/api/stripe".to_string(),
+        };
+        let http_route_js = http_route_rust.clone();
+        pool.admit(WorkerEntry {
+            client: stub("rust-worker"),
+            registry_version: "1.0.0".to_string(),
+            functions: Vec::new(),
+            kind: WorkerKind::NativeRust,
+            http_routes: vec![http_route_rust],
+            status: parking_lot::Mutex::new(Default::default()),
+        });
+        pool.admit(WorkerEntry {
+            client: stub("js-worker"),
+            registry_version: "1.0.0".to_string(),
+            functions: Vec::new(),
+            kind: WorkerKind::Javascript,
+            http_routes: vec![http_route_js],
+            status: parking_lot::Mutex::new(Default::default()),
+        });
+        // Without a preference both workers are eligible.
+        assert_eq!(pool.eligible_for_http("POST", "/api/stripe").len(), 2);
+
+        // Preference pins dispatch to the Rust worker.
+        pool.set_kind_preference("__http::POST:/api/stripe", WorkerKind::NativeRust);
+        let eligible: Vec<String> = pool
+            .eligible_for_http("POST", "/api/stripe")
+            .into_iter()
+            .map(|(_, client, _)| client.label().to_string())
+            .collect();
+        assert_eq!(eligible, vec!["rust-worker".to_string()]);
     }
 
     #[test]
