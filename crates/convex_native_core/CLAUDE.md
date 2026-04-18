@@ -31,7 +31,7 @@ src/
 │   ├── query_builder.rs-- TypedQueryBuilder
 │   ├── scheduler.rs    -- Scheduler
 │   └── storage.rs      -- StorageCtx + StorageId
-├── distributed.rs      -- ConvexMode + ExecuteRequest/Response + FunctionExecutor stub
+├── distributed.rs      -- ConvexMode + ExecuteRequest/Response + FunctionExecutor trait
 ├── document.rs         -- ConvexDocument / FieldReference / IndexReference
 ├── errors.rs           -- bad_request / forbidden / ... helpers
 ├── function_ref.rs     -- ConvexQueryFunction / etc. marker traits
