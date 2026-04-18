@@ -237,6 +237,7 @@ impl BuiltBackend {
                 crate::registry::HandlerFn::Query(_) => "query",
                 crate::registry::HandlerFn::Mutation(_) => "mutation",
                 crate::registry::HandlerFn::Action(_) => "action",
+                crate::registry::HandlerFn::Http(_) => "http_action",
             };
             anyhow::ensure!(
                 expected_kind == entry.target_kind,
@@ -312,7 +313,10 @@ mod tests {
         // version) doesn't go unnoticed.
         let built = ConvexBackend::new().build().unwrap();
         let s = built.summary();
-        assert!(s.contains("convex_native_core"), "summary names the crate: {s}");
+        assert!(
+            s.contains("convex_native_core"),
+            "summary names the crate: {s}"
+        );
         assert!(s.contains(crate::VERSION), "summary includes version: {s}");
         assert!(s.contains("0 fn"), "function count shows up: {s}");
         assert!(s.contains("0 table"), "table count shows up: {s}");

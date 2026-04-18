@@ -7,7 +7,8 @@
 //! Developer code is expected to bring the common types into scope with
 //! `use convex_native_core::prelude::*;`.
 
-// Re-export derive macros so developers only need `convex_native_core` as a dep.
+// Re-export derive macros so developers only need `convex_native_core` as a
+// dep.
 pub use convex_macro::{
     ConvexDocument,
     ConvexEnum,
@@ -69,11 +70,24 @@ pub mod __private {
         TableName,
     };
 
-    pub use crate::schema_type::{
-        build_object_validator,
-        field_validator_for,
-        identifier_field,
-        string_literal_validator,
+    pub use crate::{
+        http::{
+            HttpActionCtx,
+            HttpRequest,
+            HttpResponse,
+        },
+        registry::{
+            HandlerFn,
+            HttpHandlerFuture,
+            NativeFunctionRegistration,
+            Rt,
+        },
+        schema_type::{
+            build_object_validator,
+            field_validator_for,
+            identifier_field,
+            string_literal_validator,
+        },
     };
 }
 

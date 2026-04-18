@@ -170,22 +170,37 @@ impl FunctionExecutionService for FunctionExecutionServer {
                 // The callback context (identity,
                 // execution_context, component_path) is captured
                 // here so sub-calls carry the same principal +
-                // trace chain as the enclosing action. Today the
-                // identity bytes are empty because the worker
-                // doesn't yet forward the acting principal in the
-                // native ctx; substep 4.4's follow-up wires
-                // identity through `CONVEX_BACKEND_ENDPOINT` +
-                // the admission handshake.
+                // trace chain as the enclosing action. The
+                // `proto_req.identity` bytes (already in the
+                // `pb::convex_identity::UncheckedIdentity` proto
+                // shape the backend agreed on) are forwarded
+                // verbatim; the backend-side `decode_context`
+                // turns them back into a `keybroker::Identity`.
+                // Empty bytes map to `Identity::system()` on both
+                // sides.
                 let callbacks: Arc<dyn convex_native_core::NativeActionCallbacks> =
                     match &self.backend_callback_endpoint {
                         Some(endpoint) => {
                             let execution_context = proto_req.execution_context.clone();
+                            let identity_bytes = proto_req.identity.clone().unwrap_or_default();
+                            // The component_path string carries
+                            // the enclosing action's component
+                            // path (slash-separated component
+                            // names). Native handlers are all
+                            // root-component today, so an empty
+                            // string is correct; when component-
+                            // scoped native actions land, the
+                            // backend's admission handshake will
+                            // supply the path string and we'll
+                            // forward it here.
+                            let component_path_str = String::new();
+                            let _ = native_req.namespace;
                             let client =
                                 crate::backend_callbacks_client::BackendCallbackClient::connect(
                                     endpoint.clone(),
-                                    Vec::new(),
+                                    identity_bytes,
                                     execution_context,
-                                    String::new(),
+                                    component_path_str,
                                 )
                                 .await
                                 .map_err(|e| {
@@ -262,10 +277,86 @@ impl FunctionExecutionService for FunctionExecutionServer {
                 proto_resp.served_by_version = Some(self.registry_version.clone());
                 Ok(Response::new(proto_resp))
             },
-            UdfType::HttpAction => Err(Status::unimplemented(
-                "FunctionExecutionServer: HTTP actions use the HttpRouter dispatch path, not \
-                 FunctionExecutionService.",
-            )),
+            UdfType::HttpAction => {
+                let http_request = proto_req.http_request.as_ref().ok_or_else(|| {
+                    Status::invalid_argument(
+                        "ExecuteRequest.http_request is required for UdfType::HttpAction",
+                    )
+                })?;
+                let request = decode_http_request(http_request).map_err(|e| {
+                    Status::invalid_argument(format!("decode HttpActionRequest: {e}"))
+                })?;
+                // Reuse the same callback wiring the action branch
+                // builds: HTTP actions can issue sub-calls
+                // (run_mutation, scheduler, storage) just like
+                // regular actions.
+                let callbacks: Arc<dyn convex_native_core::NativeActionCallbacks> =
+                    match &self.backend_callback_endpoint {
+                        Some(endpoint) => {
+                            let execution_context = proto_req.execution_context.clone();
+                            let identity_bytes = proto_req.identity.clone().unwrap_or_default();
+                            let client =
+                                crate::backend_callbacks_client::BackendCallbackClient::connect(
+                                    endpoint.clone(),
+                                    identity_bytes,
+                                    execution_context,
+                                    String::new(),
+                                )
+                                .await
+                                .map_err(|e| {
+                                    Status::failed_precondition(format!(
+                                        "FunctionExecutionServer: failed to dial backend callback \
+                                         endpoint {endpoint:?}: {e}",
+                                    ))
+                                })?;
+                            Arc::new(client)
+                        },
+                        None => Arc::new(convex_native_core::callbacks::NoopCallbacks),
+                    };
+                let log_buffer = convex_native_core::LogBuffer::new();
+                let result = self
+                    .native
+                    .run_http_action_with_callbacks(
+                        &native_req.name,
+                        request,
+                        callbacks,
+                        Some(log_buffer.clone()),
+                    )
+                    .await;
+                let log_lines = log_lines_to_pretty_strings(&log_buffer);
+                let mut proto_resp = match result {
+                    Ok(http_response) => proto::ExecuteResponse {
+                        result: Some(pb::common::FunctionResult {
+                            result: Some(pb::common::function_result::Result::JsonPackedValue(
+                                "null".to_string(),
+                            )),
+                        }),
+                        user_execution_time: None,
+                        served_by_version: None,
+                        log_lines,
+                        final_tx: None,
+                        http_response: Some(encode_http_response(http_response)),
+                    },
+                    Err(e) => proto::ExecuteResponse {
+                        result: Some(pb::common::FunctionResult {
+                            result: Some(pb::common::function_result::Result::JsError(
+                                pb::common::JsError {
+                                    message: Some(e.to_string()),
+                                    custom_data: None,
+                                    frames: None,
+                                },
+                            )),
+                        }),
+                        user_execution_time: None,
+                        served_by_version: None,
+                        log_lines,
+                        final_tx: None,
+                        http_response: None,
+                    },
+                };
+                proto_resp.served_by_version = Some(self.registry_version.clone());
+                Ok(Response::new(proto_resp))
+            },
         }
     }
 
@@ -344,7 +435,19 @@ async fn run_udf_inline(
     begin_ts: Option<Timestamp>,
     udf_type: UdfType,
 ) -> InlineDispatch {
+    use rand::RngCore;
+
     let log_buffer = convex_native_core::LogBuffer::new();
+    // Seed the per-invocation `Observed` from the worker's runtime
+    // RNG so the handler sees a fresh deterministic stream;
+    // distributed dispatch carries the seed back in the response so
+    // a re-execution can replay it (matches the in-process composite
+    // runner's behaviour).
+    let mut rng_seed = [0u8; 32];
+    rand::rng().fill_bytes(&mut rng_seed);
+    let observed: std::sync::Arc<convex_native_core::ctx::query::Observed> = std::sync::Arc::new(
+        convex_native_core::ctx::query::Observed::from_seed(rng_seed),
+    );
     let prepared = async {
         let ts = match begin_ts {
             Some(ts) => database.now_ts_for_reads().prior_ts(ts)?,
@@ -381,34 +484,49 @@ async fn run_udf_inline(
     let result = match udf_type {
         UdfType::Query => {
             native
-                .run_query_with_log_buffer(
+                .run_query_with_log_buffer_and_observed(
                     &req.name,
                     &mut tx,
                     req.namespace,
                     req.args.clone(),
                     log_buffer.clone(),
+                    observed.clone(),
                 )
                 .await
         },
         UdfType::Mutation => {
             native
-                .run_mutation_with_log_buffer(
+                .run_mutation_with_log_buffer_and_observed(
                     &req.name,
                     &mut tx,
                     req.namespace,
                     req.args.clone(),
                     log_buffer.clone(),
+                    observed.clone(),
                 )
                 .await
         },
         _ => unreachable!("run_udf_inline only handles Query/Mutation"),
     };
-    let final_tx = Some(summarise_tx(tx));
+    let mut summary = summarise_tx(tx);
+    summary.observed_identity = observed.identity();
+    summary.observed_rng = observed.rng_observed();
+    summary.observed_time = observed.unix_timestamp();
+    summary.rng_seed = rng_seed;
+    summary.unix_timestamp_nanos = if observed.unix_timestamp() {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|d| u64::try_from(d.as_nanos()).ok())
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let log_lines = log_lines_to_pretty_strings(&log_buffer);
     InlineDispatch {
         result,
         log_lines,
-        final_tx,
+        final_tx: Some(summary),
     }
 }
 
@@ -488,6 +606,68 @@ fn summarise_tx(tx: database::Transaction<Rt>) -> convex_native_core::distribute
         user_tx_size: Some(user_tx_size),
         system_tx_size: Some(system_tx_size),
         index_reads,
+        // Observed flags + rng_seed + unix_timestamp_nanos are
+        // populated by the caller (`run_udf_inline`) once it can
+        // drain the per-invocation `Observed` handle. Default
+        // here so any pre-Observed callsite still compiles.
+        observed_identity: false,
+        observed_rng: false,
+        observed_time: false,
+        rng_seed: [0u8; 32],
+        unix_timestamp_nanos: 0,
+    }
+}
+
+/// Decode a wire-format `HttpActionRequest` into the typed
+/// `convex_native_core::http::HttpRequest` shape the handler
+/// receives. Method strings parse via `http::Method::from_bytes`;
+/// header names + values parse via the standard `http` crate
+/// types so invalid bytes surface loudly instead of being
+/// silently truncated.
+fn decode_http_request(
+    req: &proto::HttpActionRequest,
+) -> anyhow::Result<convex_native_core::http::HttpRequest> {
+    use http::{
+        HeaderMap,
+        HeaderName,
+        HeaderValue,
+        Method,
+    };
+    let method = Method::from_bytes(req.method.as_bytes())
+        .map_err(|e| anyhow::anyhow!("invalid HTTP method {:?}: {e}", req.method))?;
+    let mut headers = HeaderMap::new();
+    for h in &req.headers {
+        let name = HeaderName::from_bytes(h.name.as_bytes())
+            .map_err(|e| anyhow::anyhow!("invalid HTTP header name {:?}: {e}", h.name))?;
+        let value = HeaderValue::from_str(&h.value)
+            .map_err(|e| anyhow::anyhow!("invalid HTTP header value for {}: {e}", h.name))?;
+        headers.append(name, value);
+    }
+    Ok(convex_native_core::http::HttpRequest {
+        method,
+        url: req.url.clone(),
+        headers,
+        body: bytes::Bytes::from(req.body.clone()),
+        routed_path: req.routed_path.clone(),
+    })
+}
+
+/// Encode a `convex_native_core::http::HttpResponse` into the
+/// wire-format `HttpActionResponse`. Headers are flattened back
+/// into `(name, value)` pairs.
+fn encode_http_response(resp: convex_native_core::http::HttpResponse) -> proto::HttpActionResponse {
+    let headers = resp
+        .headers
+        .iter()
+        .map(|(name, value)| proto::HttpHeader {
+            name: name.as_str().to_string(),
+            value: value.to_str().unwrap_or_default().to_string(),
+        })
+        .collect();
+    proto::HttpActionResponse {
+        status: resp.status as u32,
+        headers,
+        body: resp.body.to_vec(),
     }
 }
 
@@ -687,11 +867,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_http_action_kind_is_unimplemented() {
-        // The tonic server doesn't dispatch HTTP actions — those go
-        // through the HttpRouter path, not FunctionExecutionService.
-        // A caller that mistakenly forwards an HttpAction UdfType
-        // must see `Unimplemented`, not a generic error.
+    async fn execute_http_action_without_http_request_is_invalid_argument() {
+        // HTTP actions now dispatch through FunctionExecutionService
+        // alongside regular actions (UdfType::HttpAction). A caller
+        // forwarding an HttpAction UdfType must also populate
+        // `ExecuteRequest.http_request`; missing it surfaces as
+        // `InvalidArgument` so clients see the shape contract loudly.
         let server = FunctionExecutionServer::new(empty_runner());
         let native = NativeExecuteRequest {
             name: "http_handler".to_string(),
@@ -705,10 +886,10 @@ mod tests {
         };
         let proto_req = conversions::to_proto_request(&native, UdfType::HttpAction).unwrap();
         let status = server.execute(Request::new(proto_req)).await.unwrap_err();
-        assert_eq!(status.code(), tonic::Code::Unimplemented);
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert!(
-            status.message().contains("HttpRouter"),
-            "error points at the right dispatch path: {}",
+            status.message().contains("http_request"),
+            "error points at the missing field: {}",
             status.message(),
         );
     }

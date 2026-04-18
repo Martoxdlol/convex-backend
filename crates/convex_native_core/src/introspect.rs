@@ -160,6 +160,7 @@ fn describe_functions(functions: &NativeFunctionRegistry) -> serde_json::Value {
                 HandlerFn::Query(_) => "query",
                 HandlerFn::Mutation(_) => "mutation",
                 HandlerFn::Action(_) => "action",
+                HandlerFn::Http(_) => "http_action",
             };
             let mut entry = serde_json::json!({
                 "name": r.name,

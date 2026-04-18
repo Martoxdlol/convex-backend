@@ -221,6 +221,24 @@ pub struct FinalTxSummary {
     /// distinct from "no final_tx"). Search reads deferred; see
     /// `convex-native/STATUS.md`.
     pub index_reads: Vec<IndexReadsSummary>,
+    /// Per-invocation observed-determinism flags drained off
+    /// the handler's `Observed` handle. The backend writes
+    /// these into the resulting `UdfOutcome` so distributed
+    /// dispatch produces the same shape the in-process
+    /// composite runner does.
+    pub observed_identity: bool,
+    pub observed_rng: bool,
+    pub observed_time: bool,
+    /// 32-byte RNG seed the worker's `Observed` was constructed
+    /// with. Backend writes into `UdfOutcome::rng_seed` so a
+    /// re-execution can replay the same handler-visible
+    /// randomness.
+    pub rng_seed: [u8; 32],
+    /// Wall-clock unix timestamp the worker captured when
+    /// `observed_time` flipped — encoded as nanoseconds since
+    /// the unix epoch. Zero when the handler didn't observe
+    /// time.
+    pub unix_timestamp_nanos: u64,
 }
 
 /// Native-side mirror of `pb::function_execution::DistributedTxReadSize`

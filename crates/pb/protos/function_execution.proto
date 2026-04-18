@@ -100,6 +100,36 @@ message ExecuteRequest {
   // single-UDF requests). Present with an empty `updates` list
   // is also valid and equivalent to absent; tests pin both shapes.
   optional ExistingWrites existing_writes = 10;
+
+  // HTTP-action payload. Set when `udf_type == HttpAction`; the
+  // worker decodes this into a `convex_native_core::http::HttpRequest`,
+  // dispatches via `NativeFunctionRunner::run_http_action`, and
+  // returns the resulting `HttpResponse` on `ExecuteResponse`.
+  optional HttpActionRequest http_request = 11;
+}
+
+// HTTP request payload carried inside an `ExecuteRequest` for
+// `UdfType::HttpAction`. Mirrors `convex_native_core::http::HttpRequest`
+// so the worker can reconstitute the typed shape without re-
+// implementing the wire decoder.
+message HttpActionRequest {
+  string method = 1;
+  string url = 2;
+  // Repeated `(name, value)` header entries. Names are
+  // lowercased; values are UTF-8 strings. Multi-value headers
+  // appear as repeated entries with the same name.
+  repeated HttpHeader headers = 3;
+  // Raw body bytes. Empty for GET/HEAD/etc.
+  bytes body = 4;
+  // Path the route was matched on. Equivalent to
+  // `convex_native_core::http::HttpRequest::routed_path` —
+  // distinct from `url` so the handler can see a clean path.
+  string routed_path = 5;
+}
+
+message HttpHeader {
+  string name = 1;
+  string value = 2;
 }
 
 // Writes the backend has staged but not yet committed, for
@@ -155,6 +185,17 @@ message ExecuteResponse {
   // `writes_count`); Phase 2 extends it with the full `FunctionReads`
   // + `FunctionWrites` content the Committer needs.
   optional DistributedFinalTx final_tx = 5;
+
+  // HTTP-action response. Set on responses to a request whose
+  // `udf_type == HttpAction`. Mirrors
+  // `convex_native_core::http::HttpResponse`.
+  optional HttpActionResponse http_response = 6;
+}
+
+message HttpActionResponse {
+  uint32 status = 1;
+  repeated HttpHeader headers = 2;
+  bytes body = 3;
 }
 
 // Phase-2 on-the-wire shape of `function_runner::FunctionFinalTransaction`.
@@ -234,6 +275,32 @@ message DistributedFinalTx {
   // Empty list is valid and indicates the handler opened a tx
   // but read nothing indexable.
   repeated DistributedIndexReads index_reads = 8;
+
+  // Per-invocation observed-determinism flags, mirrored from
+  // the worker's `Observed` handle. The backend rolls these
+  // into the resulting `UdfOutcome` so subscription reuse +
+  // OCC validation + analytics see the same shape the
+  // in-process composite runner produces.
+  bool observed_identity = 9;
+  bool observed_rng = 10;
+  bool observed_time = 11;
+
+  // RNG seed the worker used to seed the deterministic RNG
+  // stream for this invocation. Encoded as 32 raw bytes; the
+  // backend writes this into `UdfOutcome::rng_seed` so a
+  // re-execution (sync replay, retry path) can reproduce the
+  // same handler-visible randomness. Empty when the proto is
+  // emitted by a worker that hasn't started populating the
+  // field yet (treated as `[0u8; 32]` on the backend side).
+  bytes rng_seed = 12;
+
+  // Wall-clock unix timestamp the worker observed when it
+  // captured `observed_time`. Encoded as nanoseconds since the
+  // unix epoch. Backend writes into `UdfOutcome::unix_timestamp`.
+  // 0 when the worker didn't note a timestamp (the in-process
+  // path defaults to `runtime.unix_timestamp()` instead; tests
+  // compare flags rather than the raw value).
+  uint64 unix_timestamp_nanos = 13;
 }
 
 // Scalar read-size counters. Mirrors `database::TransactionReadSize`.

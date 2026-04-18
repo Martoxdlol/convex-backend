@@ -58,11 +58,22 @@ pub type ActionHandlerFn = for<'a> fn(
     args: ConvexObject,
 ) -> HandlerFuture<'a>;
 
-/// Tagged union over the three handler shapes.
+/// Future returned by an HTTP action handler.
+pub type HttpHandlerFuture<'a> =
+    Pin<Box<dyn Future<Output = anyhow::Result<crate::http::HttpResponse>> + Send + 'a>>;
+
+/// Fn pointer signature emitted for `#[convex::http_action]` functions.
+pub type HttpHandlerFn = for<'a> fn(
+    ctx: &'a mut crate::http::HttpActionCtx<'a, Rt>,
+    request: crate::http::HttpRequest,
+) -> HttpHandlerFuture<'a>;
+
+/// Tagged union over the four handler shapes.
 pub enum HandlerFn {
     Query(QueryHandlerFn),
     Mutation(MutationHandlerFn),
     Action(ActionHandlerFn),
+    Http(HttpHandlerFn),
 }
 
 impl HandlerFn {
@@ -71,6 +82,7 @@ impl HandlerFn {
             HandlerFn::Query(_) => UdfType::Query,
             HandlerFn::Mutation(_) => UdfType::Mutation,
             HandlerFn::Action(_) => UdfType::Action,
+            HandlerFn::Http(_) => UdfType::HttpAction,
         }
     }
 }
@@ -171,6 +183,12 @@ pub async fn invoke(
             anyhow::bail!(
                 "invoke() does not execute actions — route through the ActionCallbacks path in \
                  the backend instead"
+            )
+        },
+        HandlerFn::Http(_) => {
+            anyhow::bail!(
+                "invoke() does not execute HTTP actions — route through \
+                 NativeFunctionRunner::run_http_action instead"
             )
         },
     }

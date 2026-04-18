@@ -112,6 +112,12 @@ pub fn to_proto_request(
         min_registry_version: native.min_registry_version.clone(),
         begin_timestamp: native.begin_timestamp,
         existing_writes,
+        // HTTP-action requests carry an `HttpActionRequest`
+        // payload; the dispatcher-side `to_proto_request` doesn't
+        // know about that today (the existing client path is
+        // Query/Mutation/Action). HTTP dispatch goes through the
+        // server's direct decode path; leave None here.
+        http_request: None,
     })
 }
 
@@ -190,6 +196,10 @@ pub fn to_proto_response(native: &ExecuteResponse) -> anyhow::Result<proto::Exec
         served_by_version: None,
         log_lines: native.log_lines.clone(),
         final_tx,
+        // HTTP-action responses set this directly in the
+        // server's HttpAction branch; the generic
+        // to_proto_response helper here doesn't carry one.
+        http_response: None,
     })
 }
 
@@ -243,6 +253,11 @@ pub fn final_tx_to_proto(summary: FinalTxSummary) -> anyhow::Result<proto::Distr
         user_tx_size: summary.user_tx_size.map(tx_read_size_to_proto),
         system_tx_size: summary.system_tx_size.map(tx_read_size_to_proto),
         index_reads,
+        observed_identity: summary.observed_identity,
+        observed_rng: summary.observed_rng,
+        observed_time: summary.observed_time,
+        rng_seed: summary.rng_seed.to_vec(),
+        unix_timestamp_nanos: summary.unix_timestamp_nanos,
     })
 }
 
@@ -290,6 +305,11 @@ pub fn final_tx_summary_to_function_tx(
         user_tx_size,
         system_tx_size,
         index_reads,
+        observed_identity: _,
+        observed_rng: _,
+        observed_time: _,
+        rng_seed: _,
+        unix_timestamp_nanos: _,
     } = summary;
 
     let begin_timestamp = Timestamp::try_from(begin_timestamp)?;
@@ -449,6 +469,16 @@ pub fn final_tx_from_proto(proto: &proto::DistributedFinalTx) -> anyhow::Result<
         .cloned()
         .map(index_reads_from_proto)
         .collect::<anyhow::Result<_>>()?;
+    let mut rng_seed = [0u8; 32];
+    if !proto.rng_seed.is_empty() {
+        if proto.rng_seed.len() != 32 {
+            anyhow::bail!(
+                "DistributedFinalTx.rng_seed must be 32 bytes, got {}",
+                proto.rng_seed.len(),
+            );
+        }
+        rng_seed.copy_from_slice(&proto.rng_seed);
+    }
     Ok(FinalTxSummary {
         begin_timestamp: proto.begin_timestamp,
         writes_count: proto.writes_count,
@@ -462,6 +492,11 @@ pub fn final_tx_from_proto(proto: &proto::DistributedFinalTx) -> anyhow::Result<
         user_tx_size: proto.user_tx_size.as_ref().map(tx_read_size_from_proto),
         system_tx_size: proto.system_tx_size.as_ref().map(tx_read_size_from_proto),
         index_reads,
+        observed_identity: proto.observed_identity,
+        observed_rng: proto.observed_rng,
+        observed_time: proto.observed_time,
+        rng_seed,
+        unix_timestamp_nanos: proto.unix_timestamp_nanos,
     })
 }
 
@@ -651,6 +686,7 @@ mod tests {
             // Substep 2.2b index_reads content is exercised by
             // `response_final_tx_index_reads_roundtrip` below.
             index_reads: Vec::new(),
+            ..Default::default()
         };
         let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
         let p = to_proto_response(&native).unwrap();
@@ -761,6 +797,7 @@ mod tests {
             user_tx_size: None,
             system_tx_size: None,
             index_reads: Vec::new(),
+            ..Default::default()
         };
         let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
         let p = to_proto_response(&native).unwrap();
@@ -798,6 +835,7 @@ mod tests {
             user_tx_size: Some(user),
             system_tx_size: Some(system),
             index_reads: Vec::new(),
+            ..Default::default()
         };
         let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary.clone());
         let p = to_proto_response(&native).unwrap();
@@ -852,6 +890,7 @@ mod tests {
                 fields: fields.clone(),
                 intervals,
             }],
+            ..Default::default()
         };
         let native = ExecuteResponse::new(Ok(ConvexValue::Null)).with_final_tx(summary);
         let p = to_proto_response(&native).unwrap();
@@ -928,6 +967,7 @@ mod tests {
                     .unwrap(),
                 intervals: IntervalSet::All,
             }],
+            ..Default::default()
         };
         let ft = final_tx_summary_to_function_tx(summary).unwrap();
         assert_eq!(ft.begin_timestamp, Timestamp::try_from(100u64).unwrap());
@@ -962,6 +1002,7 @@ mod tests {
             served_by_version: None,
             log_lines: vec![],
             final_tx: None,
+            http_response: None,
         };
         assert!(from_proto_response(&p).is_err());
     }

@@ -12,7 +12,10 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{
+    format_ident,
+    quote,
+};
 use syn::{
     parse_macro_input,
     punctuated::Punctuated,
@@ -95,6 +98,9 @@ fn expand(args: AttrArgs, input: ItemFn) -> syn::Result<TokenStream2> {
         ));
     }
 
+    let user_fn_ident = sig.ident.clone();
+    let handler_fn_ident = format_ident!("__convex_http_handler_{}", user_fn_ident);
+
     let method = args.method.to_uppercase();
     let path = args.path;
     let name = format!("__http::{method}:{path}");
@@ -102,6 +108,43 @@ fn expand(args: AttrArgs, input: ItemFn) -> syn::Result<TokenStream2> {
     let original = quote! {
         #(#attrs)*
         #vis #sig #block
+    };
+
+    // Synthesize an erased-signature handler that matches
+    // `convex_native_core::registry::HttpHandlerFn`. The user fn
+    // already takes `(ctx, request)` returning `Result<HttpResponse>`,
+    // so we just box the future and return it.
+    let handler_fn = quote! {
+        #[allow(non_snake_case)]
+        fn #handler_fn_ident<'a>(
+            ctx: &'a mut ::convex_native_core::__private::HttpActionCtx<
+                'a,
+                ::convex_native_core::__private::Rt,
+            >,
+            request: ::convex_native_core::__private::HttpRequest,
+        ) -> ::convex_native_core::__private::HttpHandlerFuture<'a> {
+            ::std::boxed::Box::pin(async move {
+                #user_fn_ident(ctx, request).await
+            })
+        }
+    };
+
+    // Register the handler under the synthetic dotted name via the
+    // existing NativeFunctionRegistration inventory so the
+    // distributed `FunctionExecutionService` can dispatch HTTP
+    // actions through `NativeFunctionRunner::run_http_action(name, request)`.
+    let function_registration = quote! {
+        ::convex_native_core::inventory::submit! {
+            ::convex_native_core::__private::NativeFunctionRegistration {
+                name: #name,
+                arg_names: &[],
+                handler: ::convex_native_core::__private::HandlerFn::Http(
+                    #handler_fn_ident,
+                ),
+                is_internal: false,
+                timeout_ms: 0,
+            }
+        }
     };
 
     let registration = quote! {
@@ -116,6 +159,8 @@ fn expand(args: AttrArgs, input: ItemFn) -> syn::Result<TokenStream2> {
 
     Ok(quote! {
         #original
+        #handler_fn
+        #function_registration
         #registration
     })
 }

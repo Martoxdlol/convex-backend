@@ -495,7 +495,16 @@ async fn build_outcome_triple(
     let duration = started.elapsed();
 
     // Build the backend-consumable FunctionFinalTransaction from
-    // the worker's summary (substep 2.6a).
+    // the worker's summary (substep 2.6a). Capture the observed
+    // flags + rng seed first because `final_tx_summary_to_function_tx`
+    // consumes the summary by value.
+    let observed_snapshot = response.final_tx.as_ref().map(|s| ObservedSnapshot {
+        observed_identity: s.observed_identity,
+        observed_rng: s.observed_rng,
+        observed_time: s.observed_time,
+        rng_seed: s.rng_seed,
+        unix_timestamp_nanos: s.unix_timestamp_nanos,
+    });
     let final_tx = match response.final_tx {
         Some(summary) => Some(conversions::final_tx_summary_to_function_tx(summary)?),
         None => None,
@@ -508,11 +517,21 @@ async fn build_outcome_triple(
         Err(msg) => Err(JsError::from_message(msg)),
     };
 
-    // Build a minimal UdfOutcome. Several fields (observed_*, rng)
-    // are not carried over the wire yet — defaults here match the
-    // in-process path when the handler doesn't touch them. When
-    // Phase 4 or a follow-up extends the proto to carry observed
-    // flags + rng seed, this constructor grows.
+    // Hydrate observed flags + rng + unix_timestamp from the
+    // worker's snapshot when present (post-observed-flags wire
+    // version). Pre-observed-flags workers leave the snapshot
+    // None and the outcome falls back to the historic defaults.
+    let (observed_identity, observed_rng, observed_time, rng_seed, unix_timestamp) =
+        match observed_snapshot {
+            Some(snap) => (
+                snap.observed_identity,
+                snap.observed_rng,
+                snap.observed_time,
+                snap.rng_seed,
+                UnixTimestamp::from_nanos(snap.unix_timestamp_nanos),
+            ),
+            None => (false, false, false, [0u8; 32], UnixTimestamp::from_nanos(0)),
+        };
     let log_lines = render_log_lines(response.log_lines);
     let (path, arguments_unused, _) = path.consume();
     let _ = arguments_unused; // arguments already consumed above
@@ -520,11 +539,11 @@ async fn build_outcome_triple(
         path: path.for_logging(),
         arguments,
         identity: inert_identity,
-        observed_identity: false,
-        rng_seed: [0u8; 32],
-        observed_rng: false,
-        unix_timestamp: UnixTimestamp::from_nanos(0),
-        observed_time: false,
+        observed_identity,
+        rng_seed,
+        observed_rng,
+        unix_timestamp,
+        observed_time,
         log_lines,
         audit_log_lines: vec![].into(),
         journal: QueryJournal::new(),
@@ -542,6 +561,17 @@ async fn build_outcome_triple(
 
     let usage_stats = FunctionUsageTracker::new().gather_user_stats();
     Ok((final_tx, wrapped, usage_stats))
+}
+
+/// Local helper struct. Holds the observed-flags + rng_seed
+/// captured off `FinalTxSummary` before the summary is consumed
+/// by `final_tx_summary_to_function_tx`.
+struct ObservedSnapshot {
+    observed_identity: bool,
+    observed_rng: bool,
+    observed_time: bool,
+    rng_seed: [u8; 32],
+    unix_timestamp_nanos: u64,
 }
 
 /// Parse the worker's `"[LEVEL] message"`-shaped lines back into

@@ -197,14 +197,14 @@ impl NativeFunctionRunner {
     /// `timeout_ms` from the registration when set, otherwise falls
     /// back to the runner-level default. If neither is set, the
     /// future runs unchanged.
-    async fn run_with_timeout<F>(
+    async fn run_with_timeout<F, T>(
         &self,
         fut: F,
         name: &str,
         reg_timeout_ms: u64,
-    ) -> anyhow::Result<ConvexValue>
+    ) -> anyhow::Result<T>
     where
-        F: std::future::Future<Output = anyhow::Result<ConvexValue>> + Send,
+        F: std::future::Future<Output = anyhow::Result<T>> + Send,
     {
         let effective = if reg_timeout_ms > 0 {
             Some(Duration::from_millis(reg_timeout_ms))
@@ -261,7 +261,8 @@ impl NativeFunctionRunner {
         namespace: TableNamespace,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_query_inner(name, tx, namespace, args, None).await
+        self.run_query_inner(name, tx, namespace, args, None, None)
+            .await
     }
 
     /// Same as [`run_query`] but threads an externally-owned
@@ -277,7 +278,27 @@ impl NativeFunctionRunner {
         args: ConvexObject,
         log_buffer: crate::logging::LogBuffer,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_query_inner(name, tx, namespace, args, Some(log_buffer))
+        self.run_query_inner(name, tx, namespace, args, Some(log_buffer), None)
+            .await
+    }
+
+    /// Variant of [`run_query_with_log_buffer`] that also pins the
+    /// per-invocation [`Observed`] handle the worker uses to surface
+    /// `observed_identity` / `observed_rng` / `observed_time` flags
+    /// in the response (so the distributed dispatch path can build
+    /// a `UdfOutcome` with the same fidelity the in-process composite
+    /// runner produces).
+    #[fastrace::trace]
+    pub async fn run_query_with_log_buffer_and_observed(
+        &self,
+        name: &str,
+        tx: &mut Transaction<Rt>,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        log_buffer: crate::logging::LogBuffer,
+        observed: std::sync::Arc<crate::ctx::query::Observed>,
+    ) -> anyhow::Result<ConvexValue> {
+        self.run_query_inner(name, tx, namespace, args, Some(log_buffer), Some(observed))
             .await
     }
 
@@ -288,6 +309,7 @@ impl NativeFunctionRunner {
         namespace: TableNamespace,
         args: ConvexObject,
         log_buffer: Option<crate::logging::LogBuffer>,
+        observed: Option<std::sync::Arc<crate::ctx::query::Observed>>,
     ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
         self.check_breaker(name)?;
@@ -302,9 +324,12 @@ impl NativeFunctionRunner {
                 registration.udf_type(),
             );
         };
-        let mut ctx = match log_buffer {
-            Some(buf) => QueryCtx::with_log_buffer(tx, namespace, buf),
-            None => QueryCtx::new(tx, namespace),
+        let mut ctx = match (log_buffer, observed) {
+            (Some(buf), Some(obs)) => {
+                QueryCtx::with_log_buffer_and_observed(tx, namespace, buf, obs)
+            },
+            (Some(buf), None) => QueryCtx::with_log_buffer(tx, namespace, buf),
+            (None, _) => QueryCtx::new(tx, namespace),
         };
         let started = Instant::now();
         let result = self
@@ -334,7 +359,7 @@ impl NativeFunctionRunner {
         namespace: TableNamespace,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_mutation_inner(name, tx, namespace, args, None)
+        self.run_mutation_inner(name, tx, namespace, args, None, None)
             .await
     }
 
@@ -348,7 +373,23 @@ impl NativeFunctionRunner {
         args: ConvexObject,
         log_buffer: crate::logging::LogBuffer,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_mutation_inner(name, tx, namespace, args, Some(log_buffer))
+        self.run_mutation_inner(name, tx, namespace, args, Some(log_buffer), None)
+            .await
+    }
+
+    /// Mutation counterpart to
+    /// [`run_query_with_log_buffer_and_observed`].
+    #[fastrace::trace]
+    pub async fn run_mutation_with_log_buffer_and_observed(
+        &self,
+        name: &str,
+        tx: &mut Transaction<Rt>,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        log_buffer: crate::logging::LogBuffer,
+        observed: std::sync::Arc<crate::ctx::query::Observed>,
+    ) -> anyhow::Result<ConvexValue> {
+        self.run_mutation_inner(name, tx, namespace, args, Some(log_buffer), Some(observed))
             .await
     }
 
@@ -359,6 +400,7 @@ impl NativeFunctionRunner {
         namespace: TableNamespace,
         args: ConvexObject,
         log_buffer: Option<crate::logging::LogBuffer>,
+        observed: Option<std::sync::Arc<crate::ctx::query::Observed>>,
     ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
         self.check_breaker(name)?;
@@ -373,9 +415,12 @@ impl NativeFunctionRunner {
                 registration.udf_type(),
             );
         };
-        let mut ctx = match log_buffer {
-            Some(buf) => MutationCtx::with_log_buffer(tx, namespace, buf),
-            None => MutationCtx::new(tx, namespace),
+        let mut ctx = match (log_buffer, observed) {
+            (Some(buf), Some(obs)) => {
+                MutationCtx::with_log_buffer_and_observed(tx, namespace, buf, obs)
+            },
+            (Some(buf), None) => MutationCtx::with_log_buffer(tx, namespace, buf),
+            (None, _) => MutationCtx::new(tx, namespace),
         };
         let started = Instant::now();
         let result = self
@@ -487,6 +532,83 @@ impl NativeFunctionRunner {
         self.metrics.record(
             name,
             UdfType::Action,
+            if result.is_ok() {
+                Outcome::Ok
+            } else {
+                Outcome::Err
+            },
+            started.elapsed(),
+        );
+        result
+    }
+
+    /// Execute a named native HTTP action with `NoopCallbacks`.
+    /// HTTP actions registered through `#[convex::http_action]`
+    /// land here when the worker dispatches a `UdfType::HttpAction`
+    /// over `FunctionExecutionService`.
+    pub async fn run_http_action(
+        self: &Arc<Self>,
+        name: &str,
+        request: crate::http::HttpRequest,
+    ) -> anyhow::Result<crate::http::HttpResponse> {
+        self.run_http_action_with_callbacks(
+            name,
+            request,
+            Arc::new(crate::callbacks::NoopCallbacks),
+            None,
+        )
+        .await
+    }
+
+    /// Variant of [`run_http_action`] that takes explicit
+    /// callbacks (so HTTP actions making `ctx.run_mutation(...)`
+    /// sub-calls route to the backend's Committer) and an
+    /// optional `LogBuffer` for capturing `ctx.log()` output.
+    #[fastrace::trace]
+    pub async fn run_http_action_with_callbacks(
+        self: &Arc<Self>,
+        name: &str,
+        request: crate::http::HttpRequest,
+        callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
+        log_buffer: Option<crate::logging::LogBuffer>,
+    ) -> anyhow::Result<crate::http::HttpResponse> {
+        self.check_drain(name)?;
+        self.check_breaker(name)?;
+        let _guard = self.enter();
+        let registration = self.inner.get(name).ok_or_else(|| {
+            anyhow::anyhow!("no native HTTP action registered with name {name:?}")
+        })?;
+        let HandlerFn::Http(handler) = registration.handler else {
+            anyhow::bail!(
+                "native function {name:?} is not an HTTP action (got {:?})",
+                registration.udf_type(),
+            );
+        };
+        let mut http_ctx = match log_buffer.clone() {
+            Some(buf) => crate::http::HttpActionCtx::<'_, Rt>::with_callbacks_and_log_buffer(
+                Some(self.clone()),
+                callbacks,
+                TableNamespace::Global,
+                buf,
+            ),
+            None => crate::http::HttpActionCtx::<'_, Rt>::with_callbacks(
+                Some(self.clone()),
+                callbacks,
+                TableNamespace::Global,
+            ),
+        };
+        let started = Instant::now();
+        let result = self
+            .run_with_timeout(
+                handler(&mut http_ctx, request),
+                name,
+                registration.timeout_ms,
+            )
+            .await;
+        self.report_breaker(name, result.is_ok());
+        self.metrics.record(
+            name,
+            UdfType::HttpAction,
             if result.is_ok() {
                 Outcome::Ok
             } else {

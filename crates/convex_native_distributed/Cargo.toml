@@ -19,6 +19,8 @@ convex_native_core = { workspace = true }
 database = { workspace = true }
 errors = { workspace = true }
 function_runner = { workspace = true }
+headers = { workspace = true }
+http = { workspace = true }
 keybroker = { workspace = true }
 model = { workspace = true }
 parking_lot = { workspace = true }
@@ -44,6 +46,10 @@ vector = { workspace = true }
 [dev-dependencies]
 # Everything in [dependencies] is already visible to tests/examples;
 # only list here what's strictly test-only.
+governor = { workspace = true }
+indexing = { workspace = true }
+search = { workspace = true }
+sqlite = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tower = { workspace = true }
