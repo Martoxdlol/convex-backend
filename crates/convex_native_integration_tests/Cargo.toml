@@ -21,6 +21,7 @@ convex_native_distributed = { workspace = true }
 database = { workspace = true }
 errors = { workspace = true }
 governor = { workspace = true }
+http = { workspace = true }
 indexing = { workspace = true }
 keybroker = { workspace = true }
 model = { workspace = true }
