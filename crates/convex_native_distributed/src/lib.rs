@@ -45,6 +45,11 @@ pub mod client;
 pub mod conversions;
 pub mod cron_driver;
 pub mod function_runner_impl;
+/// Re-export `tonic` so crates that only depend on
+/// `convex_native_distributed` (e.g. `local_backend`) can
+/// inspect `Status` codes on the `WorkerClient::execute` return
+/// type without taking tonic as a direct dependency.
+pub use tonic;
 pub mod mode;
 pub mod pool;
 pub mod pool_runner;

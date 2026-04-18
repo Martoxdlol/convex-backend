@@ -217,7 +217,6 @@ impl NativeHttpDispatcher {
             ExecuteRequest as NativeExecuteRequest,
             HttpActionRequestPayload,
         };
-        let (_worker_id, client, handler_name) = eligible.into_iter().next().expect("non-empty");
         let HttpActionRequest { head, body } = request;
         let body_bytes = match body {
             Some(stream) => collect_body(stream).await?,
@@ -236,22 +235,54 @@ impl NativeHttpDispatcher {
         };
         let context = ExecutionContext::new(request_id, &FunctionCaller::HttpEndpoint);
         let identity_bytes = encode_identity_for_wire(&identity);
-        let exec_req = NativeExecuteRequest {
-            name: handler_name,
-            namespace: value::TableNamespace::Global,
-            args: value::ConvexObject::empty(),
-            timeout: None,
-            min_registry_version: None,
-            execution_context: Some(context),
-            begin_timestamp: None,
-            existing_writes: Vec::new(),
-            http_request: Some(payload),
-            identity: identity_bytes,
+        // Walk the eligible set on transport-level `Unavailable`
+        // so a single worker going down mid-dispatch doesn't 502
+        // the request. Non-unavailable transport errors and
+        // handler-level errors break out immediately — retrying
+        // a 500 on the next worker would just produce the same
+        // handler-level failure.
+        let mut response = None;
+        let mut last_transport_err: Option<convex_native_distributed::tonic::Status> = None;
+        for (_worker_id, client, handler_name) in eligible {
+            let exec_req = NativeExecuteRequest {
+                name: handler_name,
+                namespace: value::TableNamespace::Global,
+                args: value::ConvexObject::empty(),
+                timeout: None,
+                min_registry_version: None,
+                execution_context: Some(context.clone()),
+                begin_timestamp: None,
+                existing_writes: Vec::new(),
+                http_request: Some(payload.clone()),
+                identity: identity_bytes.clone(),
+            };
+            match client.execute(exec_req, UdfType::HttpAction).await {
+                Ok(resp) => {
+                    response = Some(resp);
+                    break;
+                },
+                Err(status)
+                    if status.code() == convex_native_distributed::tonic::Code::Unavailable =>
+                {
+                    last_transport_err = Some(status);
+                    continue;
+                },
+                Err(status) => {
+                    return Err(anyhow::anyhow!("pool HTTP dispatch: {status}"));
+                },
+            }
+        }
+        let response = match response {
+            Some(r) => r,
+            None => {
+                let detail = last_transport_err
+                    .map(|s| format!("last transport error: {s}"))
+                    .unwrap_or_else(|| "no eligible worker available".to_string());
+                return Err(anyhow::anyhow!(
+                    "pool HTTP dispatch: every eligible worker failed — {detail}",
+                ));
+            },
         };
-        let response = client
-            .execute(exec_req, UdfType::HttpAction)
-            .await
-            .map_err(|e| anyhow::anyhow!("pool HTTP dispatch: {e}"))?;
         if let Some(http_response) = response.http_response {
             let mut headers = http::HeaderMap::new();
             for (name, value) in http_response.headers {
