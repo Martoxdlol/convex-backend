@@ -150,6 +150,11 @@ impl BuiltBackend {
         self.router.is_some()
     }
 
+    /// Convenience: did the builder opt into cron collection?
+    pub fn has_crons(&self) -> bool {
+        self.crons.is_some()
+    }
+
     /// Number of registered functions (queries + mutations + actions).
     pub fn function_count(&self) -> usize {
         self.runner.as_ref().map_or(0, |r| r.len())
@@ -279,6 +284,7 @@ mod tests {
         assert!(!built.has_runner());
         assert!(!built.has_schema());
         assert!(!built.has_http());
+        assert!(!built.has_crons());
     }
 
     #[test]
@@ -287,11 +293,13 @@ mod tests {
             .with_native_functions()
             .with_native_schema()
             .with_http_routes()
+            .with_crons()
             .build()
             .unwrap();
         assert!(built.has_runner());
         assert!(built.has_schema());
         assert!(built.has_http());
+        assert!(built.has_crons());
     }
 
     #[test]
