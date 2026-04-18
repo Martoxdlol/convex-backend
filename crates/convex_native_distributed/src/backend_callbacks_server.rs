@@ -227,6 +227,7 @@ pub async fn spawn_backend_callback_server(
     file_bytes: Option<Arc<dyn BackendFileBytes>>,
     document_reader: Option<Arc<dyn BackendDocumentReader>>,
 ) -> anyhow::Result<()> {
+    use anyhow::Context;
     use pb::backend_callbacks::backend_callback_service_server::BackendCallbackServiceServer;
     use tonic::transport::Server;
     let mut server = BackendCallbackServer::new(callbacks);
@@ -239,10 +240,16 @@ pub async fn spawn_backend_callback_server(
     if let Some(reader) = document_reader {
         server = server.with_document_reader(reader);
     }
+    // Bind synchronously so boot fails loud on port-in-use —
+    // same pattern as `spawn_admission_server_with_handle`.
+    let listener = tokio::net::TcpListener::bind(bind_addr)
+        .await
+        .with_context(|| format!("BackendCallbackService: bind {bind_addr} failed"))?;
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
     tokio::spawn(async move {
         if let Err(e) = Server::builder()
             .add_service(BackendCallbackServiceServer::new(server))
-            .serve(bind_addr)
+            .serve_with_incoming(incoming)
             .await
         {
             tracing::error!("BackendCallbackService exited: {e}");

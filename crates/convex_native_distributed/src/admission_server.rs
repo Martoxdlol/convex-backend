@@ -75,16 +75,25 @@ pub async fn spawn_admission_server(
 pub async fn spawn_admission_server_with_handle(
     bind_addr: std::net::SocketAddr,
 ) -> anyhow::Result<(Arc<WorkerPool>, WorkerAdmissionServer)> {
+    use anyhow::Context;
     use pb::worker_admission::worker_admission_service_server::WorkerAdmissionServiceServer;
     use tonic::transport::Server;
     let pool = Arc::new(WorkerPool::new());
     let service = WorkerAdmissionServer::new(pool.clone());
     let service_for_spawn = service.clone();
     let pool_for_return = pool.clone();
+    // Bind synchronously so boot fails loud on port-in-use —
+    // `Server::serve` previously swallowed the bind error into
+    // a tracing message and the backend kept running with no
+    // admission surface.
+    let listener = tokio::net::TcpListener::bind(bind_addr)
+        .await
+        .with_context(|| format!("WorkerAdmissionService: bind {bind_addr} failed"))?;
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
     tokio::spawn(async move {
         if let Err(e) = Server::builder()
             .add_service(WorkerAdmissionServiceServer::new(service_for_spawn))
-            .serve(bind_addr)
+            .serve_with_incoming(incoming)
             .await
         {
             // Logged here rather than bubbled because the spawn

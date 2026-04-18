@@ -43,6 +43,7 @@
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use axum::{
     extract::State,
     http::StatusCode,
@@ -133,14 +134,14 @@ pub async fn spawn_admin_server(
     state: AdminState,
 ) -> anyhow::Result<()> {
     let app = router(state);
+    // Bind synchronously so boot fails loud on port-in-use —
+    // silently logging and continuing leaves the operator
+    // staring at a missing admin surface with no indication of
+    // why.
+    let listener = tokio::net::TcpListener::bind(bind_addr)
+        .await
+        .with_context(|| format!("AdminHttpServer: bind {bind_addr} failed"))?;
     tokio::spawn(async move {
-        let listener = match tokio::net::TcpListener::bind(bind_addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                tracing::error!("AdminHttpServer: bind {bind_addr} failed: {e}");
-                return;
-            },
-        };
         if let Err(e) = axum::serve(listener, app).await {
             tracing::error!("AdminHttpServer exited: {e}");
         }
