@@ -412,9 +412,17 @@ where
     if let Some(endpoint) = backend_callback_endpoint {
         server = server.with_backend_callback_endpoint(endpoint);
     }
+    // Bind synchronously so the caller sees port-in-use /
+    // permission errors up front. `serve_with_incoming_shutdown`
+    // consumes the pre-bound listener so late transport
+    // failures still flow through the returned `Result`.
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("FunctionExecutionService: bind {addr} failed: {e}"))?;
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
     Server::builder()
         .add_service(FunctionExecutionServiceServer::new(server))
-        .serve_with_shutdown(addr, shutdown)
+        .serve_with_incoming_shutdown(incoming, shutdown)
         .await
         .map_err(|e| anyhow::anyhow!("FunctionExecutionService serve({addr}): {e}"))
 }
