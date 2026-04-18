@@ -66,6 +66,13 @@ pub struct WorkerRegistration {
     /// `registry_version` the worker reports on every
     /// `WorkerStatus`. Cached to avoid re-reading the envelope.
     registry_version: String,
+    /// Latest `min_registry_version` floor the backend
+    /// broadcast. Populated by the drain listener from
+    /// `RegistryFloorUpdate` frames; `None` means the pool
+    /// currently has no floor. The worker binary can query
+    /// this via [`current_floor`] to surface the value in its
+    /// own observability surfaces.
+    current_floor: Arc<parking_lot::Mutex<Option<String>>>,
 }
 
 impl WorkerRegistration {
@@ -180,16 +187,31 @@ impl WorkerRegistration {
 
         // Spawn the drain listener — converts `DrainNotice` into
         // a `Notify` wakeup the binary awaits in its shutdown
-        // path. `RegistryFloorUpdate` is informational right now;
-        // logged for operator debugging via `tracing`.
+        // path. `RegistryFloorUpdate` frames update the shared
+        // `current_floor` slot so `current_floor()` returns the
+        // most recent floor the backend broadcast.
         let drain_notify = Arc::new(Notify::new());
-        tokio::spawn(drain_listener(inbound, drain_notify.clone()));
+        let current_floor = Arc::new(parking_lot::Mutex::new(None));
+        tokio::spawn(drain_listener(
+            inbound,
+            drain_notify.clone(),
+            current_floor.clone(),
+        ));
 
         Ok(Self {
             status_tx,
             drain_notify,
             registry_version,
+            current_floor,
         })
+    }
+
+    /// Most recent `min_registry_version` the backend
+    /// broadcast. `None` when the backend hasn't set a floor
+    /// (or cleared it). Updated as `RegistryFloorUpdate` frames
+    /// arrive on the admission stream.
+    pub fn current_floor(&self) -> Option<String> {
+        self.current_floor.lock().clone()
     }
 
     /// Push one status snapshot upstream. The worker binary's
@@ -292,6 +314,7 @@ impl WorkerRegistration {
 async fn drain_listener(
     mut inbound: tonic::Streaming<proto::BackendToWorker>,
     drain_notify: Arc<Notify>,
+    current_floor: Arc<parking_lot::Mutex<Option<String>>>,
 ) {
     while let Some(msg) = inbound.next().await {
         let Ok(msg) = msg else { break };
@@ -300,11 +323,22 @@ async fn drain_listener(
                 drain_notify.notify_waiters();
                 break;
             },
-            Some(proto::backend_to_worker::Msg::FloorUpdate(_)) => {
-                // Informational. Operator dashboards (Phase 7)
-                // surface the floor; the worker itself doesn't
-                // act on it — it keeps serving until the backend
-                // sends a DrainNotice or the stream closes.
+            Some(proto::backend_to_worker::Msg::FloorUpdate(update)) => {
+                // Update the shared slot so `current_floor()`
+                // returns the latest broadcast. Empty string
+                // means "floor cleared"; map to `None` so the
+                // accessor returns a tidy optional.
+                let floor = if update.min_registry_version.is_empty() {
+                    None
+                } else {
+                    Some(update.min_registry_version.clone())
+                };
+                tracing::info!(
+                    target: "convex_worker",
+                    floor = ?floor,
+                    "received RegistryFloorUpdate",
+                );
+                *current_floor.lock() = floor;
             },
             None => {
                 // Empty frame — ignore.
@@ -416,6 +450,33 @@ mod tests {
             pool.is_empty(),
             "dropping WorkerRegistration retires the worker from the pool",
         );
+    }
+
+    #[tokio::test]
+    async fn initial_floor_seed_lands_on_current_floor() {
+        let pool = Arc::new(WorkerPool::new());
+        pool.set_min_registry_version(Some("2.0.0".to_string()));
+        let admission_addr = spawn_admission(pool.clone()).await;
+        let exec_addr = spawn_worker_exec().await;
+        let reg = WorkerRegistration::register(
+            format!("http://{admission_addr}"),
+            format!("http://{exec_addr}"),
+            "3.5-test".to_string(),
+        )
+        .await
+        .expect("register");
+        // Wait for the drain listener to consume the seeded
+        // FloorUpdate frame.
+        let mut observed: Option<String> = None;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            if let Some(floor) = reg.current_floor() {
+                observed = Some(floor);
+                break;
+            }
+        }
+        assert_eq!(observed.as_deref(), Some("2.0.0"));
+        drop(reg);
     }
 
     #[tokio::test]
