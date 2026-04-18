@@ -95,6 +95,7 @@ fn sample_req(name: &str) -> ExecuteRequest {
         execution_context: None,
         begin_timestamp: None,
         existing_writes: Vec::new(),
+        http_request: None,
     }
 }
 

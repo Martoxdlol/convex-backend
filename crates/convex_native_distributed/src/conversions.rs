@@ -101,6 +101,23 @@ pub fn to_proto_request(
             .collect::<anyhow::Result<_>>()?;
         Some(proto::ExistingWrites { updates })
     };
+    let http_request = native
+        .http_request
+        .as_ref()
+        .map(|r| proto::HttpActionRequest {
+            method: r.method.clone(),
+            url: r.url.clone(),
+            headers: r
+                .headers
+                .iter()
+                .map(|(n, v)| proto::HttpHeader {
+                    name: n.clone(),
+                    value: v.clone(),
+                })
+                .collect(),
+            body: r.body.to_vec(),
+            routed_path: r.routed_path.clone(),
+        });
     Ok(proto::ExecuteRequest {
         name: native.name.clone(),
         udf_type: udf_type_to_i32(udf_type),
@@ -112,12 +129,7 @@ pub fn to_proto_request(
         min_registry_version: native.min_registry_version.clone(),
         begin_timestamp: native.begin_timestamp,
         existing_writes,
-        // HTTP-action requests carry an `HttpActionRequest`
-        // payload; the dispatcher-side `to_proto_request` doesn't
-        // know about that today (the existing client path is
-        // Query/Mutation/Action). HTTP dispatch goes through the
-        // server's direct decode path; leave None here.
-        http_request: None,
+        http_request,
     })
 }
 
@@ -146,6 +158,19 @@ pub fn from_proto_request(
             .map(common::document::DocumentUpdateWithPrevTs::try_from)
             .collect::<anyhow::Result<_>>()?,
     };
+    let http_request = p.http_request.as_ref().map(|r| {
+        convex_native_core::distributed::HttpActionRequestPayload {
+            method: r.method.clone(),
+            url: r.url.clone(),
+            headers: r
+                .headers
+                .iter()
+                .map(|h| (h.name.clone(), h.value.clone()))
+                .collect(),
+            body: bytes::Bytes::from(r.body.clone()),
+            routed_path: r.routed_path.clone(),
+        }
+    });
     let native = ExecuteRequest {
         name: p.name.clone(),
         namespace: decode_namespace(&p.namespace)?,
@@ -155,6 +180,7 @@ pub fn from_proto_request(
         execution_context,
         begin_timestamp: p.begin_timestamp,
         existing_writes,
+        http_request,
     };
     Ok((native, udf_type))
 }
@@ -196,10 +222,21 @@ pub fn to_proto_response(native: &ExecuteResponse) -> anyhow::Result<proto::Exec
         served_by_version: None,
         log_lines: native.log_lines.clone(),
         final_tx,
-        // HTTP-action responses set this directly in the
-        // server's HttpAction branch; the generic
-        // to_proto_response helper here doesn't carry one.
-        http_response: None,
+        http_response: native
+            .http_response
+            .as_ref()
+            .map(|r| proto::HttpActionResponse {
+                status: r.status,
+                headers: r
+                    .headers
+                    .iter()
+                    .map(|(n, v)| proto::HttpHeader {
+                        name: n.clone(),
+                        value: v.clone(),
+                    })
+                    .collect(),
+                body: r.body.to_vec(),
+            }),
     })
 }
 
@@ -221,10 +258,22 @@ pub fn from_proto_response(p: &proto::ExecuteResponse) -> anyhow::Result<Execute
         R::JsError(e) => Err(e.message.clone().unwrap_or_default()),
     };
     let final_tx = p.final_tx.as_ref().map(final_tx_from_proto).transpose()?;
+    let http_response = p.http_response.as_ref().map(|r| {
+        convex_native_core::distributed::HttpActionResponsePayload {
+            status: r.status,
+            headers: r
+                .headers
+                .iter()
+                .map(|h| (h.name.clone(), h.value.clone()))
+                .collect(),
+            body: bytes::Bytes::from(r.body.clone()),
+        }
+    });
     Ok(ExecuteResponse {
         result,
         log_lines: p.log_lines.clone(),
         final_tx,
+        http_response,
     })
 }
 
@@ -592,6 +641,7 @@ mod tests {
             execution_context: None,
             begin_timestamp: None,
             existing_writes: Vec::new(),
+            http_request: None,
         };
         let proto_req = to_proto_request(&native, common::types::UdfType::Query).unwrap();
         let (decoded, udf_type) = from_proto_request(&proto_req).unwrap();
@@ -640,6 +690,7 @@ mod tests {
             execution_context: Some(ctx),
             begin_timestamp: None,
             existing_writes: Vec::new(),
+            http_request: None,
         };
         let proto_req = to_proto_request(&native, common::types::UdfType::Query).unwrap();
         let (decoded, _) = from_proto_request(&proto_req).unwrap();
@@ -736,6 +787,7 @@ mod tests {
             execution_context: None,
             begin_timestamp: Some(12345),
             existing_writes: vec![update.clone()],
+            http_request: None,
         };
         let p = to_proto_request(&native, common::types::UdfType::Mutation).unwrap();
         assert_eq!(p.begin_timestamp, Some(12345));
@@ -764,6 +816,7 @@ mod tests {
             execution_context: None,
             begin_timestamp: None,
             existing_writes: Vec::new(),
+            http_request: None,
         };
         let p = to_proto_request(&native, common::types::UdfType::Query).unwrap();
         assert!(

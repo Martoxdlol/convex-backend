@@ -412,6 +412,7 @@ mod tests {
             execution_context: None,
             begin_timestamp: None,
             existing_writes: Vec::new(),
+            http_request: None,
         }
     }
 

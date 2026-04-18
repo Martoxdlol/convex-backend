@@ -119,6 +119,37 @@ pub struct ExecuteRequest {
     /// case). The worker applies them via
     /// `Transaction::merge_writes`.
     pub existing_writes: Vec<common::document::DocumentUpdateWithPrevTs>,
+    /// HTTP-action payload. Set when `udf_type == HttpAction`;
+    /// the worker decodes this into a `convex_native_core::http::HttpRequest`,
+    /// runs the handler, and returns the response on
+    /// `ExecuteResponse.http_response`. `None` for every other
+    /// `UdfType`.
+    pub http_request: Option<HttpActionRequestPayload>,
+}
+
+/// Native-side mirror of
+/// `pb::function_execution::HttpActionRequest`. Carries an HTTP
+/// request's wire-ready fields: method, URL, headers, body, and
+/// the path the matched route used.
+#[derive(Debug, Clone)]
+pub struct HttpActionRequestPayload {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: bytes::Bytes,
+    pub routed_path: String,
+}
+
+/// Native-side mirror of
+/// `pb::function_execution::HttpActionResponse`. Populated by
+/// the worker after an HTTP-action dispatch; the backend decodes
+/// it back into a `convex_native_core::http::HttpResponse`
+/// equivalent before streaming bytes to the HTTP client.
+#[derive(Debug, Clone)]
+pub struct HttpActionResponsePayload {
+    pub status: u32,
+    pub headers: Vec<(String, String)>,
+    pub body: bytes::Bytes,
 }
 
 /// Response a worker sends back.
@@ -139,6 +170,12 @@ pub struct ExecuteResponse {
     pub result: Result<ConvexValue, String>,
     pub log_lines: Vec<String>,
     pub final_tx: Option<FinalTxSummary>,
+    /// HTTP-action response payload. Set when the request was
+    /// for `UdfType::HttpAction` and the worker produced a
+    /// response; `None` for query/mutation/action paths and for
+    /// handler errors on HTTP actions (the error flows on the
+    /// `result` channel instead).
+    pub http_response: Option<HttpActionResponsePayload>,
 }
 
 impl ExecuteResponse {
@@ -150,7 +187,15 @@ impl ExecuteResponse {
             result,
             log_lines: Vec::new(),
             final_tx: None,
+            http_response: None,
         }
+    }
+
+    /// Builder-style accessor for attaching an HTTP-action
+    /// response payload.
+    pub fn with_http_response(mut self, http_response: HttpActionResponsePayload) -> Self {
+        self.http_response = Some(http_response);
+        self
     }
 
     /// Builder-style accessor for attaching log lines before

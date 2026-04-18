@@ -292,6 +292,7 @@ async fn worker_exec_server_wires_callback_endpoint_into_action_dispatch() {
         execution_context: None,
         begin_timestamp: None,
         existing_writes: Vec::new(),
+        http_request: None,
     };
     let resp = runner
         .execute(req, common::types::UdfType::Action)

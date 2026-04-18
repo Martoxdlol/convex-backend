@@ -389,6 +389,7 @@ where
         // action-branch dispatch path.
         begin_timestamp: None,
         existing_writes: Vec::new(),
+        http_request: None,
     };
 
     let response = dispatch(exec_req, UdfType::Action, function_name.clone())
@@ -463,6 +464,7 @@ fn prepare_request(
         execution_context: Some(context.clone()),
         begin_timestamp: Some(begin_timestamp_u64),
         existing_writes: existing_writes.updates,
+        http_request: None,
     };
 
     let prepared = PreparedRequest {

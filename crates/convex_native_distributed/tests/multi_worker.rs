@@ -76,6 +76,7 @@ fn empty_request() -> ExecuteRequest {
         execution_context: None,
         begin_timestamp: None,
         existing_writes: Vec::new(),
+        http_request: None,
     }
 }
 

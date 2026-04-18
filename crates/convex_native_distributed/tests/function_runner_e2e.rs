@@ -95,6 +95,7 @@ async fn action_dispatch_round_trips_with_handler_level_error() {
         execution_context: None,
         begin_timestamp: None,
         existing_writes: Vec::new(),
+        http_request: None,
     };
     let resp = runner
         .execute(req, UdfType::Action)
@@ -133,6 +134,7 @@ async fn query_without_database_surfaces_as_transport_error() {
         execution_context: None,
         begin_timestamp: Some(42),
         existing_writes: Vec::new(),
+        http_request: None,
     };
     let err = runner
         .execute(req, UdfType::Query)
@@ -168,6 +170,7 @@ async fn action_dispatch_never_carries_final_tx() {
         execution_context: None,
         begin_timestamp: None,
         existing_writes: Vec::new(),
+        http_request: None,
     };
     let resp = runner
         .execute(req, UdfType::Action)
@@ -207,6 +210,7 @@ async fn action_request_carries_phase2_fields_through_the_wire() {
         // encodes this as `None`, which the worker handles
         // without erroring.
         existing_writes: Vec::new(),
+        http_request: None,
     };
     let resp = runner
         .execute(req, UdfType::Action)
