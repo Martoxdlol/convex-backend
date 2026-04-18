@@ -64,17 +64,25 @@ Client ── Backend (prebuilt container image) ──gRPC──► Worker pool
 See `DISTRIBUTED_PLAN.md` for the full protocol, phase breakdown,
 and decision rationale.
 
-## Current worker-side env vars (pre-Phase-3)
+## Env var reference
 
-These are the knobs the existing `convex_native_distributed`
-binary accepts. They will evolve in Phase 3 when
-`CONVEX_BACKEND_ENDPOINT` takes over from the endpoint-list
-model.
+All of these are consumed by the shipped binaries
+(`convex-local-backend`, `convex-backend`, the worker
+examples, and any deployer-built worker binary built on top
+of `convex_native`).
 
 | Var | Consumed by | Default | Effect |
 |-----|-------------|---------|--------|
-| `CONVEX_MODE` | worker | `standalone` | Today: `standalone` / `worker` / `conductor`. Phase 3 collapses this to just `worker`. |
-| `CONVEX_WORKER_BIND_ADDR` | worker | `0.0.0.0:4567` | gRPC bind address. |
+| `CONVEX_MODE` | worker/backend | `standalone` | `standalone` / `worker`. (Legacy `conductor` is rejected.) |
+| `CONVEX_WORKER_BIND_ADDR` | worker | `0.0.0.0:4567` | gRPC bind address for `FunctionExecutionService`. |
+| `CONVEX_BACKEND_ENDPOINT` | worker | *unset* | When set, worker dials `WorkerAdmissionService` at this URL and auto-registers. |
+| `CONVEX_NATIVE_WORKERS` | backend | *unset* | Comma-separated fixed-pool endpoints (`grpc://host:port,...`). Phase-2 mode; superseded by admission when `CONVEX_ADMISSION_BIND_ADDR` is set. |
+| `CONVEX_ADMISSION_BIND_ADDR` | backend | *unset* | Host:port to expose `WorkerAdmissionService` on. Enables the dynamic worker pool. |
+| `CONVEX_ADMIN_BIND_ADDR` | backend | *unset* | Host:port to mount the admin HTTP surface. Bind loopback-only in production. |
+| `CONVEX_BACKEND_CALLBACK_BIND_ADDR` | backend | *unset* | Host:port for `BackendCallbackService`. Workers dial this to route action sub-calls back to the Committer. |
+| `CONVEX_BACKEND_CALLBACK_ENDPOINT` | worker | *unset* | URL of the backend's callback service. Matches the backend's `CONVEX_BACKEND_CALLBACK_BIND_ADDR`. |
+| `CONVEX_MIN_REGISTRY_VERSION` | backend | *unset* | Initial floor for the admission pool. Workers below this `registry_version` aren't considered for dispatch. Operators can raise/lower at runtime via `POST /admin/pool/floor`. |
+| `CONVEX_REFUSE_NATIVE_HANDLERS` | backend | *unset* | Any non-empty value fails boot when the binary has non-empty native inventory. Pin in the Phase-5 prebuilt image's Dockerfile to fail loud on accidental link-in. |
 
 ## Phased operational evolution
 
@@ -148,6 +156,11 @@ roadmap you're signing up for.
     per-function kind preference.
   - `POST /admin/pool/drain {"worker_id":N,"reason":"…"}`
     — trigger operator-initiated worker drain.
+  - `GET /admin/crons` — list live `NativeCronDriver` jobs
+    (name, schedule, target, kind). Returns 501 when no cron
+    driver is attached.
+  - `POST /admin/crons/remove {"name":"..."}` — drop a cron
+    from the firing schedule. Idempotent.
   - Inventory diff on each registry_version change logged
     via `tracing::info!(target="convex_admission")`.
 - Bind to loopback + expose through SSH/port-forward; do
