@@ -412,6 +412,24 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
         // `self.outbound` so the operator-facing API can push
         // messages without re-entering this handler.
         let (outbound_tx, outbound_rx) = mpsc::channel::<Result<proto::BackendToWorker, Status>>(8);
+        // Seed the outbound stream with the pool's current floor
+        // so a freshly-admitted worker knows the filtering
+        // threshold without waiting for the next operator bump.
+        // Empty (`None`) ⇒ no floor; the worker's drain listener
+        // logs the empty update as informational.
+        if let Some(floor) = self.pool.min_registry_version() {
+            let seed = proto::BackendToWorker {
+                msg: Some(proto::backend_to_worker::Msg::FloorUpdate(
+                    proto::RegistryFloorUpdate {
+                        min_registry_version: floor,
+                    },
+                )),
+            };
+            // `try_send` — channel was just created with capacity
+            // 8 so this succeeds in practice; a failure here
+            // isn't fatal.
+            let _ = outbound_tx.try_send(Ok(seed));
+        }
         self.outbound.lock().insert(worker_id, outbound_tx.clone());
 
         // Spawn a retirement task that consumes status messages
