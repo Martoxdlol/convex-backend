@@ -1,0 +1,72 @@
+//! Coverage for the `convex_native_core::testing` helpers —
+//! `TestCallbacks` + `CallRecord` + `args!`.
+//!
+//! Drives `summarise` (an action that sub-calls
+//! `CountPending`) with a `TestCallbacks` that intercepts the
+//! sub-call, returning a canned value; then asserts the call
+//! landed in the history.
+
+use std::sync::Arc;
+
+use convex_native_core::{
+    __private::ConvexValue,
+    testing::{
+        CallRecord,
+        TestCallbacks,
+    },
+    NativeActionCallbacks,
+    NativeFunctionRunner,
+};
+use value::TableNamespace;
+
+// Force fixture app inventory entries to link.
+#[allow(dead_code)]
+type _ForceLink = convex_native_integration_tests::fixture_app::Todo;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_callbacks_intercept_sub_query_and_record_history() -> anyhow::Result<()> {
+    let (callbacks, history) = TestCallbacks::new()
+        .on_query("count_pending", |_args| Ok(ConvexValue::Int64(42)))
+        .build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let args = convex_native_core::testing::args! { "owner" => "alice".to_string() };
+    let out = runner
+        .run_action_with_callbacks("summarise", TableNamespace::Global, args, callbacks)
+        .await?;
+
+    assert!(
+        matches!(out, ConvexValue::Int64(42)),
+        "`summarise` returned the TestCallbacks-stubbed sub-query value; got {out:?}",
+    );
+
+    let q_count =
+        history.count(|r| matches!(r, CallRecord::Query { name, .. } if name == "count_pending"));
+    assert_eq!(
+        q_count, 1,
+        "TestHistory should record the one sub-query; got {q_count}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unregistered_sub_query_bails_loudly() -> anyhow::Result<()> {
+    // No `on_query` registered, so `ctx.run_query(CountPending,
+    // ...)` should produce a clear error that names the missing
+    // handler — regression guard against silently returning null.
+    let (callbacks, _history) = TestCallbacks::new().build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let args = convex_native_core::testing::args! { "owner" => "x".to_string() };
+    let err = runner
+        .run_action_with_callbacks("summarise", TableNamespace::Global, args, callbacks)
+        .await
+        .expect_err("sub-query should fail without a handler stub");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("count_pending"),
+        "error should name the missing sub-query handler; got: {msg}",
+    );
+    Ok(())
+}
