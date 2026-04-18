@@ -239,8 +239,12 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
     }
 
     /// Typed sub-call: invoke a `#[convex::action]` by marker type.
-    /// Actions are dispatched directly through the native runner (no
-    /// new transaction). If no runner is attached, returns an error.
+    /// First tries the local native runner — same-worker action
+    /// sub-calls take this path and avoid a callback round-trip.
+    /// Falls back to `NativeActionCallbacks::run_action_by_name`
+    /// when the local runner doesn't carry the target (e.g.
+    /// distributed deployment where the callee lives on a
+    /// different worker, or JS-side action behind the callback).
     pub async fn run_action<F: crate::function_ref::ConvexActionFunction>(
         &mut self,
         _marker: F,
@@ -250,13 +254,29 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
             ConvexValue::Object(o) => o,
             _ => anyhow::bail!("typed args must serialize to an object"),
         };
-        let runner = self
-            .runner
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("ActionCtx: no runner attached for sub-call"))?
-            .clone();
-        let ret = runner.run_action(F::name(), self.namespace, obj).await?;
+        let ret = self.run_action_raw(F::name(), obj).await?;
         <F::Output as crate::convert::FromConvex>::from_convex(ret)
+    }
+
+    /// Untyped action sub-call. Mirrors [`run_query_raw`] /
+    /// [`run_mutation_raw`]. Routes through the local native
+    /// runner when the target name is known there; otherwise
+    /// dispatches via `NativeActionCallbacks::run_action_by_name`
+    /// (which the distributed adapter translates into a `RunAction`
+    /// RPC and the monolith adapter translates into the JS path).
+    pub async fn run_action_raw(
+        &mut self,
+        name: &str,
+        args: ConvexObject,
+    ) -> anyhow::Result<ConvexValue> {
+        if let Some(runner) = self.runner.as_ref()
+            && runner.has_function(name)
+        {
+            return runner.run_action(name, self.namespace, args).await;
+        }
+        self.callbacks
+            .run_action_by_name(self.namespace, name, args)
+            .await
     }
 
     /// Whether a native function with the given name is available on

@@ -58,6 +58,29 @@ pub trait NativeActionCallbacks: Send + Sync + 'static {
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue>;
 
+    /// Execute a registered action by name and return the
+    /// serialized result. Used when an action sub-calls another
+    /// action that lives outside the local worker (e.g. on
+    /// another worker in the pool, or on a JS worker).
+    ///
+    /// The default implementation bails so adapters that don't
+    /// support cross-worker action sub-calls fail loudly; the
+    /// distributed `BackendCallbackClient` overrides to dispatch
+    /// via `RunAction`, and the in-process `BackendCallbacks`
+    /// adapter overrides to short-circuit through the local
+    /// native runner / fall back to `ActionCallbacks::execute_action`.
+    async fn run_action_by_name(
+        &self,
+        namespace: TableNamespace,
+        name: &str,
+        args: ConvexObject,
+    ) -> anyhow::Result<ConvexValue> {
+        let _ = (namespace, name, args);
+        anyhow::bail!(
+            "NativeActionCallbacks::run_action_by_name not implemented by this backend adapter"
+        )
+    }
+
     /// Schedule a (mutation | action) to run after `delay`. Returns the
     /// scheduled-job id.
     async fn schedule(

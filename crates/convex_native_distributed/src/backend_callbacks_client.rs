@@ -214,6 +214,31 @@ impl NativeActionCallbacks for BackendCallbackClient {
         decode_function_result(result)
     }
 
+    async fn run_action_by_name(
+        &self,
+        namespace: TableNamespace,
+        name: &str,
+        args: ConvexObject,
+    ) -> anyhow::Result<ConvexValue> {
+        let _ = namespace_dispatch_note(namespace);
+        let request = proto::RunActionRequest {
+            ctx: Some(self.context()),
+            function_name: name.to_string(),
+            args_json: encode_args(args)?,
+        };
+        let response = self
+            .client
+            .lock()
+            .await
+            .run_action(tonic::Request::new(request))
+            .await?
+            .into_inner();
+        let result = response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("RunAction response missing result"))?;
+        decode_function_result(result)
+    }
+
     async fn schedule(
         &self,
         namespace: TableNamespace,
@@ -474,6 +499,7 @@ mod tests {
     #[derive(Default)]
     struct CannedServer {
         last_run_mutation: Arc<StdMutex<Option<proto::RunMutationRequest>>>,
+        last_run_action: Arc<StdMutex<Option<proto::RunActionRequest>>>,
         last_schedule: Arc<StdMutex<Option<ScheduleRequest>>>,
     }
 
@@ -509,9 +535,16 @@ mod tests {
 
         async fn run_action(
             &self,
-            _r: Request<proto::RunActionRequest>,
+            r: Request<proto::RunActionRequest>,
         ) -> Result<Response<proto::RunActionResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            *self.last_run_action.lock().unwrap() = Some(r.into_inner());
+            Ok(Response::new(proto::RunActionResponse {
+                result: Some(pb::common::FunctionResult {
+                    result: Some(pb::common::function_result::Result::JsonPackedValue(
+                        "\"action_done\"".to_string(),
+                    )),
+                }),
+            }))
         }
 
         async fn schedule(
@@ -738,6 +771,27 @@ mod tests {
         let captured = server.last_run_mutation.lock().unwrap().clone();
         let captured = captured.expect("server saw the request");
         assert_eq!(captured.function_name, "set_value");
+        assert!(captured.ctx.is_some());
+    }
+
+    #[tokio::test]
+    async fn run_action_routes_to_backend() {
+        let (addr, server) = spawn(CannedServer::default()).await;
+        let client =
+            BackendCallbackClient::connect(format!("http://{addr}"), vec![], None, "".to_string())
+                .await
+                .expect("connect");
+        let result = client
+            .run_action_by_name(TableNamespace::Global, "send_email", empty_object())
+            .await
+            .expect("run_action");
+        assert_eq!(
+            result,
+            ConvexValue::try_from("action_done".to_string()).unwrap(),
+        );
+        let captured = server.last_run_action.lock().unwrap().clone();
+        let captured = captured.expect("server saw the request");
+        assert_eq!(captured.function_name, "send_email");
         assert!(captured.ctx.is_some());
     }
 

@@ -335,6 +335,38 @@ impl<RT: Runtime + 'static> NativeActionCallbacks for BackendCallbacks<RT> {
         }
     }
 
+    async fn run_action_by_name(
+        &self,
+        _ns: TableNamespace,
+        name: &str,
+        args: ConvexObject,
+    ) -> anyhow::Result<ConvexValue> {
+        // Always route through the wrapped `ActionCallbacks` —
+        // its `execute_action` path is what handles
+        // schedule-aware setup, audit logging, and the JS
+        // bridge. Native short-circuiting an action sub-call is
+        // intentionally not done here: actions don't share the
+        // enclosing identity / context with new
+        // `BackendCallbacks` instances cleanly, and the JS path
+        // dispatches even native action handlers correctly via
+        // the composite runner's intercept.
+        let path = path_for(name)?;
+        let serialized = args_to_serialized(args)?;
+        let result = self
+            .inner
+            .execute_action(
+                self.identity.clone(),
+                path,
+                serialized,
+                self.context.clone(),
+            )
+            .await?;
+        match result.result {
+            Ok(packed) => packed.unpack(),
+            Err(js_error) => Err(anyhow::anyhow!("{js_error}")),
+        }
+    }
+
     async fn schedule(
         &self,
         _ns: TableNamespace,

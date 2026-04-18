@@ -254,6 +254,15 @@ impl<'a, RT: Runtime> HttpActionCtx<'a, RT> {
         self.inner.run_action(marker, args).await
     }
 
+    /// Delegate — untyped action sub-call.
+    pub async fn run_action_raw(
+        &mut self,
+        name: &str,
+        args: value::ConvexObject,
+    ) -> anyhow::Result<value::ConvexValue> {
+        self.inner.run_action_raw(name, args).await
+    }
+
     /// Delegate — get the storage handle.
     pub fn storage(&mut self) -> crate::ctx::storage::StorageCtx<'_> {
         self.inner.storage()
