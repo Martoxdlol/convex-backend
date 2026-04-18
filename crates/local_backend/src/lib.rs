@@ -80,6 +80,7 @@ pub mod admin;
 mod app_metrics;
 mod args_structs;
 pub mod authentication;
+pub mod backend_callbacks_wiring;
 pub mod beacon;
 pub mod canonical_urls;
 pub mod config;
@@ -440,6 +441,40 @@ pub async fn make_app(
             config.beacon_fields.clone(),
         );
         runtime.spawn_background("beacon_worker", beacon_future);
+    }
+
+    // Phase-4 backend-callback service. When
+    // `CONVEX_BACKEND_CALLBACK_BIND_ADDR` is set, expose a
+    // tonic `BackendCallbackService` so remote workers' actions
+    // can route sub-calls (`ctx.run_mutation(...)`,
+    // `ctx.scheduler()`, file storage) back to the backend's
+    // Committer. The component resolver consults the database
+    // for non-root component paths; the file-bytes handle wires
+    // the streaming `StorageStore` / `StorageGet` paths through
+    // `Application`'s file storage.
+    if let Some(callback_bind) = convex_native_distributed::read_callback_bind_addr_from_env()? {
+        tracing::info!(
+            "CONVEX_BACKEND_CALLBACK_BIND_ADDR={callback_bind:?} — spawning BackendCallbackService",
+        );
+        let action_callbacks: Arc<dyn udf::ActionCallbacks> = application.runner();
+        let component_resolver: Arc<
+            dyn convex_native_distributed::backend_callbacks_server::ComponentResolver,
+        > = Arc::new(backend_callbacks_wiring::ApplicationComponentResolver::new(
+            database.clone(),
+        ));
+        let file_bytes: Arc<
+            dyn convex_native_distributed::backend_callbacks_server::BackendFileBytes,
+        > = Arc::new(backend_callbacks_wiring::BackendFileBytesImpl::new(
+            file_storage.clone(),
+            database.clone(),
+        ));
+        convex_native_distributed::backend_callbacks_server::spawn_backend_callback_server(
+            callback_bind,
+            action_callbacks,
+            Some(component_resolver),
+            Some(file_bytes),
+        )
+        .await?;
     }
 
     // In Worker mode, also expose a tonic `FunctionExecutionService`

@@ -175,6 +175,68 @@ pub fn read_admission_bind_addr_from_env() -> anyhow::Result<Option<SocketAddr>>
     }
 }
 
+/// Backend-side env-var: `CONVEX_BACKEND_CALLBACK_BIND_ADDR`.
+/// When set, the backend binds a tonic
+/// `BackendCallbackService` on this address so workers can route
+/// action sub-calls (`ctx.run_mutation`, `ctx.scheduler()`, file
+/// storage ops) back through the backend's Committer. Workers
+/// learn the endpoint via [`read_backend_callback_endpoint_from_env`].
+///
+/// Typical value: `0.0.0.0:5679`. Loopback-only is the wrong
+/// choice for k8s deployments — workers usually live on
+/// different pods. Lock down with NetworkPolicy on the
+/// `convex-backend-callbacks` Service selector.
+///
+/// Returns `Ok(None)` when unset (no callback service exposed —
+/// remote-worker actions will see a "no backend callback
+/// endpoint configured" failure on every sub-call).
+/// `Err` on garbage values.
+pub fn read_callback_bind_addr_from_env() -> anyhow::Result<Option<SocketAddr>> {
+    match std::env::var("CONVEX_BACKEND_CALLBACK_BIND_ADDR") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_BACKEND_CALLBACK_BIND_ADDR set but empty — unset it or set a valid \
+                     host:port",
+                )
+            }
+            let addr: SocketAddr = trimmed.parse().map_err(|e| {
+                anyhow::anyhow!(
+                    "CONVEX_BACKEND_CALLBACK_BIND_ADDR={trimmed:?}: invalid socket address: {e}",
+                )
+            })?;
+            Ok(Some(addr))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
+/// Worker-side env-var: `CONVEX_BACKEND_CALLBACK_ENDPOINT`. The
+/// worker dials this URL from inside a running action whenever
+/// the action makes a sub-call (`ctx.run_mutation`, scheduler,
+/// storage). Pairs with [`read_callback_bind_addr_from_env`] on
+/// the backend.
+///
+/// Returns `Ok(None)` when unset — actions still run but every
+/// sub-call bails via `NoopCallbacks`. Returns `Ok(Some(url))`
+/// when set; returns `Err` when set but empty.
+pub fn read_backend_callback_endpoint_from_env() -> anyhow::Result<Option<String>> {
+    match std::env::var("CONVEX_BACKEND_CALLBACK_ENDPOINT") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_BACKEND_CALLBACK_ENDPOINT set but empty — unset it or set a valid \
+                     gRPC URL",
+                )
+            }
+            Ok(Some(trimmed.to_string()))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
 /// Substep 5.2 env-var: `CONVEX_REFUSE_NATIVE_HANDLERS`. Opt-in
 /// safety net for the Phase-5 prebuilt backend image. When set
 /// to any non-empty value, `local_backend` errors at boot if

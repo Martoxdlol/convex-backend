@@ -181,6 +181,48 @@ pub struct BackendFileBytesResponse {
     pub body: bytes::Bytes,
 }
 
+/// Spawn a tonic `BackendCallbackService` on `bind_addr`.
+/// Backend processes call this when
+/// `CONVEX_BACKEND_CALLBACK_BIND_ADDR` is set. Workers reach
+/// this server from inside an action via the
+/// `CONVEX_BACKEND_CALLBACK_ENDPOINT` env var.
+///
+/// `callbacks` carries the backend's `ActionCallbacks` (typically
+/// `application.runner()`). The optional `component_resolver`
+/// maps non-root component paths into `ComponentId`; the
+/// optional `file_bytes` enables the streaming `StorageStore` /
+/// `StorageGet` paths. Both are optional so root-only / no-file
+/// deployments can wire less.
+///
+/// The server runs on a tokio `spawn` and stays alive until the
+/// runtime drops. Transport errors land in tracing.
+pub async fn spawn_backend_callback_server(
+    bind_addr: std::net::SocketAddr,
+    callbacks: Arc<dyn ActionCallbacks>,
+    component_resolver: Option<Arc<dyn ComponentResolver>>,
+    file_bytes: Option<Arc<dyn BackendFileBytes>>,
+) -> anyhow::Result<()> {
+    use pb::backend_callbacks::backend_callback_service_server::BackendCallbackServiceServer;
+    use tonic::transport::Server;
+    let mut server = BackendCallbackServer::new(callbacks);
+    if let Some(resolver) = component_resolver {
+        server = server.with_component_resolver(resolver);
+    }
+    if let Some(file_bytes) = file_bytes {
+        server = server.with_file_bytes(file_bytes);
+    }
+    tokio::spawn(async move {
+        if let Err(e) = Server::builder()
+            .add_service(BackendCallbackServiceServer::new(server))
+            .serve(bind_addr)
+            .await
+        {
+            tracing::error!("BackendCallbackService exited: {e}");
+        }
+    });
+    Ok(())
+}
+
 /// Decode a `CallbackContext` into the `(identity, component_path,
 /// execution_context)` triple every `ActionCallbacks` method
 /// needs. Worker-side clients set empty identity bytes today —
