@@ -112,6 +112,10 @@ pub struct BackendCallbackServer {
     /// and root-only deployments can leave it unset; production
     /// backends supply the impl from `local_backend`.
     file_bytes: Option<Arc<dyn BackendFileBytes>>,
+    /// Optional document reader for the `ReadDocument` RPC.
+    /// When unset, `ctx.db().get(...)` from a worker-side
+    /// action returns `Status::unimplemented`.
+    document_reader: Option<Arc<dyn BackendDocumentReader>>,
 }
 
 impl BackendCallbackServer {
@@ -120,6 +124,7 @@ impl BackendCallbackServer {
             callbacks,
             component_resolver: Arc::new(RootOnlyComponentResolver),
             file_bytes: None,
+            document_reader: None,
         }
     }
 
@@ -130,6 +135,11 @@ impl BackendCallbackServer {
 
     pub fn with_file_bytes(mut self, file_bytes: Arc<dyn BackendFileBytes>) -> Self {
         self.file_bytes = Some(file_bytes);
+        self
+    }
+
+    pub fn with_document_reader(mut self, document_reader: Arc<dyn BackendDocumentReader>) -> Self {
+        self.document_reader = Some(document_reader);
         self
     }
 
@@ -178,6 +188,23 @@ pub struct BackendFileBytesResponse {
     pub body: bytes::Bytes,
 }
 
+/// Backend-supplied document reader. Powers the
+/// `ReadDocument` RPC by opening a short-lived read-only
+/// transaction at the action's snapshot ts. Unwired by
+/// default (`None` ⇒ the RPC bails with `Unimplemented`);
+/// `local_backend` plugs in a `Database<ProdRuntime>`-backed
+/// impl so distributed-action `ctx.db().get(...)` works.
+#[async_trait::async_trait]
+pub trait BackendDocumentReader: Send + Sync + 'static {
+    async fn read_document(
+        &self,
+        identity: Identity,
+        namespace: value::TableNamespace,
+        table: value::TableName,
+        id: value::DeveloperDocumentId,
+    ) -> anyhow::Result<Option<value::ConvexObject>>;
+}
+
 /// Spawn a tonic `BackendCallbackService` on `bind_addr`.
 /// Backend processes call this when
 /// `CONVEX_BACKEND_CALLBACK_BIND_ADDR` is set. Workers reach
@@ -198,6 +225,7 @@ pub async fn spawn_backend_callback_server(
     callbacks: Arc<dyn ActionCallbacks>,
     component_resolver: Option<Arc<dyn ComponentResolver>>,
     file_bytes: Option<Arc<dyn BackendFileBytes>>,
+    document_reader: Option<Arc<dyn BackendDocumentReader>>,
 ) -> anyhow::Result<()> {
     use pb::backend_callbacks::backend_callback_service_server::BackendCallbackServiceServer;
     use tonic::transport::Server;
@@ -207,6 +235,9 @@ pub async fn spawn_backend_callback_server(
     }
     if let Some(file_bytes) = file_bytes {
         server = server.with_file_bytes(file_bytes);
+    }
+    if let Some(reader) = document_reader {
+        server = server.with_document_reader(reader);
     }
     tokio::spawn(async move {
         if let Err(e) = Server::builder()
@@ -642,6 +673,44 @@ impl BackendCallbackService for BackendCallbackServer {
         Ok(Response::new(proto::CreateFunctionHandleResponse {
             function_handle_id: String::from(handle),
         }))
+    }
+
+    async fn read_document(
+        &self,
+        request: Request<proto::ReadDocumentRequest>,
+    ) -> Result<Response<proto::ReadDocumentResponse>, Status> {
+        let req = request.into_inner();
+        let (identity, component, _execution_context) = decode_context(req.ctx)?;
+        let component_id = self.resolve_component_id(&component).await?;
+        let reader = self.document_reader.as_ref().ok_or_else(|| {
+            Status::unimplemented(
+                "BackendCallbackServer::read_document: no BackendDocumentReader handle wired; the \
+                 backend must construct the server with `.with_document_reader(...)` to enable \
+                 distributed-action `ctx.db().get(...)`",
+            )
+        })?;
+        let table_name: value::TableName = req.table.parse().map_err(|e| {
+            Status::invalid_argument(format!("ReadDocument table {:?}: {e}", req.table))
+        })?;
+        let doc_id: value::DeveloperDocumentId = req
+            .id
+            .parse()
+            .map_err(|e| Status::invalid_argument(format!("ReadDocument id {:?}: {e}", req.id)))?;
+        let namespace: value::TableNamespace = component_id.into();
+        let maybe_obj = reader
+            .read_document(identity, namespace, table_name, doc_id)
+            .await
+            .map_err(|e| Status::internal(format!("read_document: {e}")))?;
+        let document_json = match maybe_obj {
+            None => Vec::new(),
+            Some(obj) => {
+                let v = value::ConvexValue::Object(obj);
+                let json: serde_json::Value = v.into();
+                serde_json::to_vec(&json)
+                    .map_err(|e| Status::internal(format!("read_document encode: {e}")))?
+            },
+        };
+        Ok(Response::new(proto::ReadDocumentResponse { document_json }))
     }
 }
 

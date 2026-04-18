@@ -73,6 +73,13 @@ service BackendCallbackService {
   // Allocate a fresh `FunctionHandle` for a dotted function path.
   rpc CreateFunctionHandle(CreateFunctionHandleRequest)
       returns (CreateFunctionHandleResponse);
+
+  // Read a document at the action's pinned snapshot. Powers
+  // `ActionCtx::db().get(...)` from inside a worker-side
+  // action — opens a short-lived read-only transaction at
+  // the action's snapshot ts, reads the document, returns
+  // null when missing.
+  rpc ReadDocument(ReadDocumentRequest) returns (ReadDocumentResponse);
 }
 
 // Caller context carried on every request. Identifies the
@@ -255,4 +262,19 @@ message CreateFunctionHandleRequest {
 
 message CreateFunctionHandleResponse {
   string function_handle_id = 1;
+}
+
+message ReadDocumentRequest {
+  CallbackContext ctx = 1;
+  // Table name (e.g. "users").
+  string table = 2;
+  // Document id in `DeveloperDocumentId` string form.
+  string id = 3;
+}
+
+message ReadDocumentResponse {
+  // JSON-encoded ConvexValue. Empty when the document doesn't
+  // exist (the client decodes the empty bytes as Null →
+  // `Option::None`).
+  bytes document_json = 1;
 }

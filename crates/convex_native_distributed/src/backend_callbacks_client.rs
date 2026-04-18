@@ -400,36 +400,32 @@ impl NativeActionCallbacks for BackendCallbackClient {
         table: TableName,
         id: DeveloperDocumentId,
     ) -> anyhow::Result<Option<ConvexObject>> {
-        // Route through `RunQuery` against the system "_internal/db.get"
-        // query so backends with a wired query path return the document.
-        // The fallback bail kept the trait honest before; with the
-        // `RunQuery` RPC available, build the args envelope and let the
-        // backend reply. Backends without that system query register
-        // the bail at handler dispatch time.
+        // Dedicated `ReadDocument` RPC: the backend opens a
+        // short-lived read-only tx at the action's snapshot,
+        // looks up the doc by `(table, id)`, and returns either
+        // the JSON-encoded document or empty bytes for "not
+        // found". `namespace` is forwarded through the
+        // CallbackContext's component_path; `TableNamespace::Global`
+        // resolves to root, components carry their path.
         let _ = namespace;
-        let mut args = std::collections::BTreeMap::new();
-        let table_field: value::FieldName = "table".parse()?;
-        let id_field: value::FieldName = "id".parse()?;
-        args.insert(table_field, ConvexValue::try_from(String::from(table))?);
-        args.insert(id_field, ConvexValue::try_from(id.encode())?);
-        let args_obj = ConvexObject::try_from(args)?;
-        let request = proto::RunQueryRequest {
+        let request = proto::ReadDocumentRequest {
             ctx: Some(self.context()),
-            function_name: "_system/db:get".to_string(),
-            args_json: encode_args(args_obj)?,
+            table: String::from(table),
+            id: id.encode(),
         };
         let response = self
             .client
             .lock()
             .await
-            .run_query(tonic::Request::new(request))
+            .read_document(tonic::Request::new(request))
             .await?
             .into_inner();
-        let result = response.result.ok_or_else(|| {
-            anyhow::anyhow!("RunQuery (read_document_at_snapshot) missing result")
-        })?;
-        let v = decode_function_result(result)?;
-        match v {
+        if response.document_json.is_empty() {
+            return Ok(None);
+        }
+        let v: serde_json::Value = serde_json::from_slice(&response.document_json)?;
+        let cv: ConvexValue = v.try_into()?;
+        match cv {
             ConvexValue::Null => Ok(None),
             ConvexValue::Object(obj) => Ok(Some(obj)),
             other => anyhow::bail!(
@@ -593,6 +589,13 @@ mod tests {
         ) -> Result<Response<proto::CreateFunctionHandleResponse>, Status> {
             Err(Status::unimplemented("test stub"))
         }
+
+        async fn read_document(
+            &self,
+            _r: Request<proto::ReadDocumentRequest>,
+        ) -> Result<Response<proto::ReadDocumentResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
     }
 
     async fn spawn(server: CannedServer) -> (SocketAddr, Arc<CannedServer>) {
@@ -703,6 +706,13 @@ mod tests {
             r: Request<proto::CreateFunctionHandleRequest>,
         ) -> Result<Response<proto::CreateFunctionHandleResponse>, Status> {
             self.0.create_function_handle(r).await
+        }
+
+        async fn read_document(
+            &self,
+            r: Request<proto::ReadDocumentRequest>,
+        ) -> Result<Response<proto::ReadDocumentResponse>, Status> {
+            self.0.read_document(r).await
         }
     }
 

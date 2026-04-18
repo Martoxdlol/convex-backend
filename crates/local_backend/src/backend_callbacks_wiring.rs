@@ -156,3 +156,49 @@ impl ComponentResolver for ApplicationComponentResolver {
         Ok(component_id)
     }
 }
+
+/// `BackendDocumentReader` impl for the production `Database`.
+/// Powers `ReadDocument` from the worker-side
+/// `BackendCallbackClient::read_document_at_snapshot` —
+/// distributed-action `ctx.db().get(...)` lands here.
+pub struct ApplicationDocumentReader {
+    database: Database<ProdRuntime>,
+}
+
+impl ApplicationDocumentReader {
+    pub fn new(database: Database<ProdRuntime>) -> Self {
+        Self { database }
+    }
+}
+
+#[async_trait]
+impl convex_native_distributed::backend_callbacks_server::BackendDocumentReader
+    for ApplicationDocumentReader
+{
+    async fn read_document(
+        &self,
+        identity: Identity,
+        namespace: value::TableNamespace,
+        table: value::TableName,
+        id: value::DeveloperDocumentId,
+    ) -> anyhow::Result<Option<value::ConvexObject>> {
+        let mut tx = self.database.begin(identity).await?;
+        // Resolve the table id within the namespace, then read by
+        // (tablet, id). When the table doesn't exist or the id
+        // isn't present return `None` — matches the Convex JS
+        // semantics for `ctx.db.get(missingId)`.
+        let table_mapping = tx.table_mapping().clone();
+        let Some(tablet) = table_mapping
+            .namespace(namespace)
+            .id_and_number_if_exists(&table)
+        else {
+            return Ok(None);
+        };
+        let tablet_id = tablet.tablet_id;
+        let resolved_id = id.to_resolved(|_| Ok(tablet_id))?;
+        match tx.get(resolved_id).await? {
+            Some(doc) => Ok(Some(doc.into_value().0)),
+            None => Ok(None),
+        }
+    }
+}

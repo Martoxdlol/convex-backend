@@ -575,6 +575,11 @@ pub async fn make_app(
         > = Arc::new(backend_callbacks_wiring::ApplicationComponentResolver::new(
             database.clone(),
         ));
+        let document_reader: Arc<
+            dyn convex_native_distributed::backend_callbacks_server::BackendDocumentReader,
+        > = Arc::new(backend_callbacks_wiring::ApplicationDocumentReader::new(
+            database.clone(),
+        ));
         let file_bytes: Arc<
             dyn convex_native_distributed::backend_callbacks_server::BackendFileBytes,
         > = Arc::new(backend_callbacks_wiring::BackendFileBytesImpl::new(
@@ -586,6 +591,7 @@ pub async fn make_app(
             action_callbacks,
             Some(component_resolver),
             Some(file_bytes),
+            Some(document_reader),
         )
         .await?;
     }
