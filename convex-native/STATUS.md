@@ -1130,12 +1130,29 @@ in logs.
 ## Test tallies
 
 ```
-cargo test -p convex_native              # 242 tests
-cargo test -p convex_native_backend      # 10 tests
-cargo test -p convex_native_distributed  # 72 tests
+cargo test -p convex_native                      # 242 tests
+cargo test -p convex_native_backend              # 10 tests
+cargo test -p convex_native_distributed          # 72 tests
+cargo test -p convex_native_integration_tests    # 34 tests
 
-# 324 total — all green
+# 358 total — all green
 ```
+
+`convex_native_integration_tests` is a breadth-over-depth crate
+that drives a shared fixture app through both topologies:
+
+| Test file | Topology | Coverage |
+|-----------|----------|----------|
+| `standalone_golden_path.rs` | monolith | query/mutation round-trip, `ctx.auth()`, `ctx.unix_timestamp()` |
+| `standalone_actions.rs` | monolith | pure actions, `ctx.log()` drain in both action + mutation ctx, `errors::bad_request` metadata |
+| `standalone_http_actions.rs` | monolith | `#[convex::http_action]` dispatch, router lookup, unknown-route error |
+| `standalone_crons_and_introspection.rs` | wire-independent | `CronRegistry::collect`, `NativeSchema::collect`, `HttpRouter::collect`, `ConvexBackend::build().validate()`, `describe_json` v1 envelope |
+| `standalone_runner_knobs.rs` | monolith | `CountingMetrics`, `begin_drain()`, `CircuitBreaker` open/closed |
+| `derive_round_trips.rs` | wire-independent | `ConvexEnum` / `ConvexNested` / `ConvexUnion` / `ConvexDocument` `to_convex`/`from_convex` symmetry |
+| `distributed_golden_path.rs` | distributed | query over tonic against seeded DB, mutation returns `DistributedFinalTx`, unknown-function wire error |
+| `distributed_actions.rs` | distributed | pure action wire round-trip, `log_lines` drain, `bad_request` → `Err(String)` |
+| `distributed_http_actions.rs` | distributed | `http_request` / `http_response` payload round-trip |
+| `distributed_admission.rs` | distributed | `collect_inventory()` envelope contents + stable hash + `is_internal` propagation |
 
 Delta since Phase 1: +16 tests on `convex_native_distributed`
 covering the substep-2.1/2.2/2.3/2.4 wire additions, the
