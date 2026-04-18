@@ -533,8 +533,27 @@ matter). `ConvexBackend::new().with_crons().build()` collects every
 registration into `BuiltBackend::crons`. Call
 `BuiltBackend::validate()` at startup so misconfigured crons (e.g.
 `target` naming an unknown function, or kind mismatch) crash the
-binary rather than silently skipping. The schedule itself is
-driven by the backend adapter, not by this crate.
+binary rather than silently skipping.
+
+### How native crons fire
+
+`local_backend::make_app` installs a
+`convex_native_distributed::cron_driver::NativeCronDriver` when
+the process has `CronRegistry::collect().len() > 0`. The driver
+parses each cron expression with `saffron`, then spawns one
+tokio task per entry: compute `next_after(now)`, sleep until
+that instant, dispatch through the attached
+`CronDispatcher`, repeat. `InProcessDispatcher` runs mutations
+inline against the backend's `Database` (commits tagged
+`WriteSource::system("native_cron")`) and dispatches actions
+through `NativeFunctionRunner::run_action_with_callbacks` with
+`NoopCallbacks`. Installation is idempotent on `(name,
+schedule, target, kind)`; `driver.remove(name)` aborts the task
+and drops the schedule. Crons are **at-most-once** — missed
+fires during backend downtime are skipped, same as the JS cron
+worker's catch-up semantics. The driver is parked in a static
+`OnceLock` for the process lifetime so dropping it doesn't tear
+down live fire tasks.
 
 ## 11. Error handling
 

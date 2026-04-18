@@ -110,6 +110,14 @@ pub mod streaming_import;
 pub mod subs;
 pub const MAX_CONCURRENT_REQUESTS: usize = 128;
 
+/// Process-global holder for the native cron driver. The driver
+/// owns per-cron tokio tasks; dropping it aborts them, so we
+/// park it here for the process lifetime instead of letting it
+/// leave scope at the end of `make_app`.
+static NATIVE_CRON_DRIVER: std::sync::OnceLock<
+    convex_native_distributed::cron_driver::NativeCronDriver,
+> = std::sync::OnceLock::new();
+
 #[derive(Clone)]
 pub struct LocalAppState {
     // Origin for the server (e.g. http://127.0.0.1:3210, https://demo.convex.cloud)
@@ -437,6 +445,38 @@ pub async fn make_app(
     // deployment never calls. See
     // `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md` follow-ups.
     convex_native_backend::publish_native_schema(&database).await?;
+
+    // Install the native cron driver so `#[convex::cron(...)]`
+    // registrations actually fire on schedule. Monolith: the
+    // backend image carries the handlers, so the driver
+    // dispatches in-process through `InProcessDispatcher` (native
+    // runner + database). Installing is gated on the registry
+    // being non-empty — JS-only deployments keep the historic
+    // JS-only cron path (`_cron_jobs` table + `CronJobExecutor`).
+    {
+        let cron_jobs = convex_native_distributed::cron_driver::collect_from_inventory()?;
+        if !cron_jobs.is_empty() {
+            tracing::info!(
+                "Native cron registry: {} job(s) — installing driver",
+                cron_jobs.len(),
+            );
+            let dispatcher: Arc<dyn convex_native_distributed::cron_driver::CronDispatcher> =
+                Arc::new(
+                    convex_native_distributed::cron_driver::InProcessDispatcher::new(
+                        native_runner.clone(),
+                        database.clone(),
+                    ),
+                );
+            let driver = convex_native_distributed::cron_driver::NativeCronDriver::new(dispatcher);
+            driver.install(cron_jobs)?;
+            // Keep the driver alive for the process lifetime by
+            // leaking it into a static. Dropping it aborts every
+            // firing task; since the backend lives for the whole
+            // process we'd rather the tasks stay running until
+            // the runtime exits.
+            NATIVE_CRON_DRIVER.set(driver).ok();
+        }
+    }
 
     // Install the native HTTP dispatcher so `http_any_method` can
     // short-circuit `(method, path)` pairs that match a

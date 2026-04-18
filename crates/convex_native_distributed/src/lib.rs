@@ -43,6 +43,7 @@ pub mod backend_callbacks_client;
 pub mod backend_callbacks_server;
 pub mod client;
 pub mod conversions;
+pub mod cron_driver;
 pub mod function_runner_impl;
 pub mod mode;
 pub mod pool;
