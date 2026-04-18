@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 242 tests
 cargo test -p convex_native_backend              # 10 tests
 cargo test -p convex_native_distributed          # 72 tests
-cargo test -p convex_native_integration_tests    # 34 tests
+cargo test -p convex_native_integration_tests    # 47 tests
 
-# 358 total — all green
+# 371 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
@@ -1149,6 +1149,11 @@ that drives a shared fixture app through both topologies:
 | `standalone_crons_and_introspection.rs` | wire-independent | `CronRegistry::collect`, `NativeSchema::collect`, `HttpRouter::collect`, `ConvexBackend::build().validate()`, `describe_json` v1 envelope |
 | `standalone_runner_knobs.rs` | monolith | `CountingMetrics`, `begin_drain()`, `CircuitBreaker` open/closed |
 | `derive_round_trips.rs` | wire-independent | `ConvexEnum` / `ConvexNested` / `ConvexUnion` / `ConvexDocument` `to_convex`/`from_convex` symmetry |
+| `standalone_schema_evolution.rs` | wire-independent | `plan_warmup(schema)` + `diff_schemas(old, new)` + `SchemaChange::is_destructive` |
+| `standalone_db_api.rs` | monolith | `ctx.db().get(id)` / `exists` / `normalize_id` |
+| `standalone_typed_query_ops.rs` | monolith | `.first()` / `.take(n)` / `.count()` / `.gte` + `.lt` range |
+| `standalone_errors_and_rng.rs` | monolith | every `errors::*` helper + `ctx.rng_u64()` determinism |
+| `standalone_test_callbacks.rs` | monolith | `TestCallbacks` + `CallRecord` + `args!` macro (USAGE.md §17) |
 | `distributed_golden_path.rs` | distributed | query over tonic against seeded DB, mutation returns `DistributedFinalTx`, unknown-function wire error |
 | `distributed_actions.rs` | distributed | pure action wire round-trip, `log_lines` drain, `bad_request` → `Err(String)` |
 | `distributed_http_actions.rs` | distributed | `http_request` / `http_response` payload round-trip |
