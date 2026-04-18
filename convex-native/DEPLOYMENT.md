@@ -156,6 +156,11 @@ roadmap you're signing up for.
     per-function kind preference.
   - `POST /admin/pool/drain {"worker_id":N,"reason":"…"}`
     — trigger operator-initiated worker drain.
+  - `POST /admin/pool/diff {"incoming_version":"X.Y.Z","functions":[...]}`
+    — preview a rolling-update bump: returns added / removed /
+    carried_over function names against the pool's current
+    active version (or `null` when pool is empty or versions
+    match). Same shape as the auto-logged diff.
   - `GET /admin/crons` — list live `NativeCronDriver` jobs
     (name, schedule, target, kind). Returns 501 when no cron
     driver is attached.

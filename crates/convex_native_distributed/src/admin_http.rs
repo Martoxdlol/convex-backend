@@ -22,6 +22,12 @@
 //!   null }` to clear.
 //! - `POST /admin/pool/drain { "worker_id": 42, "reason": "..." }` sends a
 //!   `DrainNotice` to the specified worker.
+//! - `POST /admin/pool/diff { "incoming_version": "X.Y.Z", "functions":
+//!   ["get_user", "list_todos"] }` previews what a rolling-update bump would
+//!   look like against the pool's current active version — returns `{
+//!   "active_version", "incoming_version", "added", "removed", "carried_over"
+//!   }` or `null` when the pool is empty / the incoming version already is the
+//!   active one.
 //! - `GET /admin/crons` — returns the live `NativeCronDriver` job list as JSON.
 //!   Returns 501 when the driver isn't attached.
 //! - `POST /admin/crons/remove { "name": "..." }` drops a cron from the firing
@@ -105,6 +111,7 @@ pub fn router(state: AdminState) -> Router {
         .route("/admin/pool/floor", post(set_floor))
         .route("/admin/pool/kind_preference", post(set_kind_preference))
         .route("/admin/pool/drain", post(drain_worker))
+        .route("/admin/pool/diff", post(diff_inventory))
         .route("/admin/crons", get(get_crons))
         .route("/admin/crons/remove", post(remove_cron))
         .with_state(state)
@@ -303,6 +310,25 @@ struct RemoveCronRequest {
 struct RemoveCronAck {
     name: String,
     removed: bool,
+}
+
+#[derive(Deserialize)]
+struct DiffRequest {
+    /// Hypothetical `registry_version` to diff against the
+    /// pool's current active version.
+    incoming_version: String,
+    /// Function names the hypothetical version would advertise.
+    functions: Vec<String>,
+}
+
+async fn diff_inventory(
+    State(state): State<AdminState>,
+    Json(req): Json<DiffRequest>,
+) -> Result<Json<Option<crate::pool::InventoryDiff>>, (StatusCode, String)> {
+    let diff = state
+        .pool
+        .diff_against_active_inventory(&req.incoming_version, &req.functions);
+    Ok(Json(diff))
 }
 
 async fn remove_cron(
@@ -515,6 +541,89 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn diff_inventory_returns_added_removed() {
+        use crate::pool::{
+            HttpRouteEntry as _Unused,
+            WorkerEntry,
+            WorkerKind,
+            WorkerPool,
+        };
+        let _ = _Unused {
+            method: String::new(),
+            path: String::new(),
+            name: String::new(),
+        };
+        use std::sync::atomic::AtomicU64;
+
+        use async_trait::async_trait;
+        use common::types::UdfType;
+        use convex_native_core::distributed::{
+            ExecuteRequest,
+            ExecuteResponse,
+        };
+        use pb::function_execution as proto;
+
+        struct Stub;
+        #[async_trait]
+        impl crate::client::WorkerClient for Stub {
+            async fn execute(
+                &self,
+                _req: ExecuteRequest,
+                _udf_type: UdfType,
+            ) -> Result<ExecuteResponse, tonic::Status> {
+                Err(tonic::Status::unimplemented("stub"))
+            }
+
+            async fn health(&self) -> Result<proto::HealthResponse, tonic::Status> {
+                Err(tonic::Status::unimplemented("stub"))
+            }
+
+            fn in_flight_estimate(&self) -> u64 {
+                0
+            }
+
+            fn label(&self) -> &str {
+                "stub"
+            }
+        }
+        let _ = AtomicU64::new(0);
+
+        let pool = Arc::new(WorkerPool::new());
+        pool.admit(WorkerEntry {
+            client: Arc::new(Stub),
+            registry_version: "1.0.0".to_string(),
+            functions: vec!["get".to_string(), "list".to_string()],
+            kind: WorkerKind::NativeRust,
+            http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
+        });
+        let app = router(AdminState::new(pool));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/pool/diff")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"incoming_version":"2.0.0","functions":["get","new_fn"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["active_version"], "1.0.0");
+        assert_eq!(json["incoming_version"], "2.0.0");
+        assert_eq!(json["added"].as_array().unwrap().len(), 1);
+        assert_eq!(json["added"][0], "new_fn");
+        assert_eq!(json["removed"].as_array().unwrap().len(), 1);
+        assert_eq!(json["removed"][0], "list");
+        assert_eq!(json["carried_over"].as_array().unwrap().len(), 1);
+        assert_eq!(json["carried_over"][0], "get");
     }
 
     #[tokio::test]
