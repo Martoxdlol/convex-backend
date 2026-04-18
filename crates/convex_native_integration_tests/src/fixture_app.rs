@@ -224,6 +224,32 @@ pub async fn always_bad_request(_ctx: &mut MutationCtx<'_, Rt>) -> anyhow::Resul
 }
 
 // ---------------------------------------------------------------------------
+// Single-doc read APIs — exercises `ctx.db().get(...)` /
+// `get_with_meta` / `exists` / `normalize_id`. Each is a tiny
+// query so tests can compose them against seeded data.
+// ---------------------------------------------------------------------------
+
+/// Look up a todo by id; returns `None` when missing.
+#[convex::query]
+pub async fn get_todo(ctx: &mut QueryCtx<'_, Rt>, id: Id<Todo>) -> anyhow::Result<Option<Todo>> {
+    ctx.db().get(id).await
+}
+
+/// Existence check by id.
+#[convex::query]
+pub async fn todo_exists(ctx: &mut QueryCtx<'_, Rt>, id: Id<Todo>) -> anyhow::Result<bool> {
+    ctx.db().exists(id).await
+}
+
+/// Validate a raw id string against the `Todo` table. Returns
+/// `true` when the string is a valid id for this table,
+/// regardless of whether the referenced document exists.
+#[convex::query]
+pub async fn normalize_todo_id(ctx: &mut QueryCtx<'_, Rt>, raw: String) -> anyhow::Result<bool> {
+    Ok(ctx.db().normalize_id::<Todo>(&raw).is_some())
+}
+
+// ---------------------------------------------------------------------------
 // HTTP actions
 // ---------------------------------------------------------------------------
 
