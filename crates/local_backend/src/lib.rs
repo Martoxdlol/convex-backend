@@ -94,6 +94,7 @@ pub mod environment_variables;
 pub mod http_actions;
 pub mod log_sinks;
 pub mod logs;
+pub mod native_http_dispatch;
 pub mod node_action_callbacks;
 pub mod parse;
 pub mod proxy;
@@ -429,6 +430,32 @@ pub async fn make_app(
     // deployment never calls. See
     // `convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md` follow-ups.
     convex_native_backend::publish_native_schema(&database).await?;
+
+    // Install the native HTTP dispatcher so `http_any_method` can
+    // short-circuit `(method, path)` pairs that match a
+    // `#[convex::http_action]` registration. Without this, pure-
+    // native deployments 404 on every HTTP-action request because
+    // the JS path requires `_modules` rows that the native boot
+    // flow never writes. Install only when the native HTTP router
+    // is non-empty — JS-only deployments leave the dispatcher
+    // unset and keep the original JS-only behaviour.
+    {
+        let http_router = Arc::new(convex_native_core::http::HttpRouter::collect()?);
+        if http_router.len() > 0 {
+            tracing::info!(
+                "Native HTTP router: {} route(s) registered — installing dispatcher",
+                http_router.len(),
+            );
+            let dispatcher = Arc::new(native_http_dispatch::NativeHttpDispatcher::new(
+                http_router,
+                native_runner.clone(),
+                application.runner(),
+                database.clone(),
+                file_storage.clone(),
+            ));
+            native_http_dispatch::install_native_http_dispatcher(dispatcher);
+        }
+    }
 
     let origin = config.convex_origin_url()?;
     let instance_name = config.name();

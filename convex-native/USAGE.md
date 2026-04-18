@@ -471,6 +471,25 @@ chainable `.with_header(name, value)?` / `.with_body(bytes)`.
 `lookup(method, path)` returns the matching
 `HttpRouteRegistration` (case-sensitive on the method).
 
+### How native HTTP actions are served
+
+`local_backend` mounts a `NativeHttpDispatcher` at boot (in
+`make_app`, after `Application::new`) that holds the collected
+`HttpRouter`, the `NativeFunctionRunner`, and the backend's
+`ActionCallbacks` + `Database` + `FileStorage` handles. Requests
+arriving at the backend's `/http/*` surface consult the
+dispatcher first: an exact `(method, path)` match runs the
+native handler directly, any sub-calls inside the handler
+(`ctx.run_mutation`, `ctx.scheduler`, `ctx.storage`) flow
+through a `BackendCallbacks` pinned to the request's snapshot
+timestamp, and the response body is streamed back through the
+same `HttpActionResponseStreamer` the JS path uses. A miss
+falls through to the JS `execute_http_action` path unchanged,
+so mixed deployments (some routes in Rust, others in JS)
+work without extra configuration. Installing the dispatcher is
+gated on `HttpRouter::collect().len() > 0` — JS-only
+deployments pay no overhead.
+
 ## 10. Crons
 
 Recurring scheduled jobs via an inventory-collected attribute. The
