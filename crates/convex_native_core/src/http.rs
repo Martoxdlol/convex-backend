@@ -183,6 +183,21 @@ impl<'a, RT: Runtime> HttpActionCtx<'a, RT> {
         self
     }
 
+    /// Attach the caller's identity — mirrors
+    /// `ActionCtx::with_identity`. Populated by the worker-side
+    /// HTTP dispatch path after decoding the wire identity bytes.
+    pub fn with_identity(mut self, identity: keybroker::Identity) -> Self {
+        self.inner = self.inner.with_identity(identity);
+        self
+    }
+
+    /// Borrowed view of the caller's identity. Returns an
+    /// anonymous view when no identity was attached — matches
+    /// the `QueryCtx` / `MutationCtx` / `ActionCtx` semantics.
+    pub fn auth(&self) -> crate::auth::AuthInfo<'_> {
+        self.inner.auth()
+    }
+
     /// Delegate — borrow the enclosing request's `ExecutionContext`,
     /// if any.
     pub fn execution_context(&self) -> Option<&common::execution_context::ExecutionContext> {

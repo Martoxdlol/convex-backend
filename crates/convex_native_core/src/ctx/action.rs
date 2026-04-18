@@ -41,6 +41,12 @@ pub struct ActionCtx<'a, RT: Runtime> {
     pub(crate) namespace: TableNamespace,
     pub(crate) log_buffer: crate::logging::LogBuffer,
     pub(crate) execution_context: Option<common::execution_context::ExecutionContext>,
+    /// Identity the action is running under. Populated by the
+    /// worker-side dispatch path from the decoded
+    /// `ExecuteRequest.identity` bytes. `None` ⇒ unknown (for
+    /// tests and in-process callers that don't thread identity
+    /// explicitly; `auth()` treats this as anonymous).
+    pub(crate) identity: Option<keybroker::Identity>,
     _rt: std::marker::PhantomData<&'a RT>,
 }
 
@@ -65,8 +71,31 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
             namespace,
             log_buffer: crate::logging::LogBuffer::new(),
             execution_context: None,
+            identity: None,
             _rt: std::marker::PhantomData,
         }
+    }
+
+    /// Attach an `Identity` to the ctx so `auth()` returns a
+    /// meaningful view. Used by the worker-side dispatch path
+    /// after decoding the wire identity bytes, and by tests that
+    /// want to exercise auth-gated handlers.
+    pub fn with_identity(mut self, identity: keybroker::Identity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// Borrowed view of the caller's identity. Returns an
+    /// anonymous view (`AuthInfo::new(&Identity::Unknown(None))`)
+    /// when no identity was attached — matches the QueryCtx /
+    /// MutationCtx semantics for unauthenticated callers.
+    pub fn auth(&self) -> crate::auth::AuthInfo<'_> {
+        static ANON: std::sync::OnceLock<keybroker::Identity> = std::sync::OnceLock::new();
+        let id = self
+            .identity
+            .as_ref()
+            .unwrap_or_else(|| ANON.get_or_init(|| keybroker::Identity::Unknown(None)));
+        crate::auth::AuthInfo::new(id)
     }
 
     /// Same as [`with_callbacks`] but attaches an externally-owned log
@@ -85,6 +114,7 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
             namespace,
             log_buffer,
             execution_context: None,
+            identity: None,
             _rt: std::marker::PhantomData,
         }
     }

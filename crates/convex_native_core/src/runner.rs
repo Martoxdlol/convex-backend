@@ -470,7 +470,7 @@ impl NativeFunctionRunner {
         args: ConvexObject,
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_action_inner(name, namespace, args, callbacks, None)
+        self.run_action_inner(name, namespace, args, callbacks, None, None)
             .await
     }
 
@@ -490,8 +490,34 @@ impl NativeFunctionRunner {
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
         log_buffer: crate::logging::LogBuffer,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_action_inner(name, namespace, args, callbacks, Some(log_buffer))
+        self.run_action_inner(name, namespace, args, callbacks, Some(log_buffer), None)
             .await
+    }
+
+    /// Action variant that threads the caller's identity through
+    /// the ctx so `ctx.auth()` returns a meaningful view. Used by
+    /// the worker-side distributed dispatch path; the composite
+    /// runner wires the same identity through its own entry
+    /// point.
+    #[fastrace::trace]
+    pub async fn run_action_with_callbacks_identity_log_buffer(
+        self: &Arc<Self>,
+        name: &str,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
+        identity: keybroker::Identity,
+        log_buffer: crate::logging::LogBuffer,
+    ) -> anyhow::Result<ConvexValue> {
+        self.run_action_inner(
+            name,
+            namespace,
+            args,
+            callbacks,
+            Some(log_buffer),
+            Some(identity),
+        )
+        .await
     }
 
     async fn run_action_inner(
@@ -501,6 +527,7 @@ impl NativeFunctionRunner {
         args: ConvexObject,
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
         log_buffer: Option<crate::logging::LogBuffer>,
+        identity: Option<keybroker::Identity>,
     ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
         self.check_breaker(name)?;
@@ -524,6 +551,9 @@ impl NativeFunctionRunner {
             ),
             None => ActionCtx::<Rt>::with_callbacks(Some(self.clone()), callbacks, namespace),
         };
+        if let Some(id) = identity {
+            ctx = ctx.with_identity(id);
+        }
         let started = Instant::now();
         let result = self
             .run_with_timeout(handler(&mut ctx, args), name, registration.timeout_ms)
@@ -572,6 +602,34 @@ impl NativeFunctionRunner {
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
         log_buffer: Option<crate::logging::LogBuffer>,
     ) -> anyhow::Result<crate::http::HttpResponse> {
+        self.run_http_action_inner(name, request, callbacks, log_buffer, None)
+            .await
+    }
+
+    /// HTTP-action variant that also attaches the caller's
+    /// identity. Exposed so the backend's HTTP dispatch path can
+    /// thread the incoming request's identity through `ctx.auth()`.
+    #[fastrace::trace]
+    pub async fn run_http_action_with_callbacks_and_identity(
+        self: &Arc<Self>,
+        name: &str,
+        request: crate::http::HttpRequest,
+        callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
+        log_buffer: Option<crate::logging::LogBuffer>,
+        identity: keybroker::Identity,
+    ) -> anyhow::Result<crate::http::HttpResponse> {
+        self.run_http_action_inner(name, request, callbacks, log_buffer, Some(identity))
+            .await
+    }
+
+    async fn run_http_action_inner(
+        self: &Arc<Self>,
+        name: &str,
+        request: crate::http::HttpRequest,
+        callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
+        log_buffer: Option<crate::logging::LogBuffer>,
+        identity: Option<keybroker::Identity>,
+    ) -> anyhow::Result<crate::http::HttpResponse> {
         self.check_drain(name)?;
         self.check_breaker(name)?;
         let _guard = self.enter();
@@ -597,6 +655,9 @@ impl NativeFunctionRunner {
                 TableNamespace::Global,
             ),
         };
+        if let Some(id) = identity {
+            http_ctx = http_ctx.with_identity(id);
+        }
         let started = Instant::now();
         let result = self
             .run_with_timeout(

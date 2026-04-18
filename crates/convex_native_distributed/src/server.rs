@@ -214,13 +214,17 @@ impl FunctionExecutionService for FunctionExecutionServer {
                         None => Arc::new(convex_native_core::callbacks::NoopCallbacks),
                     };
                 let log_buffer = convex_native_core::LogBuffer::new();
+                let action_identity = decode_identity_bytes(&native_req.identity).map_err(|e| {
+                    Status::invalid_argument(format!("decode action identity: {e}"))
+                })?;
                 let result = self
                     .native
-                    .run_action_with_callbacks_and_log_buffer(
+                    .run_action_with_callbacks_identity_log_buffer(
                         &native_req.name,
                         native_req.namespace,
                         native_req.args,
                         callbacks,
+                        action_identity,
                         log_buffer.clone(),
                     )
                     .await;
@@ -314,13 +318,17 @@ impl FunctionExecutionService for FunctionExecutionServer {
                         None => Arc::new(convex_native_core::callbacks::NoopCallbacks),
                     };
                 let log_buffer = convex_native_core::LogBuffer::new();
+                let http_identity = decode_identity_bytes(&native_req.identity).map_err(|e| {
+                    Status::invalid_argument(format!("decode http-action identity: {e}"))
+                })?;
                 let result = self
                     .native
-                    .run_http_action_with_callbacks(
+                    .run_http_action_with_callbacks_and_identity(
                         &native_req.name,
                         request,
                         callbacks,
                         Some(log_buffer.clone()),
+                        http_identity,
                     )
                     .await;
                 let log_lines = log_lines_to_pretty_strings(&log_buffer);
@@ -454,9 +462,12 @@ async fn run_udf_inline(
             None => database.now_ts_for_reads(),
         };
         let usage = FunctionUsageTracker::new();
-        let mut tx = database
-            .begin_with_ts(Identity::system(), *ts, usage)
-            .await?;
+        // Decode the caller's identity bytes if the backend sent
+        // them. Empty bytes short-circuit to `Identity::system()`
+        // so tests and internal paths that skip the identity
+        // field keep the historic behaviour.
+        let tx_identity = decode_identity_bytes(&req.identity)?;
+        let mut tx = database.begin_with_ts(tx_identity, *ts, usage).await?;
         // Substep 2.4: replay writes the backend staged from
         // earlier UDFs in the same batched request so the handler
         // sees them. Empty on single-UDF calls (the common case).
@@ -528,6 +539,23 @@ async fn run_udf_inline(
         log_lines,
         final_tx: Some(summary),
     }
+}
+
+/// Decode the Phase-2 wire identity bytes into a
+/// `keybroker::Identity`. Empty bytes map to `Identity::system()`
+/// (the dispatcher-side encoder short-circuits
+/// `Identity::System` to an empty vec for the common case).
+/// Non-empty bytes decode through the
+/// `pb::convex_identity::UncheckedIdentity` proto shape.
+pub(crate) fn decode_identity_bytes(bytes: &[u8]) -> anyhow::Result<Identity> {
+    if bytes.is_empty() {
+        return Ok(Identity::system());
+    }
+    use prost::Message as _;
+    let proto = pb::convex_identity::UncheckedIdentity::decode(bytes)
+        .map_err(|e| anyhow::anyhow!("decoding identity bytes: {e}"))?;
+    keybroker::Identity::from_proto_unchecked(proto)
+        .map_err(|e| anyhow::anyhow!("identity proto → Identity: {e}"))
 }
 
 /// Drain a finished transaction into the wire summary.
