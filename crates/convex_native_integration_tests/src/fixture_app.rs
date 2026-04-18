@@ -270,6 +270,48 @@ pub async fn sleep_forever(_ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Scheduler + Storage — exercises `ctx.scheduler()` and
+// `ctx.storage()`. Both flow through `NativeActionCallbacks`, so
+// `TestCallbacks` + `CallRecord` are the assertion surface.
+// ---------------------------------------------------------------------------
+
+use std::time::Duration;
+
+use bytes::Bytes;
+
+/// Action that schedules a followup mutation through the
+/// ctx-scoped scheduler. Used to assert the scheduler call
+/// reaches the callbacks.
+#[convex::action]
+pub async fn schedule_follow_up(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
+    ctx.scheduler()
+        .run_after(
+            Duration::from_secs(60),
+            NightlyCleanup,
+            NightlyCleanupArgs {},
+        )
+        .await?;
+    Ok(())
+}
+
+/// Action that stores + retrieves + deletes a blob through
+/// `ctx.storage()`. `TestCallbacks` records the three calls.
+#[convex::action]
+pub async fn full_storage_flow(
+    ctx: &mut ActionCtx<'_, Rt>,
+    content_type: String,
+) -> anyhow::Result<Option<String>> {
+    let id = ctx
+        .storage()
+        .store(Bytes::from_static(b"hello"), &content_type)
+        .await?;
+    let url = ctx.storage().get_url(id.clone()).await?;
+    let _meta = ctx.storage().get_metadata(id.clone()).await?;
+    let _deleted = ctx.storage().delete(id).await?;
+    Ok(url)
+}
+
+// ---------------------------------------------------------------------------
 // Single-doc read APIs — exercises `ctx.db().get(...)` /
 // `get_with_meta` / `exists` / `normalize_id`. Each is a tiny
 // query so tests can compose them against seeded data.
