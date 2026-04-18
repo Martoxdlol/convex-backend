@@ -381,26 +381,35 @@ deployments — see `STANDALONE.md`.
 See `USAGE.md` §19 for the complete env-var matrix across both
 sides.
 
-## What's not yet wired
+## Feature coverage
 
-**`STATUS.md` is authoritative** and tracks the active phase of
-`DISTRIBUTED_PLAN.md`. In brief, at the framework level:
+**`STATUS.md` is authoritative.** Every phase of
+`DISTRIBUTED_PLAN.md` is shipped in source, and the
+framework-level gaps that earlier revisions of this file called
+out have all landed:
 
-- Document-shape validation (`table_definition()` currently emits
-  `document_type: None`).
-- Mutation-scoped scheduler — `MutationCtx::scheduler().run_after`
-  bails today; schedule from an action instead.
-- Native `ActionCtx` has no transaction, so `ctx.db().get(...)`
-  isn't available directly on an action — route through
-  `ctx.run_query(...)`. Query sub-calls inside one action already
-  share a pinned read timestamp.
+- **Document-shape validation** — `#[derive(ConvexDocument)]`
+  emits `document_type: Some(DocumentSchema::Union(...))` built
+  from each field's `ConvexSchema::validator()`. The database
+  enforces the shape on write; see `schema_type.rs`.
+- **Mutation-scoped scheduler** — `MutationCtx::scheduler()`
+  returns a `MutationScheduler` that writes scheduled jobs
+  directly into the mutation's `Transaction<RT>` through
+  `VirtualSchedulerModel`. Schedules commit atomically with the
+  rest of the mutation's writes, matching JS
+  `ctx.scheduler.runAfter` semantics.
+- **`ActionCtx::db()`** — reads route through
+  `NativeActionCallbacks::read_document_at_snapshot`, which opens
+  a short-lived read-only tx at the action's pinned snapshot
+  timestamp. Multiple `ctx.db().get(...)` calls inside one action
+  see one consistent world. Writes from an action still flow
+  through `ctx.run_mutation(...)` so they commit under the
+  backend's Committer.
 
-At the distributed level: all phases of `DISTRIBUTED_PLAN.md`
-have shipped in source; `STATUS.md` lists the four remaining
-items (two live-DB test-fixture assertions, the CI/release
-push pipeline, the reference JS worker binary) which are
-blocked on infrastructure outside this repo rather than
-in-flight plan work.
+At the distributed level: all phases 1–7 of
+`DISTRIBUTED_PLAN.md` have shipped, including the previously-
+deferred live-DB fixture assertions (2.8b + 4.6b), the CI/release
+pipeline (5.3), and the reference JS worker binary (6.3).
 
 Non-indexed filters (`.eq(Field, v)` without a preceding
 `.with_index(...)`) **are** supported: they lower to a
