@@ -217,6 +217,15 @@ impl NativeActionCallbacks for NoopCallbacks {
         anyhow::bail!("no callbacks attached — cannot run mutation {name:?}")
     }
 
+    async fn run_action_by_name(
+        &self,
+        _ns: TableNamespace,
+        name: &str,
+        _args: ConvexObject,
+    ) -> anyhow::Result<ConvexValue> {
+        anyhow::bail!("no callbacks attached — cannot run action {name:?}")
+    }
+
     async fn schedule(
         &self,
         _ns: TableNamespace,
@@ -309,6 +318,18 @@ mod tests {
             .await
             .expect_err("no callbacks attached");
         assert!(format!("{err}").contains("cannot run mutation"));
+    }
+
+    #[tokio::test]
+    async fn run_action_by_name_bails() {
+        let err = NoopCallbacks
+            .run_action_by_name(TableNamespace::Global, "send_email", empty_obj())
+            .await
+            .expect_err("no callbacks attached");
+        assert!(
+            format!("{err}").contains("cannot run action"),
+            "error names the operation: {err}",
+        );
     }
 
     #[tokio::test]
