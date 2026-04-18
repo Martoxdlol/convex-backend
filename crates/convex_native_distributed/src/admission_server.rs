@@ -44,6 +44,21 @@ use crate::{
     tonic_client::TonicWorkerClient,
 };
 
+/// Decode a `pb::common::UdfType` enum-int into
+/// `common::types::UdfType`. Unknown values fall back to `Query`
+/// — the pool's `lookup_function` uses this for validation, not
+/// dispatch, so the fallback just keeps an unknown-kind handler
+/// addressable; the real dispatch path rejects mismatches.
+fn udf_type_from_proto_i32(v: i32) -> common::types::UdfType {
+    use pb::common::UdfType as P;
+    match P::try_from(v).unwrap_or(P::Query) {
+        P::Query => common::types::UdfType::Query,
+        P::Mutation => common::types::UdfType::Mutation,
+        P::Action => common::types::UdfType::Action,
+        P::HttpAction => common::types::UdfType::HttpAction,
+    }
+}
+
 /// Server-side implementation of the admission RPC.
 ///
 /// Holds a shared `Arc<WorkerPool>` that every `register` call
@@ -300,6 +315,31 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
             .as_ref()
             .map(|inv| inv.functions.iter().map(|f| f.name.clone()).collect())
             .unwrap_or_default();
+        // Parallel `name → (udf_type, is_internal)` map the pool's
+        // `lookup_function` serves to the backend's HTTP / WebSocket
+        // validation path. Unknown `UdfType` proto values fall back
+        // to `Query` so validation doesn't silently drop a handler
+        // just because a newer worker advertised a kind this
+        // backend doesn't know about (it still won't dispatch — the
+        // kind mismatch check fires at dispatch time).
+        let function_specs: std::collections::BTreeMap<String, crate::pool::FunctionSpec> = envelope
+            .inventory
+            .as_ref()
+            .map(|inv| {
+                inv.functions
+                    .iter()
+                    .map(|f| {
+                        (
+                            f.name.clone(),
+                            crate::pool::FunctionSpec {
+                                udf_type: udf_type_from_proto_i32(f.udf_type),
+                                is_internal: f.is_internal,
+                            },
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         // HTTP routes the worker advertised — drained into the
         // pool's `by_http_route` index so the backend can dispatch
         // HTTP actions to a remote worker when the local
@@ -343,6 +383,7 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
             client,
             registry_version: envelope.registry_version.clone(),
             functions,
+            function_specs,
             // Substep 6.1 of `convex-native/STATUS.md` — record
             // the worker's advertised runtime kind so operator
             // tooling can surface the Rust vs JS mix. Unknown
@@ -684,6 +725,7 @@ mod tests {
                 functions: vec![proto::FunctionRegistration {
                     name: "real".to_string(),
                     udf_type: 0,
+                    is_internal: false,
                 }],
                 schema: None,
                 routes: vec![],

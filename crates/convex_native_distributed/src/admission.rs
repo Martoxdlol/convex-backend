@@ -87,6 +87,7 @@ fn collect_functions() -> anyhow::Result<Vec<proto::FunctionRegistration>> {
         .map(|r| proto::FunctionRegistration {
             name: r.name.to_string(),
             udf_type: udf_type_to_i32(r.udf_type()),
+            is_internal: r.is_internal,
         })
         .collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -193,6 +194,7 @@ mod tests {
         inv.functions.push(proto::FunctionRegistration {
             name: "new_fn".to_string(),
             udf_type: pb_common::UdfType::Query as i32,
+            is_internal: false,
         });
         let after = canonical_sha256(&inv);
         assert_ne!(before, after);

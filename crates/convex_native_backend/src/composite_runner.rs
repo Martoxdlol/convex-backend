@@ -158,6 +158,19 @@ pub struct CompositeFunctionRunner<RT: Runtime> {
     /// When `None`, the composite behaves exactly as before —
     /// native dispatch runs in-process against the owned database.
     remote_native: Option<Arc<dyn FunctionRunner<RT>>>,
+    /// Oracle that tells the composite whether `remote_native`
+    /// can service a given function name. Used to mark requests
+    /// as "native" (routed to `remote_native`) even when the
+    /// local `NativeFunctionRunner` has no such registration —
+    /// which is the Phase-5 shape where the backend binary ships
+    /// zero `#[convex::*]` code and every handler lives on a
+    /// remote worker.
+    ///
+    /// When unset, the composite falls back to "native iff local
+    /// inventory has it", which was the Phase-2 fixed-pool
+    /// contract (every worker shared the same inventory the
+    /// backend was built against).
+    remote_native_names: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
 }
 
 impl<RT: Runtime> CompositeFunctionRunner<RT> {
@@ -173,6 +186,7 @@ impl<RT: Runtime> CompositeFunctionRunner<RT> {
             file_storage: None,
             action_callbacks: Arc::new(RwLock::new(None)),
             remote_native: None,
+            remote_native_names: None,
         }
     }
 
@@ -190,6 +204,20 @@ impl<RT: Runtime> CompositeFunctionRunner<RT> {
     /// `remote_native` field doc for semantics.
     pub fn with_remote_native_pool(mut self, remote: Arc<dyn FunctionRunner<RT>>) -> Self {
         self.remote_native = Some(remote);
+        self
+    }
+
+    /// Attach a name-knowledge oracle the composite consults to
+    /// decide whether a function lives on the remote pool. With
+    /// this set, dispatch accepts pool-only names (the backend
+    /// binary's local inventory is empty under Topology B — the
+    /// agnostic-backend shape from Phase 5). The oracle typically
+    /// wraps `WorkerPool::lookup_function(name).is_some()`.
+    pub fn with_remote_native_name_oracle(
+        mut self,
+        oracle: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    ) -> Self {
+        self.remote_native_names = Some(oracle);
         self
     }
 
@@ -557,9 +585,15 @@ where
         FunctionUsageStats,
     )> {
         let requested = Self::requested_function_name(function_metadata.as_ref());
-        let is_native = requested
+        let has_local = requested
             .as_deref()
             .is_some_and(|n| self.native.has_function(n));
+        let has_remote = requested.as_deref().is_some_and(|n| {
+            self.remote_native_names
+                .as_ref()
+                .is_some_and(|oracle| oracle(n))
+        });
+        let is_native = has_local || has_remote;
 
         if is_native && matches!(udf_type, UdfType::Query | UdfType::Mutation) {
             // Substep 2.7: when a remote native pool is configured,
@@ -601,6 +635,30 @@ where
         }
 
         if is_native && matches!(udf_type, UdfType::Action) {
+            // Route actions through the remote pool when only the
+            // pool knows the name — matches the Query/Mutation
+            // shape above. `DistributedFunctionRunner` / the
+            // `PoolFunctionRunner` handle action dispatch as of
+            // substep 4.5 (Phase 4), and sub-calls made by the
+            // action route back through `BackendCallbackService`.
+            if has_remote && !has_local
+                && let Some(remote) = self.remote_native.as_ref()
+            {
+                return remote
+                    .run_function(
+                        udf_type,
+                        identity,
+                        ts,
+                        existing_writes,
+                        log_line_sender,
+                        function_metadata,
+                        http_action_metadata,
+                        default_system_env_vars,
+                        in_memory_index_last_modified,
+                        context,
+                    )
+                    .await;
+            }
             let meta = function_metadata.expect("is_native implies function_metadata is Some");
             let callbacks = self.resolve_action_callbacks().ok_or_else(|| {
                 anyhow::anyhow!(

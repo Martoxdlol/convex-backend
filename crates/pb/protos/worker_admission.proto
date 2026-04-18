@@ -177,6 +177,14 @@ message FunctionRegistration {
   // ("you asked to run this as a Mutation but the handler is
   // registered as a Query").
   common.UdfType udf_type = 2;
+  // Whether the handler was registered with `internal = true`.
+  // The backend's HTTP / WebSocket validation path consults this
+  // to refuse external callers of internal functions — same gate
+  // the monolith applies on the JS side via
+  // `AnalyzedFunction.visibility`. Omitting this from the wire
+  // would make every distributed-worker handler externally
+  // callable regardless of how the deployer marked it.
+  bool is_internal = 3;
 }
 
 // Schema the worker advertises. Substep 3.2 uses a JSON blob —

@@ -199,6 +199,15 @@ pub struct WorkerEntry {
     /// retirement can remove the worker from the `by_function`
     /// index without re-parsing the envelope.
     pub functions: Vec<String>,
+    /// Per-function metadata (`udf_type`, `is_internal`) for every
+    /// name in `functions`. Populated from the admission envelope's
+    /// `FunctionRegistration` entries. The backend-side native
+    /// resolver consults this via `WorkerPool::lookup_function` so
+    /// HTTP / WebSocket validation accepts a worker-registered
+    /// handler without needing a local `_modules` row (which
+    /// pure-native deployments never write). `BTreeMap` so
+    /// look-ups stay O(log n) under the pool's read lock.
+    pub function_specs: BTreeMap<String, FunctionSpec>,
     /// Runtime kind the worker advertised. Populated from the
     /// admission envelope's `WorkerKind` field — defaults to
     /// `Unspecified` for workers that didn't set it. Substep
@@ -243,6 +252,21 @@ pub struct HttpRouteEntry {
     /// under (typically `__http::<METHOD>:<path>`). The backend
     /// uses this as the `ExecuteRequest.name` when dispatching.
     pub name: String,
+}
+
+/// Per-function metadata advertised by a worker. Carries what the
+/// backend needs to accept (or reject) an inbound HTTP / WebSocket
+/// request without consulting `_modules`: the handler kind
+/// (query/mutation/action) and whether the handler was registered
+/// as `internal = true`.
+///
+/// Mirrors `udf::validation::NativeFunctionDescriptor`; kept as a
+/// separate type in this crate to avoid pulling `udf` into the
+/// pool's dependency set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FunctionSpec {
+    pub udf_type: common::types::UdfType,
+    pub is_internal: bool,
 }
 
 /// Dynamic pool of workers. Thread-safe via a single `RwLock`
@@ -327,6 +351,31 @@ impl WorkerPool {
         }
         inner.workers.insert(id, entry);
         id
+    }
+
+    /// Look up the `FunctionSpec` (udf_type + is_internal) for a
+    /// name advertised by any currently-admitted worker. Returns
+    /// `None` when no admitted worker serves the name. First match
+    /// wins — advertising conflicting specs across workers (e.g.
+    /// one reports it as Query, another as Mutation) is a deploy
+    /// mistake the admission diff log surfaces.
+    ///
+    /// Used by the backend's HTTP / WebSocket validation path to
+    /// synthesize a `NativeFunctionDescriptor` for a pool-provided
+    /// handler, so pure-native deployments whose backend binary
+    /// carries zero inventory can still validate and dispatch
+    /// handlers that live on a remote worker.
+    pub fn lookup_function(&self, name: &str) -> Option<FunctionSpec> {
+        let inner = self.inner.read();
+        let ids = inner.by_function.get(name)?;
+        for id in ids {
+            if let Some(entry) = inner.workers.get(id)
+                && let Some(spec) = entry.function_specs.get(name)
+            {
+                return Some(*spec);
+            }
+        }
+        None
     }
 
     /// Retire a worker. Removes it from the pool and from every
@@ -698,6 +747,35 @@ pub fn version_meets_floor(have: &str, want: &str) -> bool {
     meets_floor(have, want)
 }
 
+/// Adapter exposing a `WorkerPool`'s advertised inventory to
+/// `udf::validation` as a `NativeFunctionResolver`. Installed by
+/// `local_backend::make_app` when the backend runs in distributed
+/// mode so HTTP / WebSocket validation accepts handler names that
+/// only live on remote workers — without this, pure-native
+/// distributed deployments bail every client request with
+/// "Could not find public function" because the backend binary
+/// carries zero local `inventory` entries and never writes
+/// `_modules` rows.
+pub struct PoolNativeFunctionResolver {
+    pool: Arc<WorkerPool>,
+}
+
+impl PoolNativeFunctionResolver {
+    pub fn new(pool: Arc<WorkerPool>) -> Self {
+        Self { pool }
+    }
+}
+
+impl udf::validation::NativeFunctionResolver for PoolNativeFunctionResolver {
+    fn lookup(&self, function_name: &str) -> Option<udf::validation::NativeFunctionDescriptor> {
+        let spec = self.pool.lookup_function(function_name)?;
+        Some(udf::validation::NativeFunctionDescriptor {
+            udf_type: spec.udf_type,
+            is_internal: spec.is_internal,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicU64;
@@ -755,6 +833,18 @@ mod tests {
             client: stub(label),
             registry_version: version.to_string(),
             functions: functions.iter().map(|s| s.to_string()).collect(),
+            function_specs: functions
+                .iter()
+                .map(|s| {
+                    (
+                        s.to_string(),
+                        FunctionSpec {
+                            udf_type: common::types::UdfType::Query,
+                            is_internal: false,
+                        },
+                    )
+                })
+                .collect(),
             kind: WorkerKind::NativeRust,
             http_routes: Vec::new(),
             status: parking_lot::Mutex::new(Default::default()),
@@ -872,6 +962,18 @@ mod tests {
             client: stub(label),
             registry_version: version.to_string(),
             functions: functions.iter().map(|s| s.to_string()).collect(),
+            function_specs: functions
+                .iter()
+                .map(|s| {
+                    (
+                        s.to_string(),
+                        FunctionSpec {
+                            udf_type: common::types::UdfType::Query,
+                            is_internal: false,
+                        },
+                    )
+                })
+                .collect(),
             kind: WorkerKind::Javascript,
             http_routes: Vec::new(),
             status: parking_lot::Mutex::new(Default::default()),
@@ -965,6 +1067,7 @@ mod tests {
             client: stub("rust-worker"),
             registry_version: "1.0.0".to_string(),
             functions: Vec::new(),
+            function_specs: BTreeMap::new(),
             kind: WorkerKind::NativeRust,
             http_routes: vec![http_route_rust],
             status: parking_lot::Mutex::new(Default::default()),
@@ -973,6 +1076,7 @@ mod tests {
             client: stub("js-worker"),
             registry_version: "1.0.0".to_string(),
             functions: Vec::new(),
+            function_specs: BTreeMap::new(),
             kind: WorkerKind::Javascript,
             http_routes: vec![http_route_js],
             status: parking_lot::Mutex::new(Default::default()),
@@ -1023,6 +1127,7 @@ mod tests {
             client: stub("a"),
             registry_version: "1.0".to_string(),
             functions: vec!["get".to_string()],
+            function_specs: BTreeMap::new(),
             kind: WorkerKind::NativeRust,
             http_routes: Vec::new(),
             status: parking_lot::Mutex::new(Default::default()),
@@ -1031,6 +1136,7 @@ mod tests {
             client: stub("b"),
             registry_version: "1.0".to_string(),
             functions: vec!["list".to_string()],
+            function_specs: BTreeMap::new(),
             kind: WorkerKind::Javascript,
             http_routes: Vec::new(),
             status: parking_lot::Mutex::new(Default::default()),
@@ -1039,6 +1145,7 @@ mod tests {
             client: stub("c"),
             registry_version: "1.0".to_string(),
             functions: vec!["crunch".to_string()],
+            function_specs: BTreeMap::new(),
             kind: WorkerKind::NativeRust,
             http_routes: Vec::new(),
             status: parking_lot::Mutex::new(Default::default()),

@@ -354,6 +354,20 @@ pub async fn make_app(
                 bind_addr,
             )
             .await?;
+        // Install the pool-backed native-function resolver so
+        // `udf::validation` accepts handler names the pool
+        // advertises. Without this step the backend binary's
+        // empty local inventory means every HTTP / WebSocket
+        // request for a worker-only function bails with
+        // "Could not find public function — run `npx convex
+        // dev`" even though the worker is admitted and
+        // dispatch-ready. Idempotent: same `OnceLock`-based
+        // install hook as the monolith path.
+        if native_runner.is_empty() {
+            udf::validation::install_native_function_resolver(Arc::new(
+                convex_native_distributed::pool::PoolNativeFunctionResolver::new(pool.clone()),
+            ));
+        }
         // Substep 7.4 of `convex-native/DISTRIBUTED_PLAN.md`:
         // when `CONVEX_ADMIN_BIND_ADDR` is also set, mount the
         // admin HTTP router (pool introspection + floor bumps +
@@ -397,6 +411,19 @@ pub async fn make_app(
     .with_file_storage(file_storage.clone());
     if let Some(remote) = remote_native_pool {
         composite = composite.with_remote_native_pool(remote);
+        // When the admission pool is wired, the composite also
+        // needs a name-knowledge oracle so it can mark pool-only
+        // function names as "native" and route them through the
+        // remote runner. Without this the agnostic-backend shape
+        // (empty local inventory, all handlers on the pool) would
+        // fall through to the JS branch on every request and bail
+        // with "Couldn't find JavaScript module".
+        if let Some(pool) = admission_pool.as_ref() {
+            let pool_for_oracle = pool.clone();
+            composite = composite.with_remote_native_name_oracle(Arc::new(move |name| {
+                pool_for_oracle.lookup_function(name).is_some()
+            }));
+        }
     }
     let function_runner: Arc<dyn FunctionRunner<ProdRuntime>> = Arc::new(composite);
 
@@ -665,6 +692,58 @@ pub async fn make_app(
                 tracing::error!("convex_native_core worker tonic server exited: {e}");
             }
         });
+
+        // When `CONVEX_BACKEND_ENDPOINT=grpc://backend:5678` is set
+        // the worker dials the backend's `WorkerAdmissionService`,
+        // ships its `FunctionInventory` + `registry_version`, and
+        // keeps the stream open so the backend can push drain /
+        // floor updates back. Dropping the returned handle retires
+        // the worker; we park it in a process-global `OnceLock`
+        // so it lives for the lifetime of the worker process.
+        //
+        // Without this the admission service never learns about
+        // the worker, `WorkerPool::eligible_for` returns empty,
+        // and every client request bails with "no worker available
+        // for function X" — even though the `FunctionExecutionService`
+        // above is ready to serve.
+        if let Some(backend_endpoint) =
+            convex_native_distributed::read_backend_endpoint_from_env()?
+        {
+            let execute_endpoint = format!("http://{}", bind_addr);
+            // Cargo pkg version of the workspace binary. In a real
+            // deployment the deployer's own crate version is what
+            // the admission envelope should carry; for the
+            // all-in-one `convex_native::run()` shape the workspace
+            // version is a reasonable stand-in (matches what every
+            // `local_backend`-linking worker advertises).
+            let registry_version = env!("CARGO_PKG_VERSION").to_string();
+            tracing::info!(
+                "CONVEX_BACKEND_ENDPOINT={backend_endpoint:?} — registering with admission \
+                 service (execute_endpoint={execute_endpoint}, registry_version={registry_version})",
+            );
+            match convex_native_distributed::admission_client::WorkerRegistration::register(
+                backend_endpoint,
+                execute_endpoint,
+                registry_version,
+            )
+            .await
+            {
+                Ok(registration) => {
+                    static WORKER_REGISTRATION: std::sync::OnceLock<
+                        convex_native_distributed::admission_client::WorkerRegistration,
+                    > = std::sync::OnceLock::new();
+                    let _ = WORKER_REGISTRATION.set(registration);
+                    tracing::info!("Worker admitted into pool");
+                },
+                Err(e) => {
+                    tracing::error!(
+                        "Worker admission failed: {e:#}. The worker will still serve \
+                         FunctionExecutionService on {bind_addr}, but the backend won't dispatch \
+                         to it until registration succeeds.",
+                    );
+                },
+            }
+        }
     }
 
     let app_state = LocalAppState {
