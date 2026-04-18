@@ -361,6 +361,7 @@ where
     let started = Instant::now();
     let (path, arguments, udf_server_version) = meta.path_and_args.clone().consume();
     let function_name = path.udf_path.function_name().to_string();
+    let identity_bytes = encode_identity_for_wire(&identity);
     let inert_identity = identity.into();
 
     let args_obj = {
@@ -390,6 +391,7 @@ where
         begin_timestamp: None,
         existing_writes: Vec::new(),
         http_request: None,
+        identity: identity_bytes,
     };
 
     let response = dispatch(exec_req, UdfType::Action, function_name.clone())
@@ -419,6 +421,22 @@ where
     Ok((None, wrapped, usage_stats))
 }
 
+/// Encode an `Identity` as the byte payload the worker's
+/// `FunctionExecutionServer` (and transitively the
+/// `BackendCallbackClient` it spawns for an action) decodes
+/// through `Identity::from_proto_unchecked`. Returns an empty
+/// vec for `Identity::System` so the worker's decode path
+/// short-circuits to `Identity::system()` without paying a
+/// proto round-trip.
+pub fn encode_identity_for_wire(identity: &Identity) -> Vec<u8> {
+    if matches!(identity, Identity::System(_)) {
+        return Vec::new();
+    }
+    use prost::Message as _;
+    let proto: pb::convex_identity::UncheckedIdentity = identity.clone().into();
+    proto.encode_to_vec()
+}
+
 fn prepare_request(
     udf_type: UdfType,
     identity: Identity,
@@ -434,6 +452,7 @@ fn prepare_request(
     let started = Instant::now();
     let (path, arguments, udf_server_version) = meta.path_and_args.clone().consume();
     let function_name = path.udf_path.function_name().to_string();
+    let identity_bytes = encode_identity_for_wire(&identity);
     let inert_identity = identity.into();
 
     // Single-object native args encoding. `SerializedArgs` carries
@@ -465,6 +484,7 @@ fn prepare_request(
         begin_timestamp: Some(begin_timestamp_u64),
         existing_writes: existing_writes.updates,
         http_request: None,
+        identity: identity_bytes,
     };
 
     let prepared = PreparedRequest {

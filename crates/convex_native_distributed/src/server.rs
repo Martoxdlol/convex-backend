@@ -757,6 +757,7 @@ mod tests {
             begin_timestamp: None,
             existing_writes: Vec::new(),
             http_request: None,
+            identity: Vec::new(),
         };
         let proto_req = conversions::to_proto_request(&native, UdfType::Action).unwrap();
         let resp = server
@@ -783,6 +784,7 @@ mod tests {
             begin_timestamp: None,
             existing_writes: Vec::new(),
             http_request: None,
+            identity: Vec::new(),
         };
         let proto_req = conversions::to_proto_request(&native, UdfType::Query).unwrap();
         let status = server.execute(Request::new(proto_req)).await.unwrap_err();
@@ -802,6 +804,7 @@ mod tests {
             begin_timestamp: None,
             existing_writes: Vec::new(),
             http_request: None,
+            identity: Vec::new(),
         };
         let mut proto_req = conversions::to_proto_request(&native, UdfType::Action).unwrap();
         proto_req.min_registry_version = Some("9.9.9".to_string());
@@ -887,6 +890,7 @@ mod tests {
             begin_timestamp: None,
             existing_writes: Vec::new(),
             http_request: None,
+            identity: Vec::new(),
         };
         let proto_req = conversions::to_proto_request(&native, UdfType::HttpAction).unwrap();
         let status = server.execute(Request::new(proto_req)).await.unwrap_err();

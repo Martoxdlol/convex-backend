@@ -56,6 +56,7 @@ use convex_native_core::{
     LogBuffer,
     NativeFunctionRunner,
 };
+use convex_native_distributed::function_runner_impl::encode_identity_for_wire;
 use database::Database;
 use file_storage::FileStorage;
 use futures::StreamExt;
@@ -184,7 +185,7 @@ impl NativeHttpDispatcher {
             let eligible = pool.eligible_for_http(method, path);
             if !eligible.is_empty() {
                 return self
-                    .dispatch_via_pool(eligible, request, path, request_id, streamer)
+                    .dispatch_via_pool(eligible, request, path, identity, request_id, streamer)
                     .await;
             }
         }
@@ -206,6 +207,7 @@ impl NativeHttpDispatcher {
         )>,
         request: HttpActionRequest,
         routed_path: &str,
+        identity: Identity,
         request_id: RequestId,
         streamer: HttpActionResponseStreamer,
     ) -> anyhow::Result<()> {
@@ -232,6 +234,7 @@ impl NativeHttpDispatcher {
             routed_path: routed_path.to_string(),
         };
         let context = ExecutionContext::new(request_id, &FunctionCaller::HttpEndpoint);
+        let identity_bytes = encode_identity_for_wire(&identity);
         let exec_req = NativeExecuteRequest {
             name: handler_name,
             namespace: value::TableNamespace::Global,
@@ -242,6 +245,7 @@ impl NativeHttpDispatcher {
             begin_timestamp: None,
             existing_writes: Vec::new(),
             http_request: Some(payload),
+            identity: identity_bytes,
         };
         let response = client
             .execute(exec_req, UdfType::HttpAction)

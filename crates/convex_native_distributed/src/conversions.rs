@@ -118,12 +118,17 @@ pub fn to_proto_request(
             body: r.body.to_vec(),
             routed_path: r.routed_path.clone(),
         });
+    let identity = if native.identity.is_empty() {
+        None
+    } else {
+        Some(native.identity.clone())
+    };
     Ok(proto::ExecuteRequest {
         name: native.name.clone(),
         udf_type: udf_type_to_i32(udf_type),
         namespace: encode_namespace(native.namespace),
         args_json: encode_args(&native.args)?,
-        identity: None,
+        identity,
         timeout: native.timeout.map(duration_to_proto),
         execution_context: native.execution_context.clone().map(Into::into),
         min_registry_version: native.min_registry_version.clone(),
@@ -181,6 +186,7 @@ pub fn from_proto_request(
         begin_timestamp: p.begin_timestamp,
         existing_writes,
         http_request,
+        identity: p.identity.clone().unwrap_or_default(),
     };
     Ok((native, udf_type))
 }
@@ -642,6 +648,7 @@ mod tests {
             begin_timestamp: None,
             existing_writes: Vec::new(),
             http_request: None,
+            identity: Vec::new(),
         };
         let proto_req = to_proto_request(&native, common::types::UdfType::Query).unwrap();
         let (decoded, udf_type) = from_proto_request(&proto_req).unwrap();
@@ -691,6 +698,7 @@ mod tests {
             begin_timestamp: None,
             existing_writes: Vec::new(),
             http_request: None,
+            identity: Vec::new(),
         };
         let proto_req = to_proto_request(&native, common::types::UdfType::Query).unwrap();
         let (decoded, _) = from_proto_request(&proto_req).unwrap();
@@ -788,6 +796,7 @@ mod tests {
             begin_timestamp: Some(12345),
             existing_writes: vec![update.clone()],
             http_request: None,
+            identity: Vec::new(),
         };
         let p = to_proto_request(&native, common::types::UdfType::Mutation).unwrap();
         assert_eq!(p.begin_timestamp, Some(12345));
@@ -817,6 +826,7 @@ mod tests {
             begin_timestamp: None,
             existing_writes: Vec::new(),
             http_request: None,
+            identity: Vec::new(),
         };
         let p = to_proto_request(&native, common::types::UdfType::Query).unwrap();
         assert!(

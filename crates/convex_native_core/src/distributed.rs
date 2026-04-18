@@ -125,6 +125,15 @@ pub struct ExecuteRequest {
     /// `ExecuteResponse.http_response`. `None` for every other
     /// `UdfType`.
     pub http_request: Option<HttpActionRequestPayload>,
+    /// Identity the call should run as, pre-serialised through
+    /// the `pb::convex_identity::UncheckedIdentity` proto
+    /// shape the backend callback path also uses. Empty vec
+    /// ⇒ `Identity::system()` on the worker side (matches the
+    /// Phase-4 decoder contract). The dispatcher fills this in
+    /// from the incoming request's `Identity` so actions /
+    /// mutations / HTTP handlers run under the caller's
+    /// principal rather than system.
+    pub identity: Vec<u8>,
 }
 
 /// Native-side mirror of
