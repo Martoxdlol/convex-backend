@@ -192,6 +192,16 @@ impl ProdRuntime {
         Self { rt: handle }
     }
 
+    /// Construct a `ProdRuntime` from an existing tokio `Handle`.
+    /// Useful inside `#[tokio::test]` bodies where the test
+    /// already runs on a tokio runtime owned by the test harness;
+    /// `from_handle(Handle::current())` produces a `ProdRuntime`
+    /// that delegates to that runtime instead of spinning a
+    /// separate one. Panics if invoked outside a tokio context.
+    pub fn from_handle(handle: TokioRuntimeHandle) -> Self {
+        Self { rt: handle }
+    }
+
     pub fn block_on<F: Future>(&self, name: &'static str, f: F) -> F::Output {
         let monitor = GLOBAL_TASK_MANAGER.lock().get(name);
         self.rt.block_on(monitor.instrument(f))
