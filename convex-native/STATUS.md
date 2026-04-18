@@ -1148,6 +1148,36 @@ env-var parser, and the substep-2.8a end-to-end gRPC wire test.
 
 ## Cross-phase fixes
 
+### Native action dispatch (resolved 2026-04-18)
+
+Pre-fix, `POST /api/action` for any `#[convex::action]` on a
+pure-native monolith deployment returned 500 InternalServerError
+with "Missing a valid module". `ApplicationFunctionRunner::run_action_inner`
+fetched `module.environment` up front through
+`ModuleModel::get_metadata_for_function_by_id` to pick between the
+isolate and node dispatch branches, and that fetch always misses on
+pure-native deployments (no `_modules` row is ever written). The
+query/mutation path wasn't affected because
+`FunctionRouter::execute_query_or_mutation` hands off to the
+function runner before touching module metadata; the composite
+runner's native interceptor then services the request.
+
+Fix: consult `udf::validation::lookup_native_function` when the
+`_modules` fetch misses. A native-registered action name
+synthesizes `ModuleEnvironment::Isolate`, taking the
+composite-runner-aware branch (`dispatch_native_action` runs the
+handler inline through `NativeFunctionRunner::run_action_with_callbacks`).
+JS-only and mixed deployments still error the same way on an
+unknown name. A new `udf::validation::lookup_native_function`
+public helper replaces the previously-private
+`resolve_native_function` so the application crate can perform
+the check without pulling `convex_native_core`.
+
+The gap was monolith-specific because the distributed dispatch
+path routes actions through `PoolFunctionRunner`, which never
+consulted `_modules` in the first place. After this fix every
+topology can serve native actions end-to-end.
+
 ### Native HTTP validation (resolved 2026-04-17)
 
 Before this fix, every pure-native deployment (monolith +
