@@ -250,6 +250,51 @@ pub async fn normalize_todo_id(ctx: &mut QueryCtx<'_, Rt>, raw: String) -> anyho
 }
 
 // ---------------------------------------------------------------------------
+// Typed query operators — covers `.first()`, `.take(n)`,
+// `.count()`, `.gte` / `.lt` filter operators.
+// ---------------------------------------------------------------------------
+
+/// Count every todo in the table (no filters).
+#[convex::query]
+pub async fn count_all_todos(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<i64> {
+    Ok(ctx.db().query::<Todo>().count().await? as i64)
+}
+
+/// Return the first (index order) todo for an owner, or `None`.
+#[convex::query]
+pub async fn first_todo_for_owner(
+    ctx: &mut QueryCtx<'_, Rt>,
+    owner: String,
+) -> anyhow::Result<Option<Todo>> {
+    ctx.db()
+        .query::<Todo>()
+        .eq(TodoField::Owner, owner)?
+        .first()
+        .await
+}
+
+/// Take the first N todos across the whole table.
+#[convex::query]
+pub async fn take_todos(ctx: &mut QueryCtx<'_, Rt>, n: i64) -> anyhow::Result<Vec<Todo>> {
+    ctx.db().query::<Todo>().take(n as usize).await
+}
+
+/// Filter by creation timestamp range — exercises `.gte` / `.lt`.
+#[convex::query]
+pub async fn todos_in_time_range(
+    ctx: &mut QueryCtx<'_, Rt>,
+    from: f64,
+    to: f64,
+) -> anyhow::Result<Vec<Todo>> {
+    ctx.db()
+        .query::<Todo>()
+        .gte(TodoField::CreatedAt, from)?
+        .lt(TodoField::CreatedAt, to)?
+        .collect()
+        .await
+}
+
+// ---------------------------------------------------------------------------
 // HTTP actions
 // ---------------------------------------------------------------------------
 
