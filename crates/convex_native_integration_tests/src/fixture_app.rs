@@ -202,6 +202,27 @@ pub async fn summarise(ctx: &mut ActionCtx<'_, Rt>, owner: String) -> anyhow::Re
     Ok(pending)
 }
 
+/// Pure action with no sub-calls — exercises plain action
+/// dispatch + `ctx.log()` in the action ctx without any callbacks
+/// wiring required.
+#[convex::action]
+pub async fn echo_action(ctx: &mut ActionCtx<'_, Rt>, message: String) -> anyhow::Result<String> {
+    ctx.log().info(format!("echo: {message}"));
+    Ok(format!("echo:{message}"))
+}
+
+// ---------------------------------------------------------------------------
+// Errors — surfaces every `errors::*` helper so both topologies
+// can assert the error metadata survives the dispatch layer.
+// ---------------------------------------------------------------------------
+
+/// Always-failing mutation used to prove `errors::bad_request`
+/// surfaces a user-facing error (not a 500).
+#[convex::mutation]
+pub async fn always_bad_request(_ctx: &mut MutationCtx<'_, Rt>) -> anyhow::Result<()> {
+    Err(convex_native::errors::bad_request("BadInput", "deliberately broken").into())
+}
+
 // ---------------------------------------------------------------------------
 // HTTP actions
 // ---------------------------------------------------------------------------
