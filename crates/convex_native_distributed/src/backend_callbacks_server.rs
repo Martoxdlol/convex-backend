@@ -10,13 +10,14 @@
 //!
 //! ## Identity + context decoding
 //!
-//! The RPC envelope carries `identity` as raw bytes. The Phase-4
-//! scaffold treats an empty byte vec as `Identity::system()` (the
-//! worker-side client currently sends empty because the native
-//! ctx doesn't yet forward the acting principal). A follow-up
-//! substep decodes the full `convex_identity::Identity` proto
-//! into `keybroker::Identity` once the worker-side plumbing is
-//! in place.
+//! The RPC envelope carries `identity` as raw bytes encoded as the
+//! `pb::convex_identity::UncheckedIdentity` proto. Empty bytes
+//! map to `Identity::system()`; non-empty bytes decode through
+//! `Identity::from_proto_unchecked`. A `component_path` string
+//! parses through `ComponentPath::from_str`; for storage /
+//! scheduling callbacks that need a `ComponentId`, the
+//! `ComponentResolver` (default `RootOnlyComponentResolver`) maps
+//! the path back to an id.
 //!
 //! ## What delegates today
 //!
@@ -25,17 +26,13 @@
 //! - `Schedule` / `CancelJob` → `ActionCallbacks::{schedule_job,cancel_job}`.
 //! - `StorageGetUrl` / `StorageDelete` →
 //!   `ActionCallbacks::{storage_get_url,storage_delete}`.
-//!
-//! ## What returns `Unimplemented` for now
-//!
-//! - `StorageStore` (streaming — needs a `FileStorage` + `Application` handle
-//!   the worker's proto-level `storage_id` can't round-trip yet), `StorageGet`
-//!   (same), `VectorSearch` (needs `VectorSearchQuery` JSON wire-shape
-//!   validation), `LookupFunctionHandle` / `CreateFunctionHandle` (needs the
-//!   `FunctionHandle` string encoding contract pinned).
-//!
-//! Wiring those in is additive and lands as each deployer
-//! action exercises the path.
+//! - `StorageStore` / `StorageGet` (streaming) → the `BackendFileBytes` trait
+//!   the backend supplies via `BackendCallbackServer::with_file_bytes(...)`.
+//! - `VectorSearch` → `ActionCallbacks::vector_search`, results serialised as
+//!   JSON.
+//! - `LookupFunctionHandle` / `CreateFunctionHandle` →
+//!   `ActionCallbacks::{lookup_function_handle,create_function_handle}`,
+//!   handles encoded with the `function://` prefix.
 
 use std::sync::Arc;
 

@@ -17,12 +17,14 @@
 //!   chunked body).
 //! - `storage_get_url` / `storage_delete` — one-shot RPCs.
 //!
-//! ## What stays on default (bail!) for now
+//! ## Additional overrides
 //!
-//! - `cancel_scheduled`, `storage_get_metadata`, `read_document_at_snapshot` —
-//!   default-bail overrides that ship with the trait. Substep 4.6's integration
-//!   test doesn't need them; wiring arrives in a follow-up substep if a
-//!   deployer action hits them.
+//! - `cancel_scheduled` — `CancelJob` RPC.
+//! - `storage_get_metadata` — reads the leading meta frame off the `StorageGet`
+//!   stream.
+//! - `read_document_at_snapshot` — routed through `RunQuery` against the system
+//!   `_system/db:get` surface so backends with a wired query path can service
+//!   `ctx.db().get(...)` reads from inside an action.
 
 use std::time::Duration;
 

@@ -75,6 +75,7 @@ pub use mode::{
     read_worker_bind_addr_from_env,
     read_worker_endpoints_from_env,
     serve_worker_with_database,
+    serve_worker_with_options,
     serve_worker_with_shutdown,
 };
 pub use server::FunctionExecutionServer;

@@ -351,7 +351,40 @@ pub async fn serve_worker_with_shutdown<F>(
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    let server = FunctionExecutionServer::new(native).with_database(database);
+    serve_worker_with_options(
+        addr,
+        native,
+        Some(database),
+        read_backend_callback_endpoint_from_env()?,
+        shutdown,
+    )
+    .await
+}
+
+/// Full-options variant of [`serve_worker_with_shutdown`] used
+/// when the worker binary needs explicit control over the
+/// `Database` handle and the backend-callback endpoint
+/// (typically because both come from a runtime configuration
+/// rather than env vars). `database == None` keeps the worker
+/// query/mutation branch in `Unimplemented`-mode for tests that
+/// only exercise actions.
+pub async fn serve_worker_with_options<F>(
+    addr: SocketAddr,
+    native: Arc<NativeFunctionRunner>,
+    database: Option<Database<Rt>>,
+    backend_callback_endpoint: Option<String>,
+    shutdown: F,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let mut server = FunctionExecutionServer::new(native);
+    if let Some(database) = database {
+        server = server.with_database(database);
+    }
+    if let Some(endpoint) = backend_callback_endpoint {
+        server = server.with_backend_callback_endpoint(endpoint);
+    }
     Server::builder()
         .add_service(FunctionExecutionServiceServer::new(server))
         .serve_with_shutdown(addr, shutdown)
