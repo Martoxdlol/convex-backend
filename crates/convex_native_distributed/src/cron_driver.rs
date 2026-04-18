@@ -290,9 +290,12 @@ impl NativeCronDriver {
     }
 
     /// Current schedule map. Snapshot; safe to call from admin
-    /// surfaces while tasks run.
+    /// surfaces while tasks run. Sorted by name so
+    /// `/admin/crons` JSON output is deterministic across calls.
     pub fn jobs(&self) -> Vec<CronJob> {
-        self.inner.schedules.lock().values().cloned().collect()
+        let mut jobs: Vec<CronJob> = self.inner.schedules.lock().values().cloned().collect();
+        jobs.sort_by(|a, b| a.name.cmp(&b.name));
+        jobs
     }
 
     /// Remove a cron from the driver. Aborts the task and drops
@@ -665,6 +668,41 @@ mod tests {
             .await
             .expect("dispatch should failover to the good worker");
         assert_eq!(good_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn jobs_snapshot_is_sorted_by_name() {
+        let dispatcher = Arc::new(RecordingDispatcher {
+            fired: AtomicU64::new(0),
+        });
+        let driver = NativeCronDriver::new(dispatcher);
+        driver
+            .install(vec![
+                CronJob {
+                    name: "zeta".to_string(),
+                    schedule_expr: "0 * * * *".to_string(),
+                    target: "z".to_string(),
+                    target_kind: CronTargetKind::Mutation,
+                },
+                CronJob {
+                    name: "alpha".to_string(),
+                    schedule_expr: "0 * * * *".to_string(),
+                    target: "a".to_string(),
+                    target_kind: CronTargetKind::Mutation,
+                },
+                CronJob {
+                    name: "mu".to_string(),
+                    schedule_expr: "0 * * * *".to_string(),
+                    target: "m".to_string(),
+                    target_kind: CronTargetKind::Mutation,
+                },
+            ])
+            .unwrap();
+        let names: Vec<String> = driver.jobs().into_iter().map(|j| j.name).collect();
+        assert_eq!(
+            names,
+            vec!["alpha".to_string(), "mu".to_string(), "zeta".to_string(),],
+        );
     }
 
     #[tokio::test]
