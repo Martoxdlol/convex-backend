@@ -210,6 +210,33 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
             },
         };
 
+        // Inventory SHA-256 verification. The proto contract says
+        // the backend rejects a mismatch as a hard error (so a
+        // worker accidentally shipping the wrong inventory bytes
+        // surfaces immediately rather than serving stale routes).
+        // Empty SHA is allowed for legacy workers that didn't
+        // populate the field.
+        if !envelope.inventory_sha256.is_empty() {
+            if let Some(inventory) = envelope.inventory.as_ref() {
+                use prost::Message as _;
+                use sha2::{
+                    Digest,
+                    Sha256,
+                };
+                let mut hasher = Sha256::new();
+                hasher.update(inventory.encode_to_vec());
+                let computed = hasher.finalize();
+                if computed.as_slice() != envelope.inventory_sha256.as_slice() {
+                    return Err(Status::failed_precondition(format!(
+                        "inventory_sha256 mismatch: computed {} bytes, advertised {} bytes — \
+                         worker likely shipped a stale inventory or hash",
+                        computed.len(),
+                        envelope.inventory_sha256.len(),
+                    )));
+                }
+            }
+        }
+
         // Dial back to the worker's advertised endpoint to build
         // a transport client. This opens a second connection —
         // the admission stream (worker → backend) and the
@@ -572,5 +599,60 @@ mod tests {
     ) -> tonic::Request<impl tokio_stream::Stream<Item = proto::WorkerToBackend> + Send + 'static>
     {
         tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx))
+    }
+
+    #[tokio::test]
+    async fn mismatched_inventory_sha_is_rejected() {
+        // Worker sends a `RegistrationEnvelope` with an
+        // `inventory_sha256` that doesn't match the inventory
+        // bytes — the backend must reject with
+        // FailedPrecondition rather than silently admitting a
+        // worker advertising stale routes.
+        let pool = Arc::new(WorkerPool::new());
+        let admission_addr = spawn_admission_server(pool.clone()).await;
+
+        let mut client = WorkerAdmissionServiceClient::connect(format!("http://{admission_addr}"))
+            .await
+            .unwrap();
+
+        let (tx, rx) = mpsc::channel::<proto::WorkerToBackend>(4);
+        let envelope = proto::RegistrationEnvelope {
+            execute_endpoint: "http://127.0.0.1:1".to_string(),
+            registry_version: "1.0.0".to_string(),
+            kind: proto::WorkerKind::NativeRust as i32,
+            inventory: Some(proto::FunctionInventory {
+                functions: vec![proto::FunctionRegistration {
+                    name: "real".to_string(),
+                    udf_type: 0,
+                }],
+                schema: None,
+                routes: vec![],
+                crons: vec![],
+            }),
+            // Garbage SHA — definitely doesn't match the
+            // inventory above.
+            inventory_sha256: vec![0xde, 0xad, 0xbe, 0xef],
+        };
+        tx.send(proto::WorkerToBackend {
+            msg: Some(proto::worker_to_backend::Msg::Register(envelope)),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+
+        let err = client
+            .register(tonic_request_from_channel(rx))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            err.message().contains("inventory_sha256 mismatch"),
+            "error message points at the SHA mismatch: {}",
+            err.message(),
+        );
+        assert!(
+            pool.is_empty(),
+            "rejected worker must not appear in the pool"
+        );
     }
 }
