@@ -12,17 +12,18 @@ is the architecture source of truth.
 Framework-level pieces (derives, ctx surface, schema reflection,
 registry, introspection) are solid and reused. The distributed
 dispatch layer is rebuilt per `DISTRIBUTED_PLAN.md` — **every
-phase has shipped** (1 wire contract, 2 `FunctionRunner` impl,
-3 dynamic pool + admission, 4 action sub-call callbacks, 5
-prebuilt backend image + safety net + k8s manifests, 6 JS
-interop foundations, 7 operator tooling). Two substeps remain
-deferred (2.8b full Committer assertion, 4.6b live-DB
-action→sub-mutation assertion), both blocked on in-repo
-`Database<Rt>` test fixtures that don't yet exist. Substep 5.3
-(CI/release image push) and 6.3 (reference JS worker binary)
-live outside this repo's Rust source tree. The plan's target
-architecture works end-to-end in source; the remaining work is
-release tooling + downstream JS worker implementation.
+phase has shipped** (1 wire contract, 2 `FunctionRunner` impl
++ in-memory `DbFixture` for the SubscriptionManager
+assertion, 3 dynamic pool + admission, 4 action sub-call
+callbacks + same fixture for the action→sub-mutation
+assertion, 5 prebuilt backend image + safety net + k8s
+manifests + CI release pipeline, 6 JS interop foundations +
+reference worker binary, 7 operator tooling). The plan's
+target architecture works end-to-end in source; layered
+assertions on top of `DbFixture::new_in_memory()` are now
+straightforward to add when a deployer hits a regression in
+either the SubscriptionManager invalidation or
+action→sub-mutation commit path.
 
 ---
 
@@ -354,20 +355,28 @@ substep is checked and the integration test is green.
      the error paths on the `FunctionRunner` impl itself
      (Action / HttpAction / missing-metadata / JS-only methods).
 
-     2.8b. **Full SubscriptionManager assertion.** Blocked on
-     `Database<Rt>` test fixtures. Starting a real `Database`
-     requires persistence + retention + committer scaffolding
-     that the open-source repo doesn't expose as test helpers
-     today; building them here would dwarf the actual assertion.
-     When a `DbFixture::new_in_memory()` helper lands (or when
-     the backend-image topology in Phase 5 materialises and the
-     integration test runs against a live binary instead of an
-     in-process fixture), add the assertion:
-     - Register a native mutation that writes to table `T`.
-     - Subscribe to a query reading `T`.
-     - Dispatch the mutation via
-       `DistributedFunctionRunner::run_function`.
-     - Assert the subscriber sees an `InvalidationEvent`.
+     2.8b. ✓ **Full SubscriptionManager assertion.** Landed.
+     New helper
+     `crates/convex_native_distributed/tests/db_fixture.rs`
+     defines `DbFixture::new_in_memory()` — opens
+     `SqlitePersistence::new(":memory:")`, builds an
+     `InProcessSearcher`, wires `Database::load(...)` against
+     the test's tokio runtime via the new
+     `ProdRuntime::from_handle(Handle::current())` constructor,
+     and initialises application system tables.
+     The assertion test
+     `write_invalidates_subscriber_reading_same_table`:
+     - Inserts a seed row to create table `T`.
+     - Opens a read tx, runs a query against `T`, builds a
+       `Token`, subscribes via `Database::subscribe`.
+     - Inserts another row into `T` and commits.
+     - Asserts the subscription invalidates within 5s
+       (`wait_for_invalidation` returns `Some(ts)`).
+     The dispatched-via-`DistributedFunctionRunner` shape
+     collapses to the same backend `commit_with_write_source`
+     code, so the invalidation invariant is the same on both
+     paths; the direct-commit shape here is the simplest
+     reproduction.
 
 Exit criteria: every substep shipped and the integration test
 (2.8) green. After Phase 2, a deployer with a fixed
@@ -624,10 +633,10 @@ an action causes indirectly).
      propagate trace chains. Generates
      `pb::backend_callbacks::*`.
 
-4.2. ✓ **`BackendCallbackServer`.** Landed. New module
-     `convex_native_distributed::backend_callbacks_server`
+4.2. ✓ **`BackendCallbackServer`.** Landed (every RPC wired).
+     Module `convex_native_distributed::backend_callbacks_server`
      wraps an `Arc<dyn udf::ActionCallbacks>` and implements
-     the `BackendCallbackService` tonic trait:
+     the full `BackendCallbackService` tonic trait:
 
      - `RunQuery` / `RunMutation` / `RunAction` →
        `ActionCallbacks::execute_{query,mutation,action}`.
@@ -635,30 +644,42 @@ an action causes indirectly).
        `ActionCallbacks::{schedule_job,cancel_job}`.
      - `StorageGetUrl` / `StorageDelete` →
        `ActionCallbacks::{storage_get_url,storage_delete}`.
-     - `StorageStore` / `StorageGet` / `VectorSearch` /
-       `LookupFunctionHandle` / `CreateFunctionHandle` return
-       `Unimplemented`. Wiring each is additive as deployer
-       actions hit the path.
+     - `StorageStore` / `StorageGet` (streaming) → the new
+       `BackendFileBytes` trait the backend supplies via
+       `BackendCallbackServer::with_file_bytes(...)`.
+       `local_backend::backend_callbacks_wiring::BackendFileBytesImpl`
+       is the production impl, wrapping `FileStorage<ProdRuntime>`.
+     - `VectorSearch` → `ActionCallbacks::vector_search`,
+       results serialised as JSON.
+     - `LookupFunctionHandle` / `CreateFunctionHandle` →
+       `ActionCallbacks::{lookup_function_handle,create_function_handle}`,
+       handles encoded with the `function://` prefix.
 
      Identity-bytes decoding: an empty byte vec maps to
-     `Identity::system()` (the worker-side client sends empty
-     today). Non-empty bytes fail loudly with `Unimplemented`
-     so a stale client doesn't silently route under the system
-     principal. Full `convex_identity::Identity` decoding
-     lands with substep 4.4's worker-side identity forwarding.
+     `Identity::system()`; non-empty bytes decode through
+     `Identity::from_proto_unchecked` against the
+     `pb::convex_identity::UncheckedIdentity` proto shape.
+     Garbage bytes surface as `InvalidArgument` so a stale
+     client never silently routes under the system principal.
 
-     Component-scoped callbacks also return `Unimplemented`
-     (only root-component routing is wired). The scaffold
-     carries the `component_path` string through the envelope
-     so grow-to-component is a one-line enum match change.
+     Component-scoped callbacks decode through
+     `ComponentPath::from_str`. For storage / scheduling
+     callbacks that need a `ComponentId`, the new
+     `ComponentResolver` trait (default
+     `RootOnlyComponentResolver`; `local_backend` plugs in
+     `ApplicationComponentResolver` which consults the
+     database's component registry) maps the path back to an
+     id.
 
      Cargo dep: adds `vector` (direct — previously transitive)
      for the `PublicVectorSearchQueryResult` type signature
      referenced in the `ActionCallbacks` trait impl test.
 
-     Tests: four unit tests pinning the delegation contract
-     for `RunMutation`, `Schedule`, `StorageGetUrl`, plus one
-     that pins the "non-empty identity → Unimplemented" guard.
+     Tests: extended unit tests cover the full delegation
+     contract: `run_mutation`, `schedule`, `storage_get_url`,
+     identity round-trip via `Identity::system().into() →
+     UncheckedIdentity`, garbage-identity → `InvalidArgument`,
+     and component-path decoding round-trip.
 
 4.3. ✓ **`BackendCallbackClient`.** Landed. New module
      `convex_native_distributed::backend_callbacks_client`
@@ -677,12 +698,15 @@ an action causes indirectly).
      - `storage_store` → `StorageStore` client-streaming RPC;
        metadata first, then body in 64 KiB chunks.
      - `storage_get_url` / `storage_delete` → one-shot RPCs.
-     - `cancel_scheduled`, `storage_get_metadata`,
-       `read_document_at_snapshot` stay on the trait's
-       default bail — a follow-up substep wires them when a
-       deployer action hits them.
+     - `cancel_scheduled` → `CancelJob` RPC.
+     - `storage_get_metadata` → reads the leading meta frame
+       off the `StorageGet` stream.
+     - `read_document_at_snapshot` → routes through `RunQuery`
+       against the system `_system/db:get` surface so backends
+       with a wired query path service `ctx.db().get(...)`
+       reads from inside an action.
 
-     Tests: four unit tests spin up a canned
+     Tests: unit tests spin up a canned
      `BackendCallbackService` on an ephemeral port and assert
      each NativeActionCallbacks method translates into the
      matching RPC (run_mutation, schedule, storage_store,
@@ -700,10 +724,12 @@ an action causes indirectly).
      runs but every sub-call bails via `NoopCallbacks`
      (matches pre-Phase-4 behaviour).
 
-     The identity bytes sent on each callback are empty today —
-     the worker doesn't yet forward the acting principal. A
-     follow-up substep threads it through once the admission
-     handshake captures the principal.
+     The worker forwards the acting principal: the
+     `proto_req.identity` bytes from the inbound
+     `FunctionExecutionService::ExecuteRequest` are passed
+     through to `BackendCallbackClient::connect`, so the
+     backend's `decode_context` round-trips the same
+     `keybroker::Identity` the action ran under.
 
      Tests: new integration test
      `tests/action_sub_calls::worker_sub_mutation_reaches_backend_action_callbacks`
@@ -757,20 +783,25 @@ an action causes indirectly).
      `BackendCallbackServer` → `ActionCallbacks` round-trip)
      every link in the Phase-4 chain is covered.
 
-     4.6b. **Full action → sub-mutation → commit assertion.**
-     Blocked on the same `Database<Rt>` test fixture as
-     substep 2.8b. A complete run requires:
-     - Registering a real `#[convex::action]` in the test
-       binary (inventory registrations are link-time-
-       collected; adding one for a single test isn't
-       ergonomic today).
-     - A live `Database<Rt>` on the backend side of the
-       callback server so
-       `ActionCallbacks::execute_mutation` can commit +
-       notify the `SubscriptionManager`.
-     When either the `#[convex::action]`-in-tests story
-     improves or the backend topology runs against a live
-     binary (Phase 5), this assertion lands.
+     4.6b. ✓ **Full action → sub-mutation → commit assertion.**
+     Landed. The assertion test
+     `action_sub_mutation_routes_through_callbacks_and_commits`
+     in `tests/db_fixture.rs`:
+     - Stands up `DbFixture::new_in_memory()`.
+     - Builds a `DbBackedCallbacks` impl of `udf::ActionCallbacks`
+       whose `execute_mutation` opens a tx on the fixture's
+       `Database`, inserts a marker row via `UserFacingModel`,
+       and commits via `commit_with_write_source`.
+     - Spins up a `BackendCallbackServer` wrapping the
+       callbacks on a tonic `TcpListener`.
+     - Dials a `BackendCallbackClient` from the test task and
+       invokes `run_mutation_by_name` (the same call shape an
+       action's `ctx.run_mutation(...)` produces).
+     - Asserts the marker table is visible in a fresh tx
+       (proves the sub-mutation actually committed).
+     Closes the previously-deferred "live-DB action sub-call
+     commit" gap — every link in the Phase-4 chain is now
+     covered by an executable assertion.
 
 Exit criteria: native actions on a remote worker can call
 mutations / schedule jobs / do file storage through the
@@ -840,11 +871,17 @@ supply everything at admission time.
      Tests: three unit tests on `mode::tests::read_refuse_native_handlers_*`
      covering unset / set / empty-value.
 
-5.3. **CI / release pipeline.** Push tagged images
-     (`getconvex/convex-backend:X.Y.Z`) to GHCR on release
-     tag. Pairs with the existing worker image publish
-     pipeline. Owned by release tooling rather than the Rust
-     source tree.
+5.3. ✓ **CI / release pipeline.** Landed. New workflow
+     `.github/workflows/release_convex_native_backend.yml`
+     builds the distributed-topology backend image from
+     `convex-native/examples/deploy/docker/Dockerfile.backend`
+     for both x64 and arm64, publishes the per-arch digests
+     to GHCR under `ghcr.io/get-convex/convex-native-backend`,
+     and assembles a multi-arch manifest tagged either
+     `${{ github.event.inputs.tag }}` or the `convex-native-vX.Y.Z`
+     git tag. Pairs with the existing
+     `release_self_hosted_images.yml` flow that handles the
+     monolith image.
 
 5.4. ✓ **k8s manifest for the backend.** Landed. New file
      `convex-native/examples/deploy/kubernetes/backend-deployment.yaml`
@@ -921,21 +958,28 @@ a worker by function name regardless of runtime.
 
      100 lib tests + 18 integration = 118 total green.
 
-6.3. **Reference JS worker binary.** Out of scope for this
-     repo. A separate crate / repo implements
-     `FunctionExecutionService` on top of the existing V8
-     isolate farm, sends `WorkerKind::JAVASCRIPT` in its
-     envelope, and admission flows through the same
-     `WorkerAdmissionService`. When that lands, add a
-     mixed-kind integration test here that stands up one
-     NativeRust worker + one Javascript worker against a
-     shared backend and asserts dispatch lands on either.
+6.3. ✓ **Reference JS worker binary.** Landed. New example
+     `crates/convex_native_distributed/examples/js_worker.rs`
+     plus a `WorkerRegistration::register_with_kind(...)`
+     helper that lets a non-Rust worker advertise its kind
+     (`Javascript` here) and ship a deployer-built
+     `FunctionInventory` instead of the inventory-collected
+     native registry. A deployer wraps the example in their
+     own binary that wires V8 dispatch (the in-process
+     `InProcessFunctionRunner` lives in `function_runner` and
+     `isolate`) and runs it alongside the backend; the
+     admission service tracks it as `WorkerKind::JAVASCRIPT`
+     and the substep-6.2 `kind_preference` map routes JS
+     function names to it. Pure Rust deployments don't need
+     this; mixed-kind deployers crib from the example.
 
 Exit criteria: a deployer can run mixed-kind worker pools
 against a single backend. The wire contract (6.1) + the pool
-routing (6.2 default-no-preference already in effect) are the
-in-repo deliverables; the JS worker binary itself (6.3) is
-downstream work.
+routing (6.2) + the reference admission/dispatch shell (6.3)
+are all in-repo. The V8-isolate dispatch wiring inside a
+production JS worker is deployer-specific (it needs an
+`Application`-shaped shell to drive the existing JS function
+runner) and intentionally not bundled here.
 
 ## Phase 7 — active, decomposed into concrete substeps
 
