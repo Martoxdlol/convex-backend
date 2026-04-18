@@ -155,10 +155,21 @@ pub fn install_native_function_resolver(
 /// `None` when no resolver was installed (either because the
 /// backend is JS-only or because `make_app` hasn't run yet — tests
 /// that bypass `make_app` fall into the latter).
-fn resolve_native_function(function_name: &str) -> Option<NativeFunctionDescriptor> {
+///
+/// Public so `application::ApplicationFunctionRunner::run_action_inner`
+/// can skip the `_modules` metadata fetch for native handlers —
+/// pure-native deployments never write `_modules` rows, so the
+/// fetch would error with "Missing a valid module" and turn every
+/// native action call into an InternalServerError.
+pub fn lookup_native_function(function_name: &str) -> Option<NativeFunctionDescriptor> {
     NATIVE_FUNCTION_RESOLVER
         .get()
         .and_then(|resolver| resolver.lookup(function_name))
+}
+
+#[doc(hidden)]
+fn resolve_native_function(function_name: &str) -> Option<NativeFunctionDescriptor> {
+    lookup_native_function(function_name)
 }
 
 /// Build a synthetic `AnalyzedFunction` from a native-registry
