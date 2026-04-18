@@ -223,6 +223,40 @@ pub async fn always_bad_request(_ctx: &mut MutationCtx<'_, Rt>) -> anyhow::Resul
     Err(convex_native::errors::bad_request("BadInput", "deliberately broken").into())
 }
 
+/// Handler that errors with each `errors::*` helper based on the
+/// input tag — lets one test file assert every status-coded error
+/// without needing N handlers.
+#[convex::query]
+pub async fn error_of_kind(_ctx: &mut QueryCtx<'_, Rt>, kind: String) -> anyhow::Result<()> {
+    let e = match kind.as_str() {
+        "bad_request" => convex_native::errors::bad_request("S", "bad_request msg"),
+        "unauthenticated" => convex_native::errors::unauthenticated("S", "unauthenticated msg"),
+        "forbidden" => convex_native::errors::forbidden("S", "forbidden msg"),
+        "not_found" => convex_native::errors::not_found("S", "not_found msg"),
+        "conflict" => convex_native::errors::conflict("S", "conflict msg"),
+        "rate_limited" => convex_native::errors::rate_limited("S", "rate_limited msg"),
+        "overloaded" => convex_native::errors::overloaded("S", "overloaded msg"),
+        other => anyhow::bail!("unknown kind {other}"),
+    };
+    Err(e.into())
+}
+
+// ---------------------------------------------------------------------------
+// RNG + deterministic randomness. `ctx.rng_u64()` reads seeds from
+// the outcome so a handler re-run with the same seed produces the
+// same sequence.
+// ---------------------------------------------------------------------------
+
+/// Return a deterministic u64 from `ctx.rng_u64()`. Test asserts
+/// it's deterministic across independent invocations (seeded from
+/// the outcome context, which defaults to a fixed seed when the
+/// handler is called without an explicit `Observed`).
+#[convex::query]
+pub async fn pull_rng(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<i64> {
+    // i64 so it survives the ConvexValue round-trip as `Int64`.
+    Ok(ctx.rng_u64() as i64)
+}
+
 // ---------------------------------------------------------------------------
 // Single-doc read APIs — exercises `ctx.db().get(...)` /
 // `get_with_meta` / `exists` / `normalize_id`. Each is a tiny
