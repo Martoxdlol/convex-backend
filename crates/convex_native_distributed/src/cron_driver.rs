@@ -165,40 +165,58 @@ impl PoolDispatcher {
 impl CronDispatcher for PoolDispatcher {
     async fn fire(&self, name: &str, kind: CronTargetKind) -> anyhow::Result<()> {
         let eligible = self.pool.eligible_for(name);
-        let (_id, client) = eligible
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("no worker in pool serves cron target {name:?}"))?;
+        if eligible.is_empty() {
+            anyhow::bail!("no worker in pool serves cron target {name:?}");
+        }
         let udf_type = match kind {
             CronTargetKind::Mutation => common::types::UdfType::Mutation,
             CronTargetKind::Action => common::types::UdfType::Action,
         };
-        let exec_req = convex_native_core::distributed::ExecuteRequest {
-            name: name.to_string(),
-            namespace: TableNamespace::Global,
-            args: ConvexObject::empty(),
-            timeout: None,
-            min_registry_version: None,
-            execution_context: None,
-            // Mutation needs a begin_timestamp; we don't own a
-            // `Database` on the backend here (the worker opens
-            // its own at its local `now_ts_for_reads`). Leave
-            // the field absent — the worker's server-side
-            // handler falls through to `now_ts_for_reads()` when
-            // `begin_timestamp` is None (Phase-2 contract).
-            begin_timestamp: None,
-            existing_writes: Vec::new(),
-            http_request: None,
-            identity: Vec::new(),
-        };
-        let response = client
-            .execute(exec_req, udf_type)
-            .await
-            .map_err(|status| anyhow::anyhow!("pool cron dispatch {name}: {status}"))?;
-        if let Err(msg) = response.result {
-            anyhow::bail!("cron handler {name:?} returned error: {msg}");
+        // Walk the eligible set on transport-level `Unavailable`
+        // so a single worker going down mid-fire doesn't make
+        // the cron loop log a spurious error. Mirrors the
+        // failover semantics on `PoolFunctionRunner` +
+        // `NativeHttpDispatcher::dispatch_via_pool`.
+        let mut last_transport_err: Option<tonic::Status> = None;
+        for (_id, client) in eligible {
+            let exec_req = convex_native_core::distributed::ExecuteRequest {
+                name: name.to_string(),
+                namespace: TableNamespace::Global,
+                args: ConvexObject::empty(),
+                timeout: None,
+                min_registry_version: None,
+                execution_context: None,
+                // Mutation needs a begin_timestamp; we don't own
+                // a `Database` on the backend here (the worker
+                // opens its own at its local `now_ts_for_reads`).
+                // Leave the field absent — the worker's server-
+                // side handler falls through to `now_ts_for_reads()`
+                // when `begin_timestamp` is None (Phase-2 contract).
+                begin_timestamp: None,
+                existing_writes: Vec::new(),
+                http_request: None,
+                identity: Vec::new(),
+            };
+            match client.execute(exec_req, udf_type).await {
+                Ok(response) => {
+                    if let Err(msg) = response.result {
+                        anyhow::bail!("cron handler {name:?} returned error: {msg}");
+                    }
+                    return Ok(());
+                },
+                Err(status) if status.code() == tonic::Code::Unavailable => {
+                    last_transport_err = Some(status);
+                    continue;
+                },
+                Err(status) => {
+                    anyhow::bail!("pool cron dispatch {name}: {status}");
+                },
+            }
         }
-        Ok(())
+        let detail = last_transport_err
+            .map(|s| format!("last transport error: {s}"))
+            .unwrap_or_else(|| "no eligible worker available".to_string());
+        anyhow::bail!("pool cron dispatch {name}: every eligible worker failed — {detail}");
     }
 }
 
@@ -540,6 +558,113 @@ mod tests {
             .await
             .expect("dispatch ok");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn pool_dispatcher_fails_over_on_unavailable() {
+        use std::sync::atomic::AtomicU64;
+
+        use async_trait::async_trait;
+        use common::types::UdfType;
+        use convex_native_core::distributed::{
+            ExecuteRequest as NativeExecuteRequest,
+            ExecuteResponse as NativeExecuteResponse,
+        };
+        use pb::function_execution as fproto;
+        use tonic::Status;
+        use value::ConvexValue;
+
+        use crate::{
+            client::WorkerClient,
+            pool::WorkerPool,
+        };
+
+        struct DownClient {
+            label: String,
+        }
+        #[async_trait]
+        impl WorkerClient for DownClient {
+            async fn execute(
+                &self,
+                _req: NativeExecuteRequest,
+                _udf_type: UdfType,
+            ) -> Result<NativeExecuteResponse, Status> {
+                Err(Status::unavailable("down"))
+            }
+
+            async fn health(&self) -> Result<fproto::HealthResponse, Status> {
+                Err(Status::unimplemented("stub"))
+            }
+
+            fn in_flight_estimate(&self) -> u64 {
+                0
+            }
+
+            fn label(&self) -> &str {
+                &self.label
+            }
+        }
+
+        struct GoodClient {
+            calls: Arc<AtomicU64>,
+            label: String,
+        }
+        #[async_trait]
+        impl WorkerClient for GoodClient {
+            async fn execute(
+                &self,
+                _req: NativeExecuteRequest,
+                _udf_type: UdfType,
+            ) -> Result<NativeExecuteResponse, Status> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(NativeExecuteResponse::new(Ok(ConvexValue::Null)))
+            }
+
+            async fn health(&self) -> Result<fproto::HealthResponse, Status> {
+                Err(Status::unimplemented("stub"))
+            }
+
+            fn in_flight_estimate(&self) -> u64 {
+                0
+            }
+
+            fn label(&self) -> &str {
+                &self.label
+            }
+        }
+
+        let pool = Arc::new(WorkerPool::new());
+        let good_calls = Arc::new(AtomicU64::new(0));
+        // Admit the down worker first so the eligible iteration
+        // hits it before the good one — the test only passes if
+        // the failover actually walks the whole set.
+        pool.admit(crate::pool::WorkerEntry {
+            client: Arc::new(DownClient {
+                label: "down".to_string(),
+            }),
+            registry_version: "1.0.0".to_string(),
+            functions: vec!["nightly_cleanup".to_string()],
+            kind: crate::pool::WorkerKind::NativeRust,
+            http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
+        });
+        pool.admit(crate::pool::WorkerEntry {
+            client: Arc::new(GoodClient {
+                calls: good_calls.clone(),
+                label: "good".to_string(),
+            }),
+            registry_version: "1.0.0".to_string(),
+            functions: vec!["nightly_cleanup".to_string()],
+            kind: crate::pool::WorkerKind::NativeRust,
+            http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
+        });
+        let dispatcher = PoolDispatcher::new(pool);
+        dispatcher
+            .fire("nightly_cleanup", CronTargetKind::Mutation)
+            .await
+            .expect("dispatch should failover to the good worker");
+        assert_eq!(good_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
