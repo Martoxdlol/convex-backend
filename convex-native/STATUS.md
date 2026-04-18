@@ -1159,6 +1159,36 @@ topologies all consumed `ValidatedPathAndArgs` and therefore all
 saw this gap. The resolver is installed once per process from
 `make_app`, so every topology benefits without further wiring.
 
+### Native HTTP action serving (resolved 2026-04-18)
+
+Pre-fix, pure-native deployments couldn't actually serve
+`#[convex::http_action]` handlers. `HttpRouter::collect()`
+enumerated the registered routes, but the backend's HTTP entry
+point (`http_any_method` → `application.execute_http_action`)
+ran the JS dispatch path unconditionally, which requires
+`_modules` rows the native boot flow never writes. Fix shipped
+via `local_backend::native_http_dispatch`:
+
+- `NativeHttpDispatcher` holds `HttpRouter`,
+  `NativeFunctionRunner`, the action-callbacks handle,
+  `Database<ProdRuntime>`, and `FileStorage<ProdRuntime>`.
+- Install is process-global (`OnceLock`) gated on
+  `HttpRouter::collect().len() > 0`.
+- `http_actions::stream_http_response` consults
+  `try_dispatch_native(method, path, ...)` first; matches run
+  inline through `NativeFunctionRunner::run_http_action_with_callbacks`
+  with a `BackendCallbacks` pinned to the request's snapshot
+  timestamp; misses fall through to the JS path with the
+  unconsumed body.
+
+Crosses phases — monolith (`STANDALONE.md`) and any
+distributed deployment whose backend image also carries native
+inventory both pick this up. Distributed-topology backends
+whose image is empty still dispatch HTTP actions through the
+JS path today; pool-backed distributed HTTP dispatch is
+tracked as a follow-up on
+`convex_native_distributed::WorkerPool`.
+
 ### Native schema publication (resolved 2026-04-17)
 
 Companion to the HTTP-validation fix above. Pure-native
