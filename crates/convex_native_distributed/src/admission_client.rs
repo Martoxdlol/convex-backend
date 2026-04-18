@@ -86,6 +86,59 @@ impl WorkerRegistration {
         execute_endpoint: String,
         registry_version: String,
     ) -> anyhow::Result<Self> {
+        let (inventory, inventory_sha256) = collect_inventory()?;
+        Self::register_inner(
+            backend_endpoint,
+            execute_endpoint,
+            registry_version,
+            crate::pool::WorkerKind::NativeRust,
+            inventory,
+            inventory_sha256.to_vec(),
+        )
+        .await
+    }
+
+    /// Phase 6.3 variant of [`register`] that lets a JS worker
+    /// (or any non-native worker) advertise its kind explicitly.
+    /// Used by `examples/js_worker.rs` and any deployer-built
+    /// worker binary that wraps a non-Rust handler stack.
+    pub async fn register_with_kind(
+        backend_endpoint: impl Into<String>,
+        execute_endpoint: String,
+        registry_version: String,
+        kind: crate::pool::WorkerKind,
+        inventory: pb::worker_admission::FunctionInventory,
+    ) -> anyhow::Result<Self> {
+        // The hash is purely consistency-check; for a custom-
+        // built inventory we hash the prost-serialised bytes the
+        // same way `collect_inventory` does.
+        use prost::Message as _;
+        use sha2::{
+            Digest,
+            Sha256,
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(inventory.encode_to_vec());
+        let inventory_sha256 = hasher.finalize().to_vec();
+        Self::register_inner(
+            backend_endpoint,
+            execute_endpoint,
+            registry_version,
+            kind,
+            inventory,
+            inventory_sha256,
+        )
+        .await
+    }
+
+    async fn register_inner(
+        backend_endpoint: impl Into<String>,
+        execute_endpoint: String,
+        registry_version: String,
+        kind: crate::pool::WorkerKind,
+        inventory: pb::worker_admission::FunctionInventory,
+        inventory_sha256: Vec<u8>,
+    ) -> anyhow::Result<Self> {
         let endpoint_str: String = backend_endpoint.into();
         let channel = Channel::from_shared(endpoint_str.clone())
             .context("parsing CONVEX_BACKEND_ENDPOINT")?
@@ -93,16 +146,17 @@ impl WorkerRegistration {
             .await
             .with_context(|| format!("connecting to backend admission at {endpoint_str:?}"))?;
         let mut client = WorkerAdmissionServiceClient::new(channel);
-
-        let (inventory, inventory_sha256) = collect_inventory()?;
+        let proto_kind = match kind {
+            crate::pool::WorkerKind::Unspecified => proto::WorkerKind::Unspecified,
+            crate::pool::WorkerKind::NativeRust => proto::WorkerKind::NativeRust,
+            crate::pool::WorkerKind::Javascript => proto::WorkerKind::Javascript,
+        };
         let envelope = proto::RegistrationEnvelope {
             execute_endpoint,
             registry_version: registry_version.clone(),
-            // Substep 3.5 ships the native-worker path; Phase 6
-            // flips this to `JAVASCRIPT` on the JS worker binary.
-            kind: proto::WorkerKind::NativeRust as i32,
+            kind: proto_kind as i32,
             inventory: Some(inventory),
-            inventory_sha256: inventory_sha256.to_vec(),
+            inventory_sha256,
         };
 
         // Build the outbound channel: first message is the
