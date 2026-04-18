@@ -161,16 +161,17 @@ impl NativeHttpDispatcher {
         if let Some(registration) = self.router.lookup(method, path) {
             let native_request = self.build_native_request(request, path).await?;
             let context = ExecutionContext::new(request_id, &FunctionCaller::HttpEndpoint);
-            let callbacks = self.build_callbacks(identity.clone(), context);
+            let callbacks = self.build_callbacks(identity.clone(), context.clone());
             let log_buffer = LogBuffer::new();
             let result = self
                 .native_runner
-                .run_http_action_with_callbacks_and_identity(
+                .run_http_action_with_callbacks_identity_and_context(
                     registration.name,
                     native_request,
                     callbacks,
                     Some(log_buffer.clone()),
                     identity,
+                    Some(context),
                 )
                 .await;
             match result {

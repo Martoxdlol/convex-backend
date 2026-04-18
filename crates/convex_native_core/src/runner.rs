@@ -470,7 +470,7 @@ impl NativeFunctionRunner {
         args: ConvexObject,
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_action_inner(name, namespace, args, callbacks, None, None)
+        self.run_action_inner(name, namespace, args, callbacks, None, None, None)
             .await
     }
 
@@ -490,8 +490,16 @@ impl NativeFunctionRunner {
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
         log_buffer: crate::logging::LogBuffer,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_action_inner(name, namespace, args, callbacks, Some(log_buffer), None)
-            .await
+        self.run_action_inner(
+            name,
+            namespace,
+            args,
+            callbacks,
+            Some(log_buffer),
+            None,
+            None,
+        )
+        .await
     }
 
     /// Action variant that threads the caller's identity through
@@ -516,6 +524,35 @@ impl NativeFunctionRunner {
             callbacks,
             Some(log_buffer),
             Some(identity),
+            None,
+        )
+        .await
+    }
+
+    /// Full-options action variant that also threads an
+    /// `ExecutionContext` through the ctx so
+    /// `ctx.execution_context()` returns the request's trace
+    /// chain. Used by the worker-side dispatch path when the
+    /// incoming proto carried one.
+    #[fastrace::trace]
+    pub async fn run_action_with_callbacks_identity_log_buffer_and_context(
+        self: &Arc<Self>,
+        name: &str,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
+        identity: keybroker::Identity,
+        log_buffer: crate::logging::LogBuffer,
+        execution_context: Option<common::execution_context::ExecutionContext>,
+    ) -> anyhow::Result<ConvexValue> {
+        self.run_action_inner(
+            name,
+            namespace,
+            args,
+            callbacks,
+            Some(log_buffer),
+            Some(identity),
+            execution_context,
         )
         .await
     }
@@ -528,6 +565,7 @@ impl NativeFunctionRunner {
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
         log_buffer: Option<crate::logging::LogBuffer>,
         identity: Option<keybroker::Identity>,
+        execution_context: Option<common::execution_context::ExecutionContext>,
     ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
         self.check_breaker(name)?;
@@ -553,6 +591,9 @@ impl NativeFunctionRunner {
         };
         if let Some(id) = identity {
             ctx = ctx.with_identity(id);
+        }
+        if let Some(exec_ctx) = execution_context {
+            ctx = ctx.with_execution_context(exec_ctx);
         }
         let started = Instant::now();
         let result = self
@@ -602,7 +643,7 @@ impl NativeFunctionRunner {
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
         log_buffer: Option<crate::logging::LogBuffer>,
     ) -> anyhow::Result<crate::http::HttpResponse> {
-        self.run_http_action_inner(name, request, callbacks, log_buffer, None)
+        self.run_http_action_inner(name, request, callbacks, log_buffer, None, None)
             .await
     }
 
@@ -618,8 +659,33 @@ impl NativeFunctionRunner {
         log_buffer: Option<crate::logging::LogBuffer>,
         identity: keybroker::Identity,
     ) -> anyhow::Result<crate::http::HttpResponse> {
-        self.run_http_action_inner(name, request, callbacks, log_buffer, Some(identity))
+        self.run_http_action_inner(name, request, callbacks, log_buffer, Some(identity), None)
             .await
+    }
+
+    /// Full-options HTTP-action variant that also threads an
+    /// `ExecutionContext` through the ctx so `ctx.execution_context()`
+    /// returns the request's trace chain. Used by the worker-side
+    /// dispatch path when the incoming proto carried one.
+    #[fastrace::trace]
+    pub async fn run_http_action_with_callbacks_identity_and_context(
+        self: &Arc<Self>,
+        name: &str,
+        request: crate::http::HttpRequest,
+        callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
+        log_buffer: Option<crate::logging::LogBuffer>,
+        identity: keybroker::Identity,
+        execution_context: Option<common::execution_context::ExecutionContext>,
+    ) -> anyhow::Result<crate::http::HttpResponse> {
+        self.run_http_action_inner(
+            name,
+            request,
+            callbacks,
+            log_buffer,
+            Some(identity),
+            execution_context,
+        )
+        .await
     }
 
     async fn run_http_action_inner(
@@ -629,6 +695,7 @@ impl NativeFunctionRunner {
         callbacks: Arc<dyn crate::callbacks::NativeActionCallbacks>,
         log_buffer: Option<crate::logging::LogBuffer>,
         identity: Option<keybroker::Identity>,
+        execution_context: Option<common::execution_context::ExecutionContext>,
     ) -> anyhow::Result<crate::http::HttpResponse> {
         self.check_drain(name)?;
         self.check_breaker(name)?;
@@ -657,6 +724,9 @@ impl NativeFunctionRunner {
         };
         if let Some(id) = identity {
             http_ctx = http_ctx.with_identity(id);
+        }
+        if let Some(ctx) = execution_context {
+            http_ctx = http_ctx.with_execution_context(ctx);
         }
         let started = Instant::now();
         let result = self

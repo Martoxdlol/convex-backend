@@ -219,13 +219,14 @@ impl FunctionExecutionService for FunctionExecutionServer {
                 })?;
                 let result = self
                     .native
-                    .run_action_with_callbacks_identity_log_buffer(
+                    .run_action_with_callbacks_identity_log_buffer_and_context(
                         &native_req.name,
                         native_req.namespace,
                         native_req.args,
                         callbacks,
                         action_identity,
                         log_buffer.clone(),
+                        native_req.execution_context.clone(),
                     )
                     .await;
                 let log_lines = log_lines_to_pretty_strings(&log_buffer);
@@ -323,12 +324,13 @@ impl FunctionExecutionService for FunctionExecutionServer {
                 })?;
                 let result = self
                     .native
-                    .run_http_action_with_callbacks_and_identity(
+                    .run_http_action_with_callbacks_identity_and_context(
                         &native_req.name,
                         request,
                         callbacks,
                         Some(log_buffer.clone()),
                         http_identity,
+                        native_req.execution_context.clone(),
                     )
                     .await;
                 let log_lines = log_lines_to_pretty_strings(&log_buffer);

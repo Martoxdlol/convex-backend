@@ -465,6 +465,7 @@ async fn dispatch_native_action<RT: Runtime>(
     // affect them.
     let action_snapshot_ts = database.now_ts_for_reads();
     let callback_identity = identity.clone();
+    let ctx_for_runner = context.clone();
     let mut callbacks_builder = BackendCallbacks::<RT>::with_native(
         action_callbacks,
         callback_identity,
@@ -482,13 +483,14 @@ async fn dispatch_native_action<RT: Runtime>(
     let name = path.udf_path.function_name().to_string();
     let log_buffer = LogBuffer::new();
     let result = native
-        .run_action_with_callbacks_identity_log_buffer(
+        .run_action_with_callbacks_identity_log_buffer_and_context(
             &name,
             TableNamespace::Global,
             args_obj,
             callbacks,
             identity,
             log_buffer.clone(),
+            Some(ctx_for_runner),
         )
         .await;
     let duration = started.elapsed();
