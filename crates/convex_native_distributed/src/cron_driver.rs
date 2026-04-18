@@ -441,6 +441,38 @@ mod tests {
         assert!(driver.jobs().is_empty());
     }
 
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn fires_on_schedule_and_calls_dispatcher() {
+        // saffron's smallest granularity is 1 minute. The
+        // `start_paused` runtime lets us advance the virtual
+        // clock without sleeping in real time, so the test stays
+        // millisecond-fast.
+        let dispatcher = Arc::new(RecordingDispatcher {
+            fired: AtomicU64::new(0),
+        });
+        let driver = NativeCronDriver::new(dispatcher.clone());
+        driver
+            .install(vec![CronJob {
+                name: "every_minute".to_string(),
+                schedule_expr: "* * * * *".to_string(),
+                target: "do_work".to_string(),
+                target_kind: CronTargetKind::Mutation,
+            }])
+            .unwrap();
+        // Advance the virtual clock past two firings (a bit more
+        // than 2m) and yield so the firing tasks observe the
+        // wakeups.
+        for _ in 0..3 {
+            tokio::time::advance(Duration::from_secs(60)).await;
+            tokio::task::yield_now().await;
+        }
+        let fired = dispatcher.fired.load(Ordering::SeqCst);
+        assert!(
+            fired >= 2,
+            "expected at least 2 fires after 3 minutes, got {fired}",
+        );
+    }
+
     #[tokio::test]
     async fn invalid_schedule_fails_to_install() {
         let dispatcher = Arc::new(RecordingDispatcher {
