@@ -661,6 +661,14 @@ fn meets_floor(have: &str, want: &str) -> bool {
     parts(have) >= parts(want)
 }
 
+/// Public-surface variant of [`meets_floor`] so the worker-side
+/// admission client can run the same check against its own
+/// `registry_version` + the latest broadcast floor. Returns
+/// `true` when `have` meets or exceeds `want`.
+pub fn version_meets_floor(have: &str, want: &str) -> bool {
+    meets_floor(have, want)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicU64;

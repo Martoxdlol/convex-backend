@@ -214,6 +214,26 @@ impl WorkerRegistration {
         self.current_floor.lock().clone()
     }
 
+    /// The `registry_version` this worker registered under.
+    /// Useful for observability + the [`is_below_floor`] helper.
+    pub fn registry_version(&self) -> &str {
+        &self.registry_version
+    }
+
+    /// `true` when the backend's current floor (if any) is
+    /// higher than this worker's `registry_version`. In that
+    /// state the pool's `eligible_for` / `eligible_for_http`
+    /// filters out this worker and it serves zero new traffic
+    /// — a drain notice from the backend is likely coming
+    /// next. Workers can check this to decide whether to
+    /// voluntarily scale down or wait for the explicit drain.
+    pub fn is_below_floor(&self) -> bool {
+        let Some(floor) = self.current_floor() else {
+            return false;
+        };
+        !crate::pool::version_meets_floor(&self.registry_version, &floor)
+    }
+
     /// Push one status snapshot upstream. The worker binary's
     /// heartbeat loop calls this every N seconds (the frequency
     /// is binary-controlled — no internal timer here so tests
@@ -476,6 +496,36 @@ mod tests {
             }
         }
         assert_eq!(observed.as_deref(), Some("2.0.0"));
+        drop(reg);
+    }
+
+    #[tokio::test]
+    async fn is_below_floor_reflects_worker_version() {
+        let pool = Arc::new(WorkerPool::new());
+        // Pool floor set to 2.0.0; worker registers at 1.0.0.
+        pool.set_min_registry_version(Some("2.0.0".to_string()));
+        let admission_addr = spawn_admission(pool.clone()).await;
+        let exec_addr = spawn_worker_exec().await;
+        let reg = WorkerRegistration::register(
+            format!("http://{admission_addr}"),
+            format!("http://{exec_addr}"),
+            "1.0.0".to_string(),
+        )
+        .await
+        .expect("register");
+        // Give the seeded FloorUpdate a moment to land.
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            if reg.current_floor().is_some() {
+                break;
+            }
+        }
+        assert_eq!(reg.registry_version(), "1.0.0");
+        assert!(
+            reg.is_below_floor(),
+            "1.0.0 < 2.0.0 → below floor; current_floor={:?}",
+            reg.current_floor(),
+        );
         drop(reg);
     }
 
