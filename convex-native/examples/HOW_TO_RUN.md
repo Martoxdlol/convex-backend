@@ -138,11 +138,20 @@ CONVEX_MODE=worker \
   CONVEX_BACKEND_ENDPOINT=http://127.0.0.1:5678 \
   cargo run --release -p standalone_todo_app -- \
     --port 0 \
+    --site-proxy-port 0 \
     --instance-name mydeploy-worker \
     --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
     --db sqlite \
     --local-storage ./_run/worker_storage
 ```
+
+`convex_native::run()` is all-in-one: even in worker mode it
+brings up the full HTTP + site-proxy surface alongside the worker
+gRPC server. `--port 0 --site-proxy-port 0` asks the OS to pick
+free ports so the worker doesn't collide with Terminal A's
+`:3210` / `:3211` defaults. Forgetting `--site-proxy-port` is the
+usual "address already in use" cause when both processes share a
+host.
 
 The worker dials the backend, sends a `RegistrationEnvelope` with
 its native-function inventory + `registry_version`, stays

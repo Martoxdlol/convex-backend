@@ -185,10 +185,20 @@ Deployer worker images provide the handler inventory at boot via
 gRPC registration.
 
 ```sh
-# From the repo root — builds crates/convex_native/src/bin/convex-backend.rs.
+# Run this from the repository root (not from this example's dir —
+# workspace binaries land in the workspace-level `target/`).
+cd $(git rev-parse --show-toplevel)
 cargo build --release -p convex_native --bin convex-backend
-# Binary: target/release/convex-backend
+# Binary: ./target/release/convex-backend
 ```
+
+> Heads up: the repo also ships a `convex-local-backend` binary
+> (the monolith from `STANDALONE.md`). It's a different binary —
+> the distributed topology uses `convex-backend` (no `-local-`).
+> If you see `./target/release/convex-backend: No such file or
+> directory`, you either skipped the build step above or you're
+> running the command from the example's subdirectory; check
+> that `pwd` matches `git rev-parse --show-toplevel`.
 
 For a container image, use the template in
 `convex-native/examples/deploy/docker/Dockerfile.backend`:
@@ -230,13 +240,24 @@ the backend's admission port, sends its `RegistrationEnvelope`
 (native inventory + `registry_version`), and stays connected for
 its lifetime. Closing the stream retires the worker.
 
+`convex_native::run()` is the all-in-one bootstrap — even in
+worker mode it still opens a local `Database<Rt>` and binds the
+full HTTP + site-proxy surface on top of the worker gRPC server.
+The two ports you need to move off the backend's defaults are
+`--port` (default `3210`) and `--site-proxy-port` (default
+`3211`); pick free ports or pass `0` to let the OS assign them.
+Forgetting `--site-proxy-port` is the usual "address already in
+use" cause when backend and worker run on the same host.
+
 ```sh
-# Terminal B — worker on :4567.
+# Terminal B — worker on :4567, from the repo root.
+cd $(git rev-parse --show-toplevel)
 CONVEX_MODE=worker \
   CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567 \
   CONVEX_BACKEND_ENDPOINT=http://127.0.0.1:5678 \
   cargo run --release -p standalone_todo_app -- \
     --port 0 \
+    --site-proxy-port 0 \
     --instance-name mydeploy-worker \
     --instance-secret 0000000000000000000000000000000000000000000000000000000000000000 \
     --db sqlite \
@@ -260,7 +281,8 @@ curl -s http://127.0.0.1:9090/admin/pool | jq .
 CONVEX_MODE=worker \
   CONVEX_WORKER_BIND_ADDR=0.0.0.0:4568 \
   CONVEX_BACKEND_ENDPOINT=http://127.0.0.1:5678 \
-  cargo run --release -p standalone_todo_app -- --port 0 ...
+  cargo run --release -p standalone_todo_app -- \
+    --port 0 --site-proxy-port 0 ...
 
 # Rolling update: bump the pool floor so only v2 workers receive
 # new dispatches.
