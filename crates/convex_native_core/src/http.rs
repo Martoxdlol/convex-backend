@@ -263,6 +263,11 @@ impl<'a, RT: Runtime> HttpActionCtx<'a, RT> {
         self.inner.run_action_raw(name, args).await
     }
 
+    /// Delegate — current wall-clock time.
+    pub fn unix_timestamp(&self) -> common::runtime::UnixTimestamp {
+        self.inner.unix_timestamp()
+    }
+
     /// Delegate — get the storage handle.
     pub fn storage(&mut self) -> crate::ctx::storage::StorageCtx<'_> {
         self.inner.storage()

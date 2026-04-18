@@ -148,6 +148,16 @@ impl<'a, RT: Runtime> ActionCtx<'a, RT> {
         self.namespace
     }
 
+    /// Current wall-clock time. Sourced from the attached
+    /// callbacks' `unix_timestamp_now()` so that when backend
+    /// adapters wire a real runtime clock (e.g.
+    /// `BackendCallbacks` via its `Database<RT>`), mocked-clock
+    /// tests see the mocked value. `NoopCallbacks` falls back
+    /// to `SystemTime::now()`.
+    pub fn unix_timestamp(&self) -> common::runtime::UnixTimestamp {
+        self.callbacks.unix_timestamp_now()
+    }
+
     /// Read-only, snapshot-pinned database handle.
     ///
     /// Unlike `QueryCtx::db()`, this handle doesn't own a
@@ -432,5 +442,19 @@ mod tests {
     fn has_function_is_false_when_no_runner_is_attached() {
         let ctx: ActionCtx<'_, Rt> = ActionCtx::new(None, TableNamespace::Global);
         assert!(!ctx.has_function("any_name"));
+    }
+
+    #[test]
+    fn unix_timestamp_delegates_to_callbacks() {
+        // `NoopCallbacks::unix_timestamp_now` returns
+        // `SystemTime::now()`; just assert the accessor returns
+        // a sensibly-positive value rather than the default
+        // `UnixTimestamp::from_secs_f64(0)`. Mocked-clock tests
+        // on the monolith backend pin the exact equality check;
+        // here we only need the forwarding contract.
+        let ctx: ActionCtx<'_, Rt> = ActionCtx::new(None, TableNamespace::Global);
+        let ts = ctx.unix_timestamp();
+        // A wall-clock read has to be after the Unix epoch.
+        assert!(ts.as_secs_f64() > 0.0, "unix_timestamp returned {ts:?}");
     }
 }
