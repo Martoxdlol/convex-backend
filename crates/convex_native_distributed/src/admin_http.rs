@@ -283,6 +283,7 @@ mod tests {
             functions: vec!["get".to_string()],
             kind: WorkerKind::NativeRust,
             http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
         });
         pool
     }

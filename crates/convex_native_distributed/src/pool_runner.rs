@@ -430,6 +430,7 @@ mod tests {
             functions: vec!["get".into()],
             kind: crate::pool::WorkerKind::NativeRust,
             http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
         });
         let runner = PoolFunctionRunner::new(pool);
         let resp = runner
@@ -457,6 +458,7 @@ mod tests {
             functions: vec!["other".into()],
             kind: crate::pool::WorkerKind::NativeRust,
             http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
         });
         let runner = PoolFunctionRunner::new(pool);
         let err = runner
@@ -506,6 +508,7 @@ mod tests {
             functions: vec!["get".into()],
             kind: crate::pool::WorkerKind::NativeRust,
             http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
         });
         pool.admit(WorkerEntry {
             client: Arc::new(StubClient {
@@ -516,6 +519,7 @@ mod tests {
             functions: vec!["get".into()],
             kind: crate::pool::WorkerKind::NativeRust,
             http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
         });
         let runner = PoolFunctionRunner::new(pool);
         // Retry the dispatch a few times — the P2C pick is

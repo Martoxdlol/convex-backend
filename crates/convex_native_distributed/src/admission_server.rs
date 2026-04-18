@@ -281,6 +281,7 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
             // (forward-compat for a future kind variant).
             kind: WorkerKind::from_proto_i32(envelope.kind),
             http_routes,
+            status: parking_lot::Mutex::new(Default::default()),
         };
         let worker_id = self.pool.admit(entry);
 
@@ -387,9 +388,16 @@ async fn retirement_loop(
 ) {
     loop {
         match inbound.message().await {
-            Ok(Some(_msg)) => {
-                // Drain. Future substeps (Phase 7) act on these;
-                // right now we just keep the stream flowing.
+            Ok(Some(msg)) => {
+                if let Some(proto::worker_to_backend::Msg::Status(status)) = msg.msg {
+                    pool.update_worker_status(
+                        worker_id,
+                        crate::pool::WorkerLiveStatus {
+                            in_flight: status.in_flight,
+                            cpu_percent: status.cpu_percent,
+                        },
+                    );
+                }
             },
             Ok(None) => break, // Clean close.
             Err(_) => break,   // Transport error → treat as close.

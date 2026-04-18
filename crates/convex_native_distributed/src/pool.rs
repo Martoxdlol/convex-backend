@@ -126,6 +126,16 @@ pub struct PoolWorkerSnapshot {
     pub in_flight: u64,
     /// Transport-level label (typically the execute_endpoint URL).
     pub label: String,
+    /// Worker-reported in-flight (from the latest `WorkerStatus`
+    /// heartbeat). May be 0 before the first heartbeat lands;
+    /// the dispatcher prefers the transport-side `in_flight`
+    /// when this is unset.
+    #[serde(default)]
+    pub reported_in_flight: u64,
+    /// Worker-reported CPU percent (0..=100). 0 ⇒ "not
+    /// reported" — operators should not interpret as idle.
+    #[serde(default)]
+    pub cpu_percent: u32,
 }
 
 /// Runtime kind the worker is using. Mirrors
@@ -177,6 +187,11 @@ impl WorkerKind {
 pub struct WorkerEntry {
     /// Transport handle the dispatcher uses for function calls.
     pub client: Arc<dyn WorkerClient>,
+    /// Live worker-reported status (drained from the periodic
+    /// `WorkerStatus` heartbeats on the admission stream).
+    /// Updated by `WorkerPool::update_worker_status`. Never
+    /// set on admit — heartbeats catch up within seconds.
+    pub status: parking_lot::Mutex<WorkerLiveStatus>,
     /// `registry_version` the worker advertised at admission
     /// time. Used to gate dispatch via the pool-wide floor.
     pub registry_version: String,
@@ -200,6 +215,21 @@ pub struct WorkerEntry {
     /// the backend can route an incoming HTTP request to the
     /// worker whose `(method, path)` matches.
     pub http_routes: Vec<HttpRouteEntry>,
+}
+
+/// Worker-reported status snapshot. Updated by
+/// `WorkerPool::update_worker_status` from `WorkerStatus`
+/// heartbeats. Default `(0, 0)` until the first heartbeat
+/// lands; consumers tolerate the zero state by falling back
+/// to the transport client's local `in_flight_estimate`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorkerLiveStatus {
+    /// In-flight handler invocations the worker reports.
+    pub in_flight: u64,
+    /// CPU utilisation percent (0..=100). 0 means the worker
+    /// didn't report CPU; the dispatcher should ignore the
+    /// field rather than treat 0 as "idle".
+    pub cpu_percent: u32,
 }
 
 /// Pool-side representation of an HTTP route advertised by a
@@ -302,6 +332,20 @@ impl WorkerPool {
     /// Retire a worker. Removes it from the pool and from every
     /// function list it appears in. Returns `true` when the id
     /// was present; `false` for a double-retirement (idempotent).
+    /// Update a worker's live status from a `WorkerStatus`
+    /// heartbeat. No-op when the worker isn't admitted (a
+    /// heartbeat for an already-retired worker is harmless and
+    /// shouldn't surface as an error). Returns `true` when an
+    /// update landed.
+    pub fn update_worker_status(&self, id: WorkerId, status: WorkerLiveStatus) -> bool {
+        let inner = self.inner.read();
+        let Some(entry) = inner.workers.get(&id) else {
+            return false;
+        };
+        *entry.status.lock() = status;
+        true
+    }
+
     pub fn retire(&self, id: WorkerId) -> bool {
         let mut inner = self.inner.write();
         let Some(entry) = inner.workers.remove(&id) else {
@@ -566,13 +610,18 @@ impl WorkerPool {
         let workers: Vec<PoolWorkerSnapshot> = inner
             .workers
             .iter()
-            .map(|(id, entry)| PoolWorkerSnapshot {
-                worker_id: id.0,
-                registry_version: entry.registry_version.clone(),
-                kind: entry.kind.as_str().to_string(),
-                functions: entry.functions.clone(),
-                in_flight: entry.client.in_flight_estimate(),
-                label: entry.client.label().to_string(),
+            .map(|(id, entry)| {
+                let live = *entry.status.lock();
+                PoolWorkerSnapshot {
+                    worker_id: id.0,
+                    registry_version: entry.registry_version.clone(),
+                    kind: entry.kind.as_str().to_string(),
+                    functions: entry.functions.clone(),
+                    in_flight: entry.client.in_flight_estimate(),
+                    label: entry.client.label().to_string(),
+                    reported_in_flight: live.in_flight,
+                    cpu_percent: live.cpu_percent,
+                }
             })
             .collect();
         let mut by_version: BTreeMap<String, usize> = BTreeMap::new();
@@ -671,6 +720,7 @@ mod tests {
             functions: functions.iter().map(|s| s.to_string()).collect(),
             kind: WorkerKind::NativeRust,
             http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
         }
     }
 
@@ -719,6 +769,30 @@ mod tests {
     }
 
     #[test]
+    fn update_worker_status_lands_on_snapshot() {
+        let pool = WorkerPool::new();
+        let id = pool.admit(entry("w", "1.0", &["get"]));
+        assert!(pool.update_worker_status(
+            id,
+            WorkerLiveStatus {
+                in_flight: 7,
+                cpu_percent: 42,
+            },
+        ));
+        let snapshot = pool.snapshot();
+        let entry_snapshot = snapshot
+            .workers
+            .iter()
+            .find(|w| w.worker_id == id.0)
+            .unwrap();
+        assert_eq!(entry_snapshot.reported_in_flight, 7);
+        assert_eq!(entry_snapshot.cpu_percent, 42);
+        // Heartbeat for an absent worker is a no-op (returns false).
+        let absent = WorkerId(9999);
+        assert!(!pool.update_worker_status(absent, WorkerLiveStatus::default()));
+    }
+
+    #[test]
     fn retire_removes_from_both_maps() {
         let pool = WorkerPool::new();
         let id = pool.admit(entry("w", "1.0", &["get"]));
@@ -763,6 +837,7 @@ mod tests {
             functions: functions.iter().map(|s| s.to_string()).collect(),
             kind: WorkerKind::Javascript,
             http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
         }
     }
 
@@ -848,6 +923,7 @@ mod tests {
             functions: vec!["get".to_string()],
             kind: WorkerKind::NativeRust,
             http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
         });
         pool.admit(WorkerEntry {
             client: stub("b"),
@@ -855,6 +931,7 @@ mod tests {
             functions: vec!["list".to_string()],
             kind: WorkerKind::Javascript,
             http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
         });
         pool.admit(WorkerEntry {
             client: stub("c"),
@@ -862,6 +939,7 @@ mod tests {
             functions: vec!["crunch".to_string()],
             kind: WorkerKind::NativeRust,
             http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
         });
         let mix = pool.by_kind();
         assert_eq!(mix.get(&WorkerKind::NativeRust), Some(&2));
