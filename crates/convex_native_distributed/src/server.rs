@@ -497,25 +497,27 @@ async fn run_udf_inline(
     let result = match udf_type {
         UdfType::Query => {
             native
-                .run_query_with_log_buffer_and_observed(
+                .run_query_full(
                     &req.name,
                     &mut tx,
                     req.namespace,
                     req.args.clone(),
                     log_buffer.clone(),
                     observed.clone(),
+                    req.execution_context.clone(),
                 )
                 .await
         },
         UdfType::Mutation => {
             native
-                .run_mutation_with_log_buffer_and_observed(
+                .run_mutation_full(
                     &req.name,
                     &mut tx,
                     req.namespace,
                     req.args.clone(),
                     log_buffer.clone(),
                     observed.clone(),
+                    req.execution_context.clone(),
                 )
                 .await
         },

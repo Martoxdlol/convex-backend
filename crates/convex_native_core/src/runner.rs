@@ -261,7 +261,7 @@ impl NativeFunctionRunner {
         namespace: TableNamespace,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_query_inner(name, tx, namespace, args, None, None)
+        self.run_query_inner(name, tx, namespace, args, None, None, None)
             .await
     }
 
@@ -278,7 +278,7 @@ impl NativeFunctionRunner {
         args: ConvexObject,
         log_buffer: crate::logging::LogBuffer,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_query_inner(name, tx, namespace, args, Some(log_buffer), None)
+        self.run_query_inner(name, tx, namespace, args, Some(log_buffer), None, None)
             .await
     }
 
@@ -298,8 +298,44 @@ impl NativeFunctionRunner {
         log_buffer: crate::logging::LogBuffer,
         observed: std::sync::Arc<crate::ctx::query::Observed>,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_query_inner(name, tx, namespace, args, Some(log_buffer), Some(observed))
-            .await
+        self.run_query_inner(
+            name,
+            tx,
+            namespace,
+            args,
+            Some(log_buffer),
+            Some(observed),
+            None,
+        )
+        .await
+    }
+
+    /// Full-options query variant that also threads an
+    /// `ExecutionContext` through the ctx so
+    /// `ctx.execution_context()` returns the request's trace
+    /// chain. Used by the worker-side dispatch path when the
+    /// incoming proto carried one.
+    #[fastrace::trace]
+    pub async fn run_query_full(
+        &self,
+        name: &str,
+        tx: &mut Transaction<Rt>,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        log_buffer: crate::logging::LogBuffer,
+        observed: std::sync::Arc<crate::ctx::query::Observed>,
+        execution_context: Option<common::execution_context::ExecutionContext>,
+    ) -> anyhow::Result<ConvexValue> {
+        self.run_query_inner(
+            name,
+            tx,
+            namespace,
+            args,
+            Some(log_buffer),
+            Some(observed),
+            execution_context,
+        )
+        .await
     }
 
     async fn run_query_inner(
@@ -310,6 +346,7 @@ impl NativeFunctionRunner {
         args: ConvexObject,
         log_buffer: Option<crate::logging::LogBuffer>,
         observed: Option<std::sync::Arc<crate::ctx::query::Observed>>,
+        execution_context: Option<common::execution_context::ExecutionContext>,
     ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
         self.check_breaker(name)?;
@@ -331,6 +368,9 @@ impl NativeFunctionRunner {
             (Some(buf), None) => QueryCtx::with_log_buffer(tx, namespace, buf),
             (None, _) => QueryCtx::new(tx, namespace),
         };
+        if let Some(exec_ctx) = execution_context {
+            ctx = ctx.with_execution_context(exec_ctx);
+        }
         let started = Instant::now();
         let result = self
             .run_with_timeout(handler(&mut ctx, args), name, registration.timeout_ms)
@@ -359,7 +399,7 @@ impl NativeFunctionRunner {
         namespace: TableNamespace,
         args: ConvexObject,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_mutation_inner(name, tx, namespace, args, None, None)
+        self.run_mutation_inner(name, tx, namespace, args, None, None, None)
             .await
     }
 
@@ -373,7 +413,7 @@ impl NativeFunctionRunner {
         args: ConvexObject,
         log_buffer: crate::logging::LogBuffer,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_mutation_inner(name, tx, namespace, args, Some(log_buffer), None)
+        self.run_mutation_inner(name, tx, namespace, args, Some(log_buffer), None, None)
             .await
     }
 
@@ -389,8 +429,44 @@ impl NativeFunctionRunner {
         log_buffer: crate::logging::LogBuffer,
         observed: std::sync::Arc<crate::ctx::query::Observed>,
     ) -> anyhow::Result<ConvexValue> {
-        self.run_mutation_inner(name, tx, namespace, args, Some(log_buffer), Some(observed))
-            .await
+        self.run_mutation_inner(
+            name,
+            tx,
+            namespace,
+            args,
+            Some(log_buffer),
+            Some(observed),
+            None,
+        )
+        .await
+    }
+
+    /// Full-options mutation variant that also threads an
+    /// `ExecutionContext` through the ctx so
+    /// `ctx.execution_context()` returns the request's trace
+    /// chain. Used by the worker-side dispatch path when the
+    /// incoming proto carried one.
+    #[fastrace::trace]
+    pub async fn run_mutation_full(
+        &self,
+        name: &str,
+        tx: &mut Transaction<Rt>,
+        namespace: TableNamespace,
+        args: ConvexObject,
+        log_buffer: crate::logging::LogBuffer,
+        observed: std::sync::Arc<crate::ctx::query::Observed>,
+        execution_context: Option<common::execution_context::ExecutionContext>,
+    ) -> anyhow::Result<ConvexValue> {
+        self.run_mutation_inner(
+            name,
+            tx,
+            namespace,
+            args,
+            Some(log_buffer),
+            Some(observed),
+            execution_context,
+        )
+        .await
     }
 
     async fn run_mutation_inner(
@@ -401,6 +477,7 @@ impl NativeFunctionRunner {
         args: ConvexObject,
         log_buffer: Option<crate::logging::LogBuffer>,
         observed: Option<std::sync::Arc<crate::ctx::query::Observed>>,
+        execution_context: Option<common::execution_context::ExecutionContext>,
     ) -> anyhow::Result<ConvexValue> {
         self.check_drain(name)?;
         self.check_breaker(name)?;
@@ -422,6 +499,9 @@ impl NativeFunctionRunner {
             (Some(buf), None) => MutationCtx::with_log_buffer(tx, namespace, buf),
             (None, _) => MutationCtx::new(tx, namespace),
         };
+        if let Some(exec_ctx) = execution_context {
+            ctx = ctx.with_execution_context(exec_ctx);
+        }
         let started = Instant::now();
         let result = self
             .run_with_timeout(handler(&mut ctx, args), name, registration.timeout_ms)
