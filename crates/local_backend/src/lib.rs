@@ -319,6 +319,12 @@ pub async fn make_app(
     // `BackendCallbackService` lands, regardless of which
     // remote-pool mode is active.
     let admission_bind_addr = convex_native_distributed::read_admission_bind_addr_from_env()?;
+    // Capture the pool alongside the FunctionRunner so the
+    // native HTTP dispatcher installed below can consult the
+    // pool's by_http_route index for distributed HTTP
+    // dispatch (Phase-3+ topology where the backend image
+    // carries no native inventory).
+    let mut admission_pool: Option<Arc<convex_native_distributed::pool::WorkerPool>> = None;
     let remote_native_pool: Option<Arc<dyn FunctionRunner<ProdRuntime>>> = if let Some(bind_addr) =
         admission_bind_addr
     {
@@ -343,6 +349,7 @@ pub async fn make_app(
                 .with_admission(admission_handle);
             convex_native_distributed::admin_http::spawn_admin_server(admin_addr, state).await?;
         }
+        admission_pool = Some(pool.clone());
         Some(Arc::new(
             convex_native_distributed::pool_runner::PoolFunctionRunner::new(pool),
         ))
@@ -436,24 +443,35 @@ pub async fn make_app(
     // `#[convex::http_action]` registration. Without this, pure-
     // native deployments 404 on every HTTP-action request because
     // the JS path requires `_modules` rows that the native boot
-    // flow never writes. Install only when the native HTTP router
-    // is non-empty — JS-only deployments leave the dispatcher
-    // unset and keep the original JS-only behaviour.
+    // flow never writes. Install when either the local
+    // `HttpRouter` has entries (monolith topology) or a pool is
+    // configured (distributed topology — backend image ships no
+    // native inventory but the pool's `by_http_route` index
+    // points at the workers that do).
     {
         let http_router = Arc::new(convex_native_core::http::HttpRouter::collect()?);
-        if http_router.len() > 0 {
+        let should_install = http_router.len() > 0 || admission_pool.is_some();
+        if should_install {
             tracing::info!(
-                "Native HTTP router: {} route(s) registered — installing dispatcher",
+                "Native HTTP router: {} local route(s), pool {} — installing dispatcher",
                 http_router.len(),
+                if admission_pool.is_some() {
+                    "attached"
+                } else {
+                    "not attached"
+                },
             );
-            let dispatcher = Arc::new(native_http_dispatch::NativeHttpDispatcher::new(
+            let mut dispatcher = native_http_dispatch::NativeHttpDispatcher::new(
                 http_router,
                 native_runner.clone(),
                 application.runner(),
                 database.clone(),
                 file_storage.clone(),
-            ));
-            native_http_dispatch::install_native_http_dispatcher(dispatcher);
+            );
+            if let Some(pool) = admission_pool.clone() {
+                dispatcher = dispatcher.with_pool(pool);
+            }
+            native_http_dispatch::install_native_http_dispatcher(Arc::new(dispatcher));
         }
     }
 

@@ -88,6 +88,14 @@ pub struct NativeHttpDispatcher {
     action_callbacks: Arc<dyn ActionCallbacks>,
     database: Database<ProdRuntime>,
     file_storage: FileStorage<ProdRuntime>,
+    /// Worker pool for the distributed topology. When set, HTTP
+    /// requests whose `(method, path)` miss the local
+    /// `HttpRouter` are looked up in the pool's
+    /// `by_http_route` index; a hit dispatches via the pool
+    /// client over the wire instead of returning
+    /// `Ok(Some(request))` to the caller. `None` keeps the old
+    /// monolith-only behaviour — local miss → JS fallback.
+    pool: Option<Arc<convex_native_distributed::pool::WorkerPool>>,
 }
 
 impl NativeHttpDispatcher {
@@ -104,11 +112,28 @@ impl NativeHttpDispatcher {
             action_callbacks,
             database,
             file_storage,
+            pool: None,
         }
     }
 
+    /// Attach a `WorkerPool` so the dispatcher can route HTTP
+    /// requests over the wire when no local route matches. Use
+    /// when the backend is running under the Phase-3+
+    /// distributed topology (admission-bound pool owns the
+    /// native handlers).
+    pub fn with_pool(mut self, pool: Arc<convex_native_distributed::pool::WorkerPool>) -> Self {
+        self.pool = Some(pool);
+        self
+    }
+
     pub fn has_route(&self, method: &str, path: &str) -> bool {
-        self.router.lookup(method, path).is_some()
+        if self.router.lookup(method, path).is_some() {
+            return true;
+        }
+        if let Some(pool) = &self.pool {
+            return !pool.eligible_for_http(method, path).is_empty();
+        }
+        false
     }
 
     /// Run the matched native handler end-to-end: decode the
@@ -128,29 +153,125 @@ impl NativeHttpDispatcher {
         request_id: RequestId,
         streamer: HttpActionResponseStreamer,
     ) -> anyhow::Result<()> {
-        let registration = self
-            .router
-            .lookup(method, path)
-            .ok_or_else(|| anyhow::anyhow!("native HTTP dispatch called with no matching route"))?;
-
-        let native_request = self.build_native_request(request, path).await?;
-        let context = ExecutionContext::new(request_id, &FunctionCaller::HttpEndpoint);
-        let callbacks = self.build_callbacks(identity, context);
-        let log_buffer = LogBuffer::new();
-        let result = self
-            .native_runner
-            .run_http_action_with_callbacks(
-                registration.name,
-                native_request,
-                callbacks,
-                Some(log_buffer.clone()),
-            )
-            .await;
-
-        match result {
-            Ok(response) => push_response(response, streamer).await?,
-            Err(e) => push_error_response(e, streamer).await?,
+        // Local-first: when this process carries the handler,
+        // dispatch in-process (the BackendCallbacks path is
+        // faster than a gRPC round-trip and keeps the request
+        // traced in one place).
+        if let Some(registration) = self.router.lookup(method, path) {
+            let native_request = self.build_native_request(request, path).await?;
+            let context = ExecutionContext::new(request_id, &FunctionCaller::HttpEndpoint);
+            let callbacks = self.build_callbacks(identity, context);
+            let log_buffer = LogBuffer::new();
+            let result = self
+                .native_runner
+                .run_http_action_with_callbacks(
+                    registration.name,
+                    native_request,
+                    callbacks,
+                    Some(log_buffer.clone()),
+                )
+                .await;
+            match result {
+                Ok(response) => push_response(response, streamer).await?,
+                Err(e) => push_error_response(e, streamer).await?,
+            }
+            return Ok(());
         }
+        // Distributed fallback: under the Phase-3+ topology the
+        // backend doesn't link in native handlers. Forward the
+        // request to a pool worker that advertises the route.
+        if let Some(pool) = &self.pool {
+            let eligible = pool.eligible_for_http(method, path);
+            if !eligible.is_empty() {
+                return self
+                    .dispatch_via_pool(eligible, request, path, request_id, streamer)
+                    .await;
+            }
+        }
+        anyhow::bail!("native HTTP dispatch called with no matching route");
+    }
+
+    /// Forward an HTTP request to one of the pool workers
+    /// serving the matched route. Picks the first eligible
+    /// worker (admission order) to keep the code simple; the
+    /// pool's client layer has its own retry / failover logic
+    /// for transport-level errors so the dispatcher doesn't need
+    /// to re-implement it here.
+    async fn dispatch_via_pool(
+        &self,
+        eligible: Vec<(
+            convex_native_distributed::pool::WorkerId,
+            Arc<dyn convex_native_distributed::client::WorkerClient>,
+            String,
+        )>,
+        request: HttpActionRequest,
+        routed_path: &str,
+        request_id: RequestId,
+        streamer: HttpActionResponseStreamer,
+    ) -> anyhow::Result<()> {
+        use common::types::UdfType;
+        use convex_native_core::distributed::{
+            ExecuteRequest as NativeExecuteRequest,
+            HttpActionRequestPayload,
+        };
+        let (_worker_id, client, handler_name) = eligible.into_iter().next().expect("non-empty");
+        let HttpActionRequest { head, body } = request;
+        let body_bytes = match body {
+            Some(stream) => collect_body(stream).await?,
+            None => Bytes::new(),
+        };
+        let payload = HttpActionRequestPayload {
+            method: head.method.as_str().to_string(),
+            url: head.url.to_string(),
+            headers: head
+                .headers
+                .iter()
+                .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                .collect(),
+            body: body_bytes,
+            routed_path: routed_path.to_string(),
+        };
+        let context = ExecutionContext::new(request_id, &FunctionCaller::HttpEndpoint);
+        let exec_req = NativeExecuteRequest {
+            name: handler_name,
+            namespace: value::TableNamespace::Global,
+            args: value::ConvexObject::empty(),
+            timeout: None,
+            min_registry_version: None,
+            execution_context: Some(context),
+            begin_timestamp: None,
+            existing_writes: Vec::new(),
+            http_request: Some(payload),
+        };
+        let response = client
+            .execute(exec_req, UdfType::HttpAction)
+            .await
+            .map_err(|e| anyhow::anyhow!("pool HTTP dispatch: {e}"))?;
+        if let Some(http_response) = response.http_response {
+            let mut headers = http::HeaderMap::new();
+            for (name, value) in http_response.headers {
+                if let (Ok(hn), Ok(hv)) = (
+                    http::HeaderName::from_bytes(name.as_bytes()),
+                    http::HeaderValue::from_str(&value),
+                ) {
+                    headers.append(hn, hv);
+                }
+            }
+            let native_response = NativeHttpResponse {
+                status: http_response.status as u16,
+                headers,
+                body: http_response.body,
+            };
+            push_response(native_response, streamer).await?;
+            return Ok(());
+        }
+        // No http_response ⇒ worker reported a handler-level
+        // error on the `result` channel; encode as 500.
+        let err_msg = match response.result {
+            Ok(_) => "worker returned HTTP-action response without body".to_string(),
+            Err(e) => e,
+        };
+        push_error_response(anyhow::anyhow!(err_msg), streamer).await?;
         Ok(())
     }
 

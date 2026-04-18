@@ -487,8 +487,28 @@ same `HttpActionResponseStreamer` the JS path uses. A miss
 falls through to the JS `execute_http_action` path unchanged,
 so mixed deployments (some routes in Rust, others in JS)
 work without extra configuration. Installing the dispatcher is
-gated on `HttpRouter::collect().len() > 0` — JS-only
-deployments pay no overhead.
+gated on `HttpRouter::collect().len() > 0 || admission_pool` —
+JS-only deployments pay no overhead.
+
+Under the **Phase-5 distributed topology** the backend image
+carries zero native inventory; handlers live in workers. When
+`CONVEX_ADMISSION_BIND_ADDR` is set, the dispatcher also takes
+a reference to the admission `WorkerPool`. An incoming HTTP
+request that misses the local router is looked up in
+`WorkerPool::eligible_for_http(method, path)`; the first
+eligible worker receives a `FunctionExecutionService::Execute`
+call with `udf_type=HttpAction` and the request bytes in
+`ExecuteRequest.http_request`. The worker's
+`FunctionExecutionServer` runs the handler through
+`NativeFunctionRunner::run_http_action_with_callbacks` with a
+`BackendCallbackClient` that routes `ctx.run_mutation`,
+`ctx.storage`, and `ctx.scheduler` calls back through the
+backend's Committer over
+`CONVEX_BACKEND_CALLBACK_ENDPOINT`. The backend decodes the
+response's `http_response` field and streams bytes to the HTTP
+client. Handler-level errors come back as a 500 with the
+`anyhow::Error` display form so a user sees a well-formed
+reply.
 
 ## 10. Crons
 
