@@ -105,6 +105,13 @@ pub struct WorkerAdmissionServer {
     /// update path push messages through the backend → worker
     /// side of the bidirectional stream.
     outbound: Arc<Mutex<HashMap<WorkerId, mpsc::Sender<Result<proto::BackendToWorker, Status>>>>>,
+    /// Optional native cron driver. When attached, each admitted
+    /// worker's cron registrations (drained off the envelope's
+    /// `inventory.crons`) are installed on the driver so the
+    /// backend drives worker-side schedules on behalf of the
+    /// pool. Missing driver ⇒ crons from workers are ignored
+    /// (the legacy shape).
+    cron_driver: Arc<Mutex<Option<Arc<crate::cron_driver::NativeCronDriver>>>>,
 }
 
 impl WorkerAdmissionServer {
@@ -112,7 +119,23 @@ impl WorkerAdmissionServer {
         Self {
             pool,
             outbound: Arc::new(Mutex::new(HashMap::new())),
+            cron_driver: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Attach a `NativeCronDriver`. Called from
+    /// `local_backend::make_app` under the distributed topology
+    /// so the backend drives worker-advertised crons.
+    pub fn with_cron_driver(self, driver: Arc<crate::cron_driver::NativeCronDriver>) -> Self {
+        *self.cron_driver.lock() = Some(driver);
+        self
+    }
+
+    /// Interior-mutable variant of `with_cron_driver`. Set on one
+    /// clone, reflected on every sibling clone because the slot
+    /// is backed by an `Arc<Mutex<...>>`.
+    pub fn set_cron_driver(&self, driver: Arc<crate::cron_driver::NativeCronDriver>) {
+        *self.cron_driver.lock() = Some(driver);
     }
 
     pub fn pool(&self) -> &Arc<WorkerPool> {
@@ -260,6 +283,67 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
             http_routes,
         };
         let worker_id = self.pool.admit(entry);
+
+        // Drain worker-advertised cron registrations into the
+        // attached `NativeCronDriver`. Each admission is
+        // idempotent on `(name, schedule, target, kind)` so
+        // multiple workers advertising the same cron don't double
+        // up; a rolling deploy that changes a schedule tears
+        // down the old firing task and spawns a fresh one.
+        let cron_driver = self.cron_driver.lock().as_ref().cloned();
+        if let Some(driver) = cron_driver {
+            let cron_jobs: Vec<crate::cron_driver::CronJob> = envelope
+                .inventory
+                .as_ref()
+                .map(|inv| &inv.crons[..])
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|c| {
+                    // Default to mutation on empty for
+                    // forward-compat with workers that predate
+                    // the proto `kind` field.
+                    let raw_kind = if c.kind.is_empty() {
+                        "mutation"
+                    } else {
+                        c.kind.as_str()
+                    };
+                    let kind = match crate::cron_driver::CronTargetKind::from_str(raw_kind) {
+                        Ok(k) => k,
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "convex_admission",
+                                cron = %c.name,
+                                "skipping cron with unknown kind: {e:#}",
+                            );
+                            return None;
+                        },
+                    };
+                    Some(crate::cron_driver::CronJob {
+                        name: c.name.clone(),
+                        schedule_expr: c.schedule.clone(),
+                        target: c.handler.clone(),
+                        target_kind: kind,
+                    })
+                })
+                .collect();
+            if !cron_jobs.is_empty() {
+                match driver.install(cron_jobs) {
+                    Ok(installed) if !installed.is_empty() => {
+                        tracing::info!(
+                            target: "convex_admission",
+                            count = installed.len(),
+                            worker = ?worker_id,
+                            "installed cron(s) from admission envelope",
+                        );
+                    },
+                    Ok(_) => {},
+                    Err(e) => tracing::warn!(
+                        target: "convex_admission",
+                        "cron install failed for worker {worker_id:?}: {e:#}",
+                    ),
+                }
+            }
+        }
 
         // Outbound stream — the backend side of the bidirectional
         // channel. Substep 3.8 plumbs `DrainNotice` through this

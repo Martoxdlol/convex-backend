@@ -213,4 +213,10 @@ message CronRegistration {
   string schedule = 2;
   // Dotted handler name to fire. Must match a `functions` entry.
   string handler = 3;
+  // Target kind — "mutation" or "action". Tells the backend-side
+  // cron driver which `UdfType` to dispatch the target as.
+  // Populated from the native `CronRegistration::target_kind`
+  // string. Older workers that didn't carry this field default
+  // to "mutation" on the decode side.
+  string kind = 4;
 }

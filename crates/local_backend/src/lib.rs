@@ -115,7 +115,7 @@ pub const MAX_CONCURRENT_REQUESTS: usize = 128;
 /// park it here for the process lifetime instead of letting it
 /// leave scope at the end of `make_app`.
 static NATIVE_CRON_DRIVER: std::sync::OnceLock<
-    convex_native_distributed::cron_driver::NativeCronDriver,
+    Arc<convex_native_distributed::cron_driver::NativeCronDriver>,
 > = std::sync::OnceLock::new();
 
 #[derive(Clone)]
@@ -333,6 +333,12 @@ pub async fn make_app(
     // dispatch (Phase-3+ topology where the backend image
     // carries no native inventory).
     let mut admission_pool: Option<Arc<convex_native_distributed::pool::WorkerPool>> = None;
+    // Captured alongside the pool so the cron-driver block below
+    // can hand a `NativeCronDriver` back to the admission server
+    // for worker-advertised schedules.
+    let mut admission_server_handle: Option<
+        convex_native_distributed::admission_server::WorkerAdmissionServer,
+    > = None;
     let remote_native_pool: Option<Arc<dyn FunctionRunner<ProdRuntime>>> = if let Some(bind_addr) =
         admission_bind_addr
     {
@@ -354,10 +360,11 @@ pub async fn make_app(
         if let Some(admin_addr) = convex_native_distributed::read_admin_bind_addr_from_env()? {
             tracing::info!("CONVEX_ADMIN_BIND_ADDR={admin_addr:?} — mounting admin HTTP surface",);
             let state = convex_native_distributed::admin_http::AdminState::new(pool.clone())
-                .with_admission(admission_handle);
+                .with_admission(admission_handle.clone());
             convex_native_distributed::admin_http::spawn_admin_server(admin_addr, state).await?;
         }
         admission_pool = Some(pool.clone());
+        admission_server_handle = Some(admission_handle);
         Some(Arc::new(
             convex_native_distributed::pool_runner::PoolFunctionRunner::new(pool),
         ))
@@ -447,33 +454,47 @@ pub async fn make_app(
     convex_native_backend::publish_native_schema(&database).await?;
 
     // Install the native cron driver so `#[convex::cron(...)]`
-    // registrations actually fire on schedule. Monolith: the
-    // backend image carries the handlers, so the driver
-    // dispatches in-process through `InProcessDispatcher` (native
-    // runner + database). Installing is gated on the registry
-    // being non-empty — JS-only deployments keep the historic
-    // JS-only cron path (`_cron_jobs` table + `CronJobExecutor`).
+    // registrations actually fire on schedule.
+    //
+    // Monolith: backend image carries handlers locally → driver
+    // dispatches in-process via `InProcessDispatcher`.
+    // Distributed: backend has no inventory → driver dispatches
+    // via `PoolDispatcher` and the admission server feeds
+    // worker-advertised cron entries into the driver on register.
     {
         let cron_jobs = convex_native_distributed::cron_driver::collect_from_inventory()?;
-        if !cron_jobs.is_empty() {
-            tracing::info!(
-                "Native cron registry: {} job(s) — installing driver",
-                cron_jobs.len(),
-            );
+        let monolith_has_crons = !cron_jobs.is_empty();
+        let pool_mode = admission_pool.is_some();
+        if monolith_has_crons || pool_mode {
             let dispatcher: Arc<dyn convex_native_distributed::cron_driver::CronDispatcher> =
-                Arc::new(
-                    convex_native_distributed::cron_driver::InProcessDispatcher::new(
-                        native_runner.clone(),
-                        database.clone(),
-                    ),
-                );
-            let driver = convex_native_distributed::cron_driver::NativeCronDriver::new(dispatcher);
-            driver.install(cron_jobs)?;
-            // Keep the driver alive for the process lifetime by
-            // leaking it into a static. Dropping it aborts every
-            // firing task; since the backend lives for the whole
-            // process we'd rather the tasks stay running until
-            // the runtime exits.
+                if let Some(pool) = admission_pool.clone() {
+                    tracing::info!(
+                        "Native cron driver: {} local job(s) + pool-backed dispatch",
+                        cron_jobs.len(),
+                    );
+                    Arc::new(convex_native_distributed::cron_driver::PoolDispatcher::new(
+                        pool,
+                    ))
+                } else {
+                    tracing::info!(
+                        "Native cron driver: {} local job(s) — monolith dispatch",
+                        cron_jobs.len(),
+                    );
+                    Arc::new(
+                        convex_native_distributed::cron_driver::InProcessDispatcher::new(
+                            native_runner.clone(),
+                            database.clone(),
+                        ),
+                    )
+                };
+            let driver =
+                Arc::new(convex_native_distributed::cron_driver::NativeCronDriver::new(dispatcher));
+            if monolith_has_crons {
+                driver.install(cron_jobs)?;
+            }
+            if let Some(handle) = admission_server_handle.as_ref() {
+                handle.set_cron_driver(driver.clone());
+            }
             NATIVE_CRON_DRIVER.set(driver).ok();
         }
     }

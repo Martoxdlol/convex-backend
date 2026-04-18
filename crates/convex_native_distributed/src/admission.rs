@@ -121,6 +121,7 @@ fn collect_crons() -> anyhow::Result<Vec<proto::CronRegistration>> {
             name: c.name.to_string(),
             schedule: c.schedule.to_string(),
             handler: c.target.to_string(),
+            kind: c.target_kind.to_string(),
         })
         .collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));

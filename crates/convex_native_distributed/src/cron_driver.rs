@@ -146,6 +146,62 @@ impl CronDispatcher for InProcessDispatcher {
     }
 }
 
+/// Pool-backed dispatcher for the distributed topology. Fires a
+/// cron by dispatching the target through the first eligible
+/// worker in `WorkerPool::eligible_for(name)`. Used when the
+/// backend image carries no native handlers and the admission
+/// pool owns them.
+pub struct PoolDispatcher {
+    pool: Arc<crate::pool::WorkerPool>,
+}
+
+impl PoolDispatcher {
+    pub fn new(pool: Arc<crate::pool::WorkerPool>) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl CronDispatcher for PoolDispatcher {
+    async fn fire(&self, name: &str, kind: CronTargetKind) -> anyhow::Result<()> {
+        let eligible = self.pool.eligible_for(name);
+        let (_id, client) = eligible
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no worker in pool serves cron target {name:?}"))?;
+        let udf_type = match kind {
+            CronTargetKind::Mutation => common::types::UdfType::Mutation,
+            CronTargetKind::Action => common::types::UdfType::Action,
+        };
+        let exec_req = convex_native_core::distributed::ExecuteRequest {
+            name: name.to_string(),
+            namespace: TableNamespace::Global,
+            args: ConvexObject::empty(),
+            timeout: None,
+            min_registry_version: None,
+            execution_context: None,
+            // Mutation needs a begin_timestamp; we don't own a
+            // `Database` on the backend here (the worker opens
+            // its own at its local `now_ts_for_reads`). Leave
+            // the field absent — the worker's server-side
+            // handler falls through to `now_ts_for_reads()` when
+            // `begin_timestamp` is None (Phase-2 contract).
+            begin_timestamp: None,
+            existing_writes: Vec::new(),
+            http_request: None,
+            identity: Vec::new(),
+        };
+        let response = client
+            .execute(exec_req, udf_type)
+            .await
+            .map_err(|status| anyhow::anyhow!("pool cron dispatch {name}: {status}"))?;
+        if let Err(msg) = response.result {
+            anyhow::bail!("cron handler {name:?} returned error: {msg}");
+        }
+        Ok(())
+    }
+}
+
 /// Cron driver. Owns the schedule map and a tokio task per cron that
 /// sleeps until `next_after(now)` and calls `dispatcher.fire(...)`.
 pub struct NativeCronDriver {
