@@ -25,6 +25,12 @@
 //! this example is extended with a Database handle via
 //! `FunctionExecutionServer::with_database(...)` — that's a
 //! deployer-specific wiring step.
+//!
+//! When `CONVEX_BACKEND_ENDPOINT` is also set the binary dials
+//! the backend's `WorkerAdmissionService` so the worker auto-
+//! registers + heartbeats; the registration handle is held for
+//! the worker's lifetime so dropping it (Ctrl-C) retires the
+//! worker cleanly.
 
 use std::sync::Arc;
 
@@ -33,7 +39,9 @@ use convex_native_core::{
     NativeFunctionRunner,
 };
 use convex_native_distributed::{
+    admission_client::WorkerRegistration,
     build_worker_server,
+    read_backend_endpoint_from_env,
     read_mode_from_env,
     read_worker_bind_addr_from_env,
 };
@@ -54,6 +62,22 @@ async fn main() -> anyhow::Result<()> {
         "examples/worker: listening on {addr}, {} native function(s) registered",
         native.len(),
     );
+
+    // Optionally dial backend admission. The handle is held for
+    // the binary's lifetime; dropping it cleanly retires the
+    // worker on the backend side.
+    let _registration: Option<WorkerRegistration> = match read_backend_endpoint_from_env()? {
+        Some(backend_endpoint) => {
+            let registry_version = convex_native_core::VERSION.to_string();
+            let execute_endpoint = format!("http://{addr}");
+            let reg =
+                WorkerRegistration::register(backend_endpoint, execute_endpoint, registry_version)
+                    .await?;
+            eprintln!("examples/worker: registered with backend admission service");
+            Some(reg)
+        },
+        None => None,
+    };
 
     let (mut builder, service) = build_worker_server(native);
     builder.add_service(service).serve(addr).await?;

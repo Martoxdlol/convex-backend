@@ -15,12 +15,20 @@ owns the Committer and workers only return transaction
 summaries over gRPC.
 
 `STATUS.md` is the authoritative shipped-vs-outstanding
-tracker. The remaining four items (2.8b + 4.6b live-DB test
-assertions, 5.3 release pipeline, 6.3 reference JS worker
-binary) are each blocked on infrastructure outside the plan's
-in-source scope — DB test fixtures, CI/release tooling, and a
-separate JS worker implementation respectively. None block the
-production topology.
+tracker. The previously-deferred items (2.8b + 4.6b live-DB
+test assertions, 5.3 release pipeline, 6.3 reference JS worker
+binary) have all landed — `tests/db_fixture.rs` provides the
+in-memory `Database` fixture, `.github/workflows/release_convex_native_backend.yml`
+ships the CI/release pipeline, and `examples/js_worker.rs`
+carries the reference admission shell for a JS worker.
+
+Beyond the plan, the framework now also serves
+`#[convex::http_action]` handlers end-to-end (in-process for
+monolith deployments, over the pool for distributed),
+forwards caller `Identity` through `ctx.auth()` on every
+distributed dispatch path, and drives `#[convex::cron(...)]`
+schedules through a native cron driver — all features
+documented in `USAGE.md` are implemented.
 
 The framework surface (derives, ctx, registry, schema
 reflection) is unchanged by the distributed work and continues
