@@ -159,6 +159,20 @@ async fn set_floor(
     state
         .pool
         .set_min_registry_version(req.min_registry_version.clone());
+    // Notify every admitted worker so operator dashboards + log
+    // aggregators see the floor change immediately rather than
+    // waiting for the next heartbeat to come up blank.
+    if let Some(admission) = state.admission.as_ref() {
+        let delivered = admission
+            .broadcast_floor_update(req.min_registry_version.clone())
+            .await;
+        tracing::info!(
+            target: "convex_admission",
+            floor = ?req.min_registry_version,
+            delivered,
+            "broadcast RegistryFloorUpdate",
+        );
+    }
     Json(FloorAck {
         min_registry_version: state.pool.min_registry_version(),
     })

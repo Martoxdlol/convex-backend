@@ -153,6 +153,39 @@ impl WorkerAdmissionServer {
     /// admitted (idempotent — double-drain is a no-op), `Ok(true)`
     /// when the notice was delivered, `Err` on transport failure
     /// (which usually means the worker is already disconnecting).
+    /// Broadcast a `RegistryFloorUpdate` to every admitted
+    /// worker. Workers log the new floor but keep serving
+    /// traffic — the backend is the authority on dispatch
+    /// filtering, so this is informational only. Returns the
+    /// number of workers the message was delivered to; failures
+    /// are counted as "not delivered" and logged via tracing
+    /// so one stale stream doesn't abort the broadcast.
+    pub async fn broadcast_floor_update(&self, floor: Option<String>) -> usize {
+        let senders: Vec<_> = {
+            let outbound = self.outbound.lock();
+            outbound.iter().map(|(id, tx)| (*id, tx.clone())).collect()
+        };
+        let msg = proto::BackendToWorker {
+            msg: Some(proto::backend_to_worker::Msg::FloorUpdate(
+                proto::RegistryFloorUpdate {
+                    min_registry_version: floor.unwrap_or_default(),
+                },
+            )),
+        };
+        let mut delivered = 0usize;
+        for (id, tx) in senders {
+            match tx.send(Ok(msg.clone())).await {
+                Ok(()) => delivered += 1,
+                Err(e) => tracing::warn!(
+                    target: "convex_admission",
+                    worker = ?id,
+                    "RegistryFloorUpdate delivery failed: {e}",
+                ),
+            }
+        }
+        delivered
+    }
+
     pub async fn request_drain(
         &self,
         worker_id: WorkerId,
