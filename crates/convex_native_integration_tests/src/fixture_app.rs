@@ -257,6 +257,18 @@ pub async fn pull_rng(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<i64> {
     Ok(ctx.rng_u64() as i64)
 }
 
+/// Long-running action — loops forever. Tests the runner's
+/// `with_default_timeout` / per-function-timeout path by
+/// letting the runner abort it.
+#[convex::action(timeout_ms = 100)]
+pub async fn sleep_forever(_ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
+    // Deliberately spin on `tokio::time::sleep` in a long loop so
+    // the runner's `tokio::time::timeout` wrapper aborts us.
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Single-doc read APIs — exercises `ctx.db().get(...)` /
 // `get_with_meta` / `exists` / `normalize_id`. Each is a tiny
