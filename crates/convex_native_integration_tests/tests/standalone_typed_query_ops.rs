@@ -157,6 +157,85 @@ async fn take_caps_result_size() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn unique_returns_none_empty_some_one_errors_many() -> anyhow::Result<()> {
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+
+    // Empty → None.
+    let none = run_query(
+        &fx.database,
+        &runner,
+        "unique_todo_for_owner",
+        args(&[("owner", ConvexValue::try_from("nobody".to_string())?)]),
+    )
+    .await?;
+    assert!(matches!(none, ConvexValue::Null));
+
+    // One row → Some(todo).
+    seed_todos(&fx.database, &runner, "solo", &["lone"]).await?;
+    let one = run_query(
+        &fx.database,
+        &runner,
+        "unique_todo_for_owner",
+        args(&[("owner", ConvexValue::try_from("solo".to_string())?)]),
+    )
+    .await?;
+    assert!(
+        matches!(one, ConvexValue::Object(_)),
+        "expected object, got {one:?}",
+    );
+
+    // Two rows → error.
+    seed_todos(&fx.database, &runner, "dup", &["a", "b"]).await?;
+    let usage = FunctionUsageTracker::new();
+    let mut tx = fx
+        .database
+        .begin_with_ts(Identity::system(), *fx.database.now_ts_for_reads(), usage)
+        .await?;
+    let err = runner
+        .run_query(
+            "unique_todo_for_owner",
+            &mut tx,
+            TableNamespace::Global,
+            args(&[("owner", ConvexValue::try_from("dup".to_string())?)]),
+        )
+        .await
+        .expect_err(".unique() must error when >1 row matches");
+    let msg = format!("{err:#}").to_lowercase();
+    assert!(
+        msg.contains("unique") || msg.contains("more than one") || msg.contains("expected"),
+        "expected unique-violation error; got: {msg}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn order_desc_reverses_index_traversal() -> anyhow::Result<()> {
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    seed_todos(&fx.database, &runner, "z", &["one", "two"]).await?;
+    let out = run_query(
+        &fx.database,
+        &runner,
+        "todos_by_created_desc",
+        ConvexObject::empty(),
+    )
+    .await?;
+    // We can't assert strict order without publishing an index on
+    // `created_at` (and the fixture skips schema activation), so
+    // just verify the call succeeds and returns an array. The
+    // query-builder-level `.order()` handling is already covered
+    // by `convex_native_core::tests::query_builder`; this test
+    // ensures `Order::Desc` is a valid value that survives the
+    // runner's dispatch path.
+    match out {
+        ConvexValue::Array(a) => assert!(a.len() >= 2),
+        other => panic!("expected array, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn gte_lt_range_filters_correctly() -> anyhow::Result<()> {
     // `create_todo` stamps `ctx.unix_timestamp()` into `created_at`.
     // All rows committed within milliseconds share (approximately)

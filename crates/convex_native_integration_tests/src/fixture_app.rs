@@ -455,6 +455,31 @@ pub async fn take_todos(ctx: &mut QueryCtx<'_, Rt>, n: i64) -> anyhow::Result<Ve
     ctx.db().query::<Todo>().take(n as usize).await
 }
 
+/// Expect at most one row for `owner`; errors if more than one
+/// match — exercises `.unique()`.
+#[convex::query]
+pub async fn unique_todo_for_owner(
+    ctx: &mut QueryCtx<'_, Rt>,
+    owner: String,
+) -> anyhow::Result<Option<Todo>> {
+    ctx.db()
+        .query::<Todo>()
+        .eq(TodoField::Owner, owner)?
+        .unique()
+        .await
+}
+
+/// Return every todo sorted by creation time descending —
+/// exercises `.order(Order::Desc)`.
+#[convex::query]
+pub async fn todos_by_created_desc(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<Vec<Todo>> {
+    ctx.db()
+        .query::<Todo>()
+        .order(convex_native::Order::Desc)
+        .collect()
+        .await
+}
+
 /// Filter by creation timestamp range — exercises `.gte` / `.lt`.
 #[convex::query]
 pub async fn todos_in_time_range(
