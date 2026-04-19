@@ -122,5 +122,28 @@ fn internal_modifier_survives_into_envelope() -> anyhow::Result<()> {
         !external.is_internal,
         "create_todo is a regular mutation; is_internal must be false",
     );
+
+    // `internal` must propagate through every UdfType kind —
+    // the fixture exercises all three (query / mutation / action)
+    // so a regression that only wired the flag on one variant
+    // fails here.
+    let internal_query = inv
+        .functions
+        .iter()
+        .find(|f| f.name == "internal_count_all")
+        .expect("internal_count_all query registered");
+    assert!(
+        internal_query.is_internal,
+        "internal modifier must propagate on queries; got {internal_query:?}",
+    );
+    let internal_action = inv
+        .functions
+        .iter()
+        .find(|f| f.name == "internal_action")
+        .expect("internal_action registered");
+    assert!(
+        internal_action.is_internal,
+        "internal modifier must propagate on actions; got {internal_action:?}",
+    );
     Ok(())
 }

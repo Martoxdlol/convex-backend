@@ -121,6 +121,16 @@ pub async fn count_pending(ctx: &mut QueryCtx<'_, Rt>, owner: String) -> anyhow:
     Ok(todos.into_iter().filter(|t| !t.done).count() as i64)
 }
 
+/// Internal-only query — exercises the `internal` modifier on
+/// `#[convex::query]`. External clients must be refused by the
+/// validation layer; internal sub-calls still work. Mirrors the
+/// existing `internal_delete` mutation + `internal_action` so
+/// the is_internal flag is exercised on every UdfType kind.
+#[convex::query(internal)]
+pub async fn internal_count_all(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<i64> {
+    Ok(ctx.db().query::<Todo>().count().await? as i64)
+}
+
 /// Exercises `ctx.auth()` so the distributed identity-forwarding
 /// path has something to assert against.
 #[convex::query]
