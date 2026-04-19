@@ -103,6 +103,23 @@ async fn runner_discovers_every_fixture_function() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn has_function_accepts_without_type_filter_and_rejects_unknown() -> anyhow::Result<()> {
+    // `NativeFunctionRunner::has_function` is the type-agnostic
+    // variant, used by run_action_raw's local-runner fast path
+    // before it knows which UdfType it's dispatching. No test
+    // pinned its accept + reject contract at integration level;
+    // has_function_of_type is a stricter variant that wouldn't
+    // catch a regression that ignored the name altogether.
+    let runner = NativeFunctionRunner::from_inventory()?;
+    assert!(runner.has_function("create_todo"));
+    assert!(runner.has_function("summarise"));
+    assert!(runner.has_function("nightly_cleanup"));
+    assert!(!runner.has_function("does_not_exist"));
+    assert!(!runner.has_function(""));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn create_then_list_round_trips_through_the_database() -> anyhow::Result<()> {
     let fx = DbFixture::new_in_memory().await?;
     let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
