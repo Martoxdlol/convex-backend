@@ -244,6 +244,44 @@ async fn get_many_returns_options_preserving_order() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn normalize_id_accepts_valid_todo_id() -> anyhow::Result<()> {
+    // `ctx.db().normalize_id::<Todo>(raw)` returns `Some` when
+    // `raw` is a syntactically valid id whose embedded table
+    // tag matches `Todo::table_name()`. The existing garbage
+    // test only covers the rejection side — pin the accept
+    // side against a real mutation-minted id so a regression
+    // that over-eagerly rejected valid ids would surface here.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let v = run_mutation(
+        &fx.database,
+        &runner,
+        "create_todo",
+        args(&[
+            ("owner", ConvexValue::try_from("n".to_string())?),
+            ("text", ConvexValue::try_from("t".to_string())?),
+        ]),
+    )
+    .await?;
+    let id_str = match v {
+        ConvexValue::String(s) => s.to_string(),
+        other => panic!("expected id, got {other:?}"),
+    };
+    let out = run_query(
+        &fx.database,
+        &runner,
+        "normalize_todo_id",
+        args(&[("raw", ConvexValue::try_from(id_str)?)]),
+    )
+    .await?;
+    assert!(
+        matches!(out, ConvexValue::Boolean(true)),
+        "normalize_id accepts a real Todo id; got {out:?}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn normalize_id_rejects_garbage() -> anyhow::Result<()> {
     let fx = DbFixture::new_in_memory().await?;
     let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
