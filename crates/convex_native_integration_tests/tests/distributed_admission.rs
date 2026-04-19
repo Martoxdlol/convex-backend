@@ -68,6 +68,39 @@ fn inventory_hash_is_stable_across_successive_collections() -> anyhow::Result<()
 }
 
 #[test]
+fn cron_schedule_and_kind_survive_into_envelope() -> anyhow::Result<()> {
+    // Confirm the wire CronRegistration carries each fixture cron's
+    // full shape — name, schedule, handler, and the mutation/action
+    // kind the native cron driver branches on. A regression that
+    // silently dropped `kind` would still pass the "envelope
+    // contains nightly-cleanup" test above but would break
+    // action-kind dispatch in production.
+    let (inv, _) = admission::collect_inventory()?;
+
+    let nightly = inv
+        .crons
+        .iter()
+        .find(|c| c.name == "nightly-cleanup")
+        .expect("nightly-cleanup cron in envelope");
+    assert_eq!(nightly.schedule, "0 3 * * *");
+    assert_eq!(nightly.handler, "nightly_cleanup");
+    assert_eq!(nightly.kind, "mutation");
+
+    let hourly = inv
+        .crons
+        .iter()
+        .find(|c| c.name == "hourly-probe")
+        .expect("hourly-probe cron in envelope");
+    assert_eq!(hourly.schedule, "0 * * * *");
+    assert_eq!(hourly.handler, "internal_action");
+    assert_eq!(
+        hourly.kind, "action",
+        "action-kind cron must round-trip into the envelope's kind field",
+    );
+    Ok(())
+}
+
+#[test]
 fn internal_modifier_survives_into_envelope() -> anyhow::Result<()> {
     let (inv, _) = admission::collect_inventory()?;
     let internal = inv
