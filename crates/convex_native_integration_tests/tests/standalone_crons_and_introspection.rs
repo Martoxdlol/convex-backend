@@ -56,6 +56,31 @@ fn native_schema_collects_fixture_tables() {
 }
 
 #[test]
+fn native_schema_surfaces_text_and_vector_indexes_on_messages() {
+    // Messages declares text_index + vector_index in the fixture.
+    // Those variants live on separate fields of TableDefinition
+    // (text_indexes / vector_indexes) and have their own
+    // #[derive(ConvexDocument)] macro arms; confirm they survive
+    // NativeSchema::collect into the DatabaseSchema the admission
+    // envelope carries over the wire.
+    let schema = NativeSchema::collect().expect("collect schema");
+    let messages_table: value::TableName = "messages".parse().unwrap();
+    let msg = schema.tables.get(&messages_table).expect("messages table");
+    // DocumentSchema wraps the per-table definition; poke it
+    // through its Debug form for a stable assertion shape — the
+    // important thing is that the text/vector index names show up.
+    let rendered = format!("{msg:?}");
+    assert!(
+        rendered.contains("by_body"),
+        "text index `by_body` missing from messages schema; got: {rendered}",
+    );
+    assert!(
+        rendered.contains("by_embedding"),
+        "vector index `by_embedding` missing from messages schema; got: {rendered}",
+    );
+}
+
+#[test]
 fn http_router_collects_fixture_routes() {
     let router = HttpRouter::collect().expect("collect routes");
     assert!(router.lookup("POST", "/api/ping").is_some());
