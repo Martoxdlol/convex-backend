@@ -116,3 +116,48 @@ async fn rng_is_deterministic_for_a_given_seed() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rng_fill_is_deterministic_and_non_empty() -> anyhow::Result<()> {
+    // Companion to `rng_is_deterministic_for_a_given_seed` but for
+    // the byte-buffer surface `ctx.rng_fill(&mut buf)`. Two
+    // independent calls with the framework's default Observed
+    // seeding must produce the same 16-byte hex string, and it
+    // must not be the all-zero sentinel (which would signal the
+    // fill path silently did nothing).
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+
+    async fn call(
+        db: &Database<ProdRuntime>,
+        runner: &NativeFunctionRunner,
+    ) -> anyhow::Result<String> {
+        let usage = FunctionUsageTracker::new();
+        let mut tx = db
+            .begin_with_ts(Identity::system(), *db.now_ts_for_reads(), usage)
+            .await?;
+        let v = runner
+            .run_query(
+                "pull_rng_bytes",
+                &mut tx,
+                TableNamespace::Global,
+                ConvexObject::empty(),
+            )
+            .await?;
+        match v {
+            ConvexValue::String(s) => Ok(s.to_string()),
+            other => anyhow::bail!("expected string, got {other:?}"),
+        }
+    }
+
+    let a = call(&fx.database, &runner).await?;
+    let b = call(&fx.database, &runner).await?;
+    assert_eq!(a, b, "rng_fill must be deterministic across calls");
+    assert_eq!(a.len(), 32, "16 bytes → 32 hex chars");
+    assert_ne!(
+        a,
+        "0".repeat(32),
+        "rng_fill produced all zeros — likely a no-op",
+    );
+    Ok(())
+}

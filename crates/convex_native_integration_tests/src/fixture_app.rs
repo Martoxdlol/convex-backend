@@ -303,6 +303,22 @@ pub async fn pull_rng(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<i64> {
     Ok(ctx.rng_u64() as i64)
 }
 
+/// Fill a 16-byte buffer with `ctx.rng_fill(...)` and return it
+/// as a hex string. Lets tests assert the byte stream is
+/// deterministic *and* that `rng_fill` flows from the same
+/// seeded generator `rng_u64` reads from (so mixing the two in a
+/// single handler is safe).
+#[convex::query]
+pub async fn pull_rng_bytes(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<String> {
+    let mut buf = [0u8; 16];
+    ctx.rng_fill(&mut buf);
+    let mut hex = String::with_capacity(buf.len() * 2);
+    for b in buf {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    Ok(hex)
+}
+
 /// Return `ctx.execution_context().request_id` (as a string) or
 /// an empty string when absent. Lets tests assert the dispatch
 /// layer threads the caller's ExecutionContext through.
