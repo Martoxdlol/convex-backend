@@ -373,6 +373,19 @@ pub async fn request_id(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<String> {
         .unwrap_or_default())
 }
 
+/// Return `ctx.execution_context().execution_id` as a string or
+/// an empty string when absent. Companion to `request_id`; the
+/// two ids serialize through separate proto fields, so a
+/// regression in execution-id wire encoding wouldn't fall out
+/// of the request-id test alone.
+#[convex::query]
+pub async fn execution_id(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<String> {
+    Ok(ctx
+        .execution_context()
+        .map(|c| c.execution_id.to_string())
+        .unwrap_or_default())
+}
+
 /// Long-running action — loops forever. Tests the runner's
 /// `with_default_timeout` / per-function-timeout path by
 /// letting the runner abort it.

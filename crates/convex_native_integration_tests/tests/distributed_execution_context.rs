@@ -107,3 +107,50 @@ async fn request_id_round_trips_through_the_worker_ctx() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn execution_id_round_trips_through_the_worker_ctx() -> anyhow::Result<()> {
+    // Companion to request_id_round_trips_through_the_worker_ctx;
+    // execution_id lives in a separate proto field
+    // (pb::common::ExecutionContext.execution_id) from request_id
+    // and has its own parse path, so a regression in its wire
+    // encoding or ctx hydration wouldn't fall out of the
+    // request-id test alone.
+    let fx = DbFixture::new_in_memory().await?;
+    let addr = spawn_worker(fx.database.clone()).await;
+    let client = TonicWorkerClient::connect(format!("http://{addr}")).await?;
+    let runner = DistributedFunctionRunner::new(vec![client])?;
+
+    let context =
+        ExecutionContext::new_from_parts(RequestId::new(), ExecutionId::new(), None, false);
+    let expected = context.execution_id.to_string();
+
+    let args: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+    let resp = runner
+        .execute(
+            ExecuteRequest {
+                name: "execution_id".to_string(),
+                namespace: TableNamespace::Global,
+                args: ConvexObject::try_from(args)?,
+                timeout: None,
+                min_registry_version: None,
+                execution_context: Some(context),
+                begin_timestamp: Some(u64::from(*fx.database.now_ts_for_reads())),
+                existing_writes: Vec::new(),
+                http_request: None,
+                identity: Vec::new(),
+            },
+            UdfType::Query,
+        )
+        .await?;
+    let got = resp.result.expect("query succeeds");
+    match got {
+        ConvexValue::String(s) => assert_eq!(
+            s.to_string(),
+            expected,
+            "worker-side ctx.execution_context().execution_id should match what the backend sent",
+        ),
+        other => panic!("expected string, got {other:?}"),
+    }
+    Ok(())
+}
