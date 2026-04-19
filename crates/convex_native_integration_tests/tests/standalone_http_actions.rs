@@ -80,7 +80,10 @@ async fn json_body_and_header_round_trip() -> anyhow::Result<()> {
         .await?;
     assert_eq!(resp.status, 200);
     let parsed: serde_json::Value = serde_json::from_slice(&resp.body)?;
-    assert_eq!(parsed, serde_json::json!({"hello": "alice", "via": "tests"}));
+    assert_eq!(
+        parsed,
+        serde_json::json!({"hello": "alice", "via": "tests"})
+    );
     assert_eq!(
         resp.headers.get("Content-Type").unwrap().to_str().unwrap(),
         "application/json",

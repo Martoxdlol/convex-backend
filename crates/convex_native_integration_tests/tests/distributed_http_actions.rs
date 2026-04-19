@@ -106,3 +106,52 @@ async fn http_action_round_trips_request_response_over_the_wire() -> anyhow::Res
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_action_json_body_and_header_round_trip_over_the_wire() -> anyhow::Result<()> {
+    let fx = DbFixture::new_in_memory().await?;
+    let addr = spawn_worker(fx.database.clone()).await;
+    let client = TonicWorkerClient::connect(format!("http://{addr}")).await?;
+    let runner = DistributedFunctionRunner::new(vec![client])?;
+
+    let resp = runner
+        .execute(
+            ExecuteRequest {
+                name: "__http::POST:/api/echo".to_string(),
+                namespace: TableNamespace::Global,
+                args: empty_args(),
+                timeout: None,
+                min_registry_version: None,
+                execution_context: None,
+                begin_timestamp: None,
+                existing_writes: Vec::new(),
+                http_request: Some(HttpActionRequestPayload {
+                    method: "POST".to_string(),
+                    url: "http://example.invalid/api/echo".to_string(),
+                    headers: vec![
+                        ("content-type".to_string(), "application/json".to_string()),
+                        ("x-via".to_string(), "wire".to_string()),
+                    ],
+                    body: bytes::Bytes::from_static(b"{\"name\":\"bob\"}"),
+                    routed_path: "/api/echo".to_string(),
+                }),
+                identity: Vec::new(),
+            },
+            UdfType::HttpAction,
+        )
+        .await?;
+    let http = resp
+        .http_response
+        .expect("HttpAction response must carry an http_response payload");
+    assert_eq!(http.status, 200);
+    let parsed: serde_json::Value = serde_json::from_slice(&http.body)?;
+    assert_eq!(parsed, serde_json::json!({"hello": "bob", "via": "wire"}));
+    let ct = http
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.as_str())
+        .expect("Content-Type header should be set by HttpResponse::json");
+    assert_eq!(ct, "application/json");
+    Ok(())
+}
