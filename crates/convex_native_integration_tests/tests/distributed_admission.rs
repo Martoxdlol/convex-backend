@@ -68,6 +68,33 @@ fn inventory_hash_is_stable_across_successive_collections() -> anyhow::Result<()
 }
 
 #[test]
+fn schema_json_carries_text_and_vector_index_declarations() -> anyhow::Result<()> {
+    // The DatabaseSchemaJson blob that the admission envelope
+    // wraps is what the backend parses to register indexes for
+    // a fresh worker deployment. A regression that produced an
+    // empty (or regular-db-only) JSON blob would pass the
+    // "non-empty schema_json" smoke test but silently break
+    // text + vector dispatch for every deployer using them. Pin
+    // the fixture's text/vector index declarations in the blob.
+    let (inv, _) = admission::collect_inventory()?;
+    let schema = inv.schema.as_ref().expect("schema present");
+    let text = std::str::from_utf8(&schema.schema_json)?;
+    assert!(
+        text.contains("by_body"),
+        "text index name missing from envelope schema_json; got: {text}",
+    );
+    assert!(
+        text.contains("by_embedding"),
+        "vector index name missing from envelope schema_json; got: {text}",
+    );
+    assert!(
+        text.contains("attachments"),
+        "third fixture table name missing from envelope schema_json",
+    );
+    Ok(())
+}
+
+#[test]
 fn cron_schedule_and_kind_survive_into_envelope() -> anyhow::Result<()> {
     // Confirm the wire CronRegistration carries each fixture cron's
     // full shape — name, schedule, handler, and the mutation/action
