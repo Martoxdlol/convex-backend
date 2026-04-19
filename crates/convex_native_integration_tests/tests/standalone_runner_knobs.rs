@@ -93,6 +93,16 @@ async fn metrics_sink_records_ok_and_err_outcomes() -> anyhow::Result<()> {
         1,
         "CountingMetrics should record the failed mutation dispatch",
     );
+
+    // total_latency is a separate accumulator on CountingMetrics;
+    // a regression that forgot to update it in NativeMetricsSink::record
+    // would leave it at zero even when `count` incremented. Pin a
+    // non-zero latency for the successful action dispatch.
+    let latency = metrics.total_latency("echo_action", UdfType::Action);
+    assert!(
+        latency > Duration::ZERO,
+        "echo_action's total_latency should accumulate something; got {latency:?}",
+    );
     Ok(())
 }
 
