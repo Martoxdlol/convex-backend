@@ -364,6 +364,22 @@ pub async fn todo_exists(ctx: &mut QueryCtx<'_, Rt>, id: Id<Todo>) -> anyhow::Re
     ctx.db().exists(id).await
 }
 
+/// Try-variant — errors if the document doesn't exist.
+#[convex::query]
+pub async fn try_get_todo(ctx: &mut QueryCtx<'_, Rt>, id: Id<Todo>) -> anyhow::Result<Todo> {
+    ctx.db().try_get(id).await
+}
+
+/// Batch read — returns `Vec<Option<Todo>>` for every id in the
+/// input list.
+#[convex::query]
+pub async fn get_many_todos(
+    ctx: &mut QueryCtx<'_, Rt>,
+    ids: Vec<Id<Todo>>,
+) -> anyhow::Result<Vec<Option<Todo>>> {
+    ctx.db().get_many(ids).await
+}
+
 /// Validate a raw id string against the `Todo` table. Returns
 /// `true` when the string is a valid id for this table,
 /// regardless of whether the referenced document exists.

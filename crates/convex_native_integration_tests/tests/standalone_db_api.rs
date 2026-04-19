@@ -106,6 +106,111 @@ async fn get_then_exists_on_real_id() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn try_get_errors_on_missing_id() -> anyhow::Result<()> {
+    // `ctx.db().try_get(id)` errors when the doc is absent — the
+    // "blow up loudly" variant of `.get(id)`. Build an id that
+    // can't exist (parse a known-bad shape) by inserting+deleting
+    // a row.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let id = run_mutation(
+        &fx.database,
+        &runner,
+        "create_todo",
+        args(&[
+            ("owner", ConvexValue::try_from("h".to_string())?),
+            ("text", ConvexValue::try_from("x".to_string())?),
+        ]),
+    )
+    .await?;
+    let id_str = match &id {
+        ConvexValue::String(s) => s.to_string(),
+        other => panic!("expected id, got {other:?}"),
+    };
+    run_mutation(
+        &fx.database,
+        &runner,
+        "internal_delete",
+        args(&[("id", ConvexValue::try_from(id_str.clone())?)]),
+    )
+    .await?;
+
+    // Now the id references a deleted row → `try_get` should
+    // error.
+    let usage = FunctionUsageTracker::new();
+    let mut tx = fx
+        .database
+        .begin_with_ts(Identity::system(), *fx.database.now_ts_for_reads(), usage)
+        .await?;
+    let err = runner
+        .run_query(
+            "try_get_todo",
+            &mut tx,
+            TableNamespace::Global,
+            args(&[("id", ConvexValue::try_from(id_str)?)]),
+        )
+        .await
+        .expect_err("try_get on a deleted id must error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.to_lowercase().contains("not found")
+            || msg.to_lowercase().contains("missing")
+            || msg.to_lowercase().contains("no such"),
+        "expected missing-document error; got: {msg}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_many_returns_options_preserving_order() -> anyhow::Result<()> {
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let mut ids: Vec<String> = Vec::new();
+    for text in ["a", "b", "c"] {
+        let v = run_mutation(
+            &fx.database,
+            &runner,
+            "create_todo",
+            args(&[
+                ("owner", ConvexValue::try_from("g".to_string())?),
+                ("text", ConvexValue::try_from(text.to_string())?),
+            ]),
+        )
+        .await?;
+        match v {
+            ConvexValue::String(s) => ids.push(s.to_string()),
+            other => panic!("expected id, got {other:?}"),
+        }
+    }
+
+    let mut arr = Vec::new();
+    for id in &ids {
+        arr.push(ConvexValue::try_from(id.clone())?);
+    }
+    let v = value::ConvexArray::try_from(arr)?;
+    let got = run_query(
+        &fx.database,
+        &runner,
+        "get_many_todos",
+        args(&[("ids", ConvexValue::Array(v))]),
+    )
+    .await?;
+    match got {
+        ConvexValue::Array(a) => {
+            assert_eq!(a.len(), 3);
+            for entry in a.iter() {
+                assert!(
+                    matches!(entry, ConvexValue::Object(_)),
+                    "each returned slot is Some(todo); got {entry:?}",
+                );
+            }
+        },
+        other => panic!("expected array, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn normalize_id_rejects_garbage() -> anyhow::Result<()> {
     let fx = DbFixture::new_in_memory().await?;
     let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
