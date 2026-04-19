@@ -89,6 +89,42 @@ async fn action_log_lines_land_in_the_shared_buffer() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn every_log_level_lands_in_the_buffer() -> anyhow::Result<()> {
+    // `emit_every_log_level` calls `ctx.log().debug/info/warn/error(...)`
+    // once each; the runner drains the buffer after the handler
+    // returns. A regression in any of the three non-Info level
+    // helpers would otherwise slip past the `info`-only assertion
+    // in `action_log_lines_land_in_the_shared_buffer`.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let log_buffer = LogBuffer::new();
+    runner
+        .run_action_with_callbacks_and_log_buffer(
+            "emit_every_log_level",
+            TableNamespace::Global,
+            ConvexObject::empty(),
+            callbacks,
+            log_buffer.clone(),
+        )
+        .await?;
+    let lines = log_buffer.snapshot();
+    for (level, tag) in [
+        (LogLevel::Debug, "lvl:debug"),
+        (LogLevel::Info, "lvl:info"),
+        (LogLevel::Warn, "lvl:warn"),
+        (LogLevel::Error, "lvl:error"),
+    ] {
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.level == level && l.message.contains(tag)),
+            "expected {level:?} line containing {tag:?}; got {lines:?}",
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mutation_log_lines_land_in_the_shared_buffer() -> anyhow::Result<()> {
     // `create_todo` calls `ctx.log().info(...)`; the mutation path
     // exposes its log buffer through

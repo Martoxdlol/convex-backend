@@ -257,6 +257,19 @@ pub async fn echo_action(ctx: &mut ActionCtx<'_, Rt>, message: String) -> anyhow
     Ok(format!("echo:{message}"))
 }
 
+/// Emit one line at each of the four log levels so tests can
+/// assert that `ctx.log().debug/info/warn/error(...)` each land
+/// in the shared `LogBuffer` with the matching `LogLevel`.
+/// The existing log-buffer test only covers `info`.
+#[convex::action]
+pub async fn emit_every_log_level(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
+    ctx.log().debug("lvl:debug");
+    ctx.log().info("lvl:info");
+    ctx.log().warn("lvl:warn");
+    ctx.log().error("lvl:error");
+    Ok(())
+}
+
 /// Exercise the untyped sub-call surface: dispatch
 /// `count_pending` by string name through `ctx.run_query_raw(...)`
 /// instead of the typed marker. Returns the raw i64. The
