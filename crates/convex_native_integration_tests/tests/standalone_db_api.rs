@@ -106,6 +106,39 @@ async fn get_then_exists_on_real_id() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn get_with_meta_returns_creation_time() -> anyhow::Result<()> {
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+
+    let id = run_mutation(
+        &fx.database,
+        &runner,
+        "create_todo",
+        args(&[
+            ("owner", ConvexValue::try_from("z".to_string())?),
+            ("text", ConvexValue::try_from("t".to_string())?),
+        ]),
+    )
+    .await?;
+    let id_str = match &id {
+        ConvexValue::String(s) => s.to_string(),
+        other => panic!("expected id, got {other:?}"),
+    };
+    let got = run_query(
+        &fx.database,
+        &runner,
+        "get_todo_creation_time",
+        args(&[("id", ConvexValue::try_from(id_str)?)]),
+    )
+    .await?;
+    match got {
+        ConvexValue::Float64(t) => assert!(t > 0.0, "creation_time is non-zero; got {t}"),
+        other => panic!("expected Float64, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn try_get_errors_on_missing_id() -> anyhow::Result<()> {
     // `ctx.db().try_get(id)` errors when the doc is absent — the
     // "blow up loudly" variant of `.get(id)`. Build an id that

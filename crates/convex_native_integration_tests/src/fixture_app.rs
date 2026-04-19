@@ -417,6 +417,22 @@ pub async fn get_many_todos(
     ctx.db().get_many(ids).await
 }
 
+/// Read with creation metadata — returns a tuple `(owner,
+/// creation_time)` as a signal the `DocumentWithMeta<Todo>`
+/// shape is wired up. Using a primitive tuple over a complex
+/// struct keeps the ConvexValue round-trip simple.
+#[convex::query]
+pub async fn get_todo_creation_time(
+    ctx: &mut QueryCtx<'_, Rt>,
+    id: Id<Todo>,
+) -> anyhow::Result<Option<f64>> {
+    Ok(ctx
+        .db()
+        .get_with_meta(id)
+        .await?
+        .map(|doc| f64::from(doc.creation_time)))
+}
+
 /// Validate a raw id string against the `Todo` table. Returns
 /// `true` when the string is a valid id for this table,
 /// regardless of whether the referenced document exists.
