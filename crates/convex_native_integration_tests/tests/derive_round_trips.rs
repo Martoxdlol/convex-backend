@@ -14,6 +14,7 @@ use convex_native_core::{
     ToConvex,
 };
 use convex_native_integration_tests::fixture_app::{
+    Attachment,
     Metadata,
     Notification,
     Priority,
@@ -108,6 +109,35 @@ fn notification_second_variant_round_trips_with_its_own_tag() -> anyhow::Result<
     }
     let back = Notification::from_convex(v)?;
     assert_eq!(push, back);
+    Ok(())
+}
+
+#[test]
+fn attachment_document_round_trips_bytes_and_record_fields() -> anyhow::Result<()> {
+    // Covers two field-type arms of #[derive(ConvexDocument)]
+    // that Todo doesn't touch: Vec<u8> (special-cased to
+    // Validator::Bytes) and BTreeMap<String, String>
+    // (Validator::Record(String, String)). A regression in
+    // either arm would slip past the Todo round-trip test.
+    use convex_native_core::document::ConvexDocument as _;
+    let mut tags: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    tags.insert("owner".into(), "alice".into());
+    tags.insert("scope".into(), "public".into());
+    let att = Attachment {
+        payload: vec![1, 2, 3, 4, 250, 251, 252],
+        tags,
+    };
+    let v = att.clone().to_convex()?;
+    let back = Attachment::from_convex(v)?;
+    assert_eq!(back.payload, att.payload, "Vec<u8> round-trips as Bytes");
+    assert_eq!(back.tags, att.tags, "BTreeMap round-trips as Record");
+    // Sanity-check the schema shape too: table_definition for
+    // Attachment should carry a document_type validator (non-None).
+    let def = Attachment::table_definition();
+    assert!(
+        def.document_type.is_some(),
+        "Attachment's table_definition must populate document_type with a Validator",
+    );
     Ok(())
 }
 

@@ -76,6 +76,20 @@ pub struct Todo {
     pub metadata: Option<Metadata>,
 }
 
+/// Tertiary table exercising the less-common field-type arms of
+/// `#[derive(ConvexDocument)]`: `Vec<u8>` (which the macro
+/// special-cases to `Validator::Bytes` rather than
+/// `Validator::Array(Byte)`) and `BTreeMap<String, String>`
+/// (which maps to `Validator::Record(String, String)`). Keeps the
+/// schema surface exercised end-to-end without bloating the Todo
+/// / Message tables.
+#[derive(ConvexDocument, Debug, Clone)]
+#[convex(table = "attachments")]
+pub struct Attachment {
+    pub payload: Vec<u8>,
+    pub tags: std::collections::BTreeMap<String, String>,
+}
+
 /// Secondary table. Declares a text index *and* a vector index so
 /// search-index collection paths (`NativeSchema::collect`,
 /// `warmup::plan_warmup`, the admission envelope's schema JSON)
