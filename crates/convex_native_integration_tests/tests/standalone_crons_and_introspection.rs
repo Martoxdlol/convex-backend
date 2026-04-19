@@ -118,6 +118,27 @@ fn built_backend_summary_names_all_pieces() -> anyhow::Result<()> {
 }
 
 #[test]
+fn built_backend_without_callbacks_still_builds_and_validates() -> anyhow::Result<()> {
+    // ConvexBackend::build should succeed without an explicit
+    // with_callbacks call — BuiltBackend defaults to
+    // NoopCallbacks. Deployers writing unit tests that only
+    // introspect the schema / function list shouldn't have to
+    // fabricate callbacks. A regression that made with_callbacks
+    // mandatory at build time would break every existing unit
+    // test in the ecosystem.
+    let built = ConvexBackend::new()
+        .with_native_functions()
+        .with_native_schema()
+        .with_http_routes()
+        .with_crons()
+        // deliberately no .with_callbacks(...)
+        .build()?;
+    built.validate()?;
+    assert!(built.function_count() > 0);
+    Ok(())
+}
+
+#[test]
 fn built_backend_describe_pretty_is_valid_json_string() -> anyhow::Result<()> {
     // describe_pretty() is the CLI-facing surface — it calls
     // describe_json and serialises the result with
