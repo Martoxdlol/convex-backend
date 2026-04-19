@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 244 tests
 cargo test -p convex_native_backend              # 12 tests
 cargo test -p convex_native_distributed          # 161 tests
-cargo test -p convex_native_integration_tests    # 83 tests
+cargo test -p convex_native_integration_tests    # 86 tests
 
-# 500 total — all green
+# 503 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
@@ -1146,9 +1146,9 @@ that drives a shared fixture app through both topologies:
 | `standalone_golden_path.rs` | monolith | query/mutation round-trip, `ctx.auth()`, `ctx.unix_timestamp()` |
 | `standalone_actions.rs` | monolith | pure actions, `ctx.log()` drain in both action + mutation ctx + every level (debug/info/warn/error), `errors::bad_request` metadata |
 | `standalone_http_actions.rs` | monolith | `#[convex::http_action]` dispatch, router lookup, unknown-route error, JSON body + header round-trip, HTTP sub-call through callbacks, `path_remainder` accessor |
-| `standalone_crons_and_introspection.rs` | wire-independent | `CronRegistry::collect`, `NativeSchema::collect`, `HttpRouter::collect`, `ConvexBackend::build().validate()`, `describe_json` v1 envelope |
+| `standalone_crons_and_introspection.rs` | wire-independent | `CronRegistry::collect`, `NativeSchema::collect`, `HttpRouter::collect`, `ConvexBackend::build().validate()`, `describe_json` v1 envelope, `describe_pretty` CLI form |
 | `standalone_runner_knobs.rs` | monolith | `CountingMetrics`, `begin_drain()`, `CircuitBreaker` open/closed |
-| `derive_round_trips.rs` | wire-independent | `ConvexEnum` / `ConvexNested` / `ConvexUnion` / `ConvexDocument` `to_convex`/`from_convex` symmetry |
+| `derive_round_trips.rs` | wire-independent | `ConvexEnum` / `ConvexNested` / `ConvexUnion` (both variants) / `ConvexDocument` `to_convex`/`from_convex` symmetry |
 | `standalone_schema_evolution.rs` | wire-independent | `plan_warmup(schema)` + `diff_schemas(old, new)` + `SchemaChange::is_destructive` (TableAdded + TableRemoved sides) |
 | `standalone_db_api.rs` | monolith | `ctx.db().get(id)` / `exists` / `normalize_id` (accept + reject) / `try_get` error / `get_many` / `get_with_meta` |
 | `standalone_typed_query_ops.rs` | monolith | `.first()` / `.take(n)` / `.count()` / `.gte` + `.lt` range / `.gt` + `.lte` mirror |
