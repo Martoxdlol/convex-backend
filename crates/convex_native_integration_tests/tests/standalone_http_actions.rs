@@ -11,7 +11,11 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use convex_native_core::{
+    __private::ConvexValue,
     http::HttpRequest,
+    logging::LogBuffer,
+    testing::TestCallbacks,
+    NativeActionCallbacks,
     NativeFunctionRunner,
 };
 use http::{
@@ -88,6 +92,40 @@ async fn json_body_and_header_round_trip() -> anyhow::Result<()> {
         resp.headers.get("Content-Type").unwrap().to_str().unwrap(),
         "application/json",
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_action_sub_calls_native_query_via_callbacks() -> anyhow::Result<()> {
+    // `HttpActionCtx::run_query(...)` routes through the attached
+    // `NativeActionCallbacks`. Stub the `count_pending` query with
+    // a canned value and confirm the handler picks it up and
+    // echoes it back in the response body — proves the HTTP ctx
+    // exposes the full sub-call surface (not just req/resp types).
+    let (callbacks, _history) = TestCallbacks::new()
+        .on_query("count_pending", |_args| Ok(ConvexValue::Int64(9)))
+        .build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Owner", "alice".parse()?);
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/pending".to_string(),
+        headers,
+        body: Bytes::new(),
+        routed_path: "/api/pending".to_string(),
+    };
+    let resp = runner
+        .run_http_action_with_callbacks(
+            "__http::GET:/api/pending",
+            request,
+            callbacks,
+            Some(LogBuffer::new()),
+        )
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"9"));
     Ok(())
 }
 

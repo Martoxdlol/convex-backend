@@ -680,6 +680,22 @@ pub async fn echo_json(
     ))
 }
 
+/// HTTP handler that sub-calls a native query. Exercises
+/// `HttpActionCtx::run_query(...)` — the HTTP-action surface
+/// onto `NativeActionCallbacks` — distinct from the already-covered
+/// action-ctx and mutation-ctx sub-call paths.
+#[convex::http_action(method = "GET", path = "/api/pending")]
+pub async fn pending_count_http(
+    ctx: &mut HttpActionCtx<'_, Rt>,
+    req: HttpRequest,
+) -> anyhow::Result<HttpResponse> {
+    let owner = req.header("x-owner").unwrap_or("").to_string();
+    let n = ctx
+        .run_query(CountPending, CountPendingArgs { owner })
+        .await?;
+    Ok(HttpResponse::text(200, n.to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Crons
 // ---------------------------------------------------------------------------
