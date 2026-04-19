@@ -122,6 +122,23 @@ pub async fn list_todos(ctx: &mut QueryCtx<'_, Rt>, owner: String) -> anyhow::Re
         .await
 }
 
+/// Secondary-table query — ensures handlers dispatched against a
+/// non-`Todo` table compile and run through the same `QueryCtx`
+/// plumbing. Uses the `messages` table (declared elsewhere in
+/// this module with text + vector indexes) as the second
+/// tablet so registry + dispatch paths see multi-table traffic.
+#[convex::query]
+pub async fn list_messages_in_channel(
+    ctx: &mut QueryCtx<'_, Rt>,
+    channel: String,
+) -> anyhow::Result<Vec<Message>> {
+    ctx.db()
+        .query::<Message>()
+        .eq(MessageField::Channel, channel)?
+        .collect()
+        .await
+}
+
 /// Count the unfinished todos for an owner. Used by the
 /// `summarise` action to exercise action → query sub-calls.
 #[convex::query]

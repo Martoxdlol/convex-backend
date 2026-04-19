@@ -211,6 +211,29 @@ async fn whoami_reflects_the_caller_identity() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn secondary_table_query_dispatches_through_the_same_ctx() -> anyhow::Result<()> {
+    // `list_messages_in_channel` queries the `messages` table
+    // (the fixture's secondary tablet, carrying text + vector
+    // index declarations). Empty table should come back as an
+    // empty array; proves the runner registry indexes by dotted
+    // name across every table, not just `todos`.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let out = run_query(
+        &fx.database,
+        &runner,
+        "list_messages_in_channel",
+        args(&[("channel", ConvexValue::try_from("general".to_string())?)]),
+    )
+    .await?;
+    match out {
+        ConvexValue::Array(a) => assert!(a.is_empty(), "expected empty array for unseeded channel"),
+        other => panic!("expected array, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unix_timestamp_sourced_from_runtime() -> anyhow::Result<()> {
     // `ctx.unix_timestamp()` inside `create_todo` populates
     // `Todo::created_at`. The value should be in a plausible
