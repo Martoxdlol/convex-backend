@@ -1,9 +1,0 @@
-/ralph-loop:ralph-loop "Implement all missing features from convex-native. Follow docs at ./convex-native. Please keep docs up to date and be very thorough. After each significant change, create a new commit" --max-iterations 50 --completion-promise "DONE"
-
-/ralph-loop:ralph-loop "Implement convex-native/DISTRIBUTED_PLAN.md. Please keep docs up to date and be very thorough. After each significant change, create a new commit" --max-iterations 50 --completion-promise "DONE" 
-
-/ralph-loop:ralph-loop "Implement fixes for convex-native/ISSUE_NATIVE_HTTP_VALIDATION.md. Please keep docs up to date and be very thorough. After each significant change, create a new commit." --max-iterations 50 --completion-promise "DONE" 
-
-/ralph-loop:ralph-loop "Implement every single missing feature from convex native. You cannot leave it unimplemented, todo or mocked for any reason. You must finish implementing all. Please keep docs up to date and be very thorough. After each significant change, create a new commit." --max-iterations 50 --completion-promise "DONE" 
-
-/ralph-loop:ralph-loop "Plan and implement integration tests for convex-native, fix when failed, you must test every single convex feature in standalone and distributed mode. Please keep docs up to date and be very thorough. After each significant change, create a new commit." --max-iterations 50 --completion-promise "DONE" 
