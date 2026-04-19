@@ -444,6 +444,29 @@ pub async fn schedule_from_mutation(ctx: &mut MutationCtx<'_, Rt>) -> anyhow::Re
     Ok(id.to_string())
 }
 
+/// Schedule a mutation and immediately cancel it inside the same
+/// tx. Exercises `MutationScheduler::cancel(id)`, which goes
+/// through `VirtualSchedulerModel::cancel` on the live tx —
+/// distinct from the action-ctx scheduler's callback-routed
+/// cancel. Returns a best-effort `"ok"` so the test assertion
+/// has something to check for; the real contract is "doesn't
+/// error".
+#[convex::mutation]
+pub async fn schedule_then_cancel(ctx: &mut MutationCtx<'_, Rt>) -> anyhow::Result<String> {
+    let id = ctx
+        .scheduler()
+        .run_after(
+            Duration::from_secs(30),
+            NightlyCleanup,
+            NightlyCleanupArgs {},
+        )
+        .await?;
+    ctx.scheduler().cancel(id).await?;
+    // Idempotency: cancelling the same id again is a no-op.
+    ctx.scheduler().cancel(id).await?;
+    Ok("ok".to_string())
+}
+
 /// Internal action used as a cron target to exercise the
 /// `target_kind = "action"` code path in `CronRegistry`.
 #[convex::action(internal)]

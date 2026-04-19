@@ -129,3 +129,35 @@ async fn mutation_scheduler_writes_job_to_transaction() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mutation_scheduler_cancel_is_idempotent() -> anyhow::Result<()> {
+    // `MutationScheduler::cancel(id)` routes through
+    // `VirtualSchedulerModel::cancel` on the mutation's own tx.
+    // `schedule_then_cancel` schedules once and cancels twice —
+    // the second cancel must succeed (idempotent) because real
+    // caller code can race the scheduler worker firing the job.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let usage = FunctionUsageTracker::new();
+    let mut tx = fx
+        .database
+        .begin_with_ts(Identity::system(), *fx.database.now_ts_for_reads(), usage)
+        .await?;
+    let out = runner
+        .run_mutation(
+            "schedule_then_cancel",
+            &mut tx,
+            TableNamespace::Global,
+            ConvexObject::empty(),
+        )
+        .await?;
+    fx.database
+        .commit_with_write_source(tx, "scheduler_cancel_test")
+        .await?;
+    match out {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "ok"),
+        other => panic!("expected 'ok', got {other:?}"),
+    }
+    Ok(())
+}
