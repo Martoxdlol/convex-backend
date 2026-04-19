@@ -225,6 +225,75 @@ async fn mutation_dispatch_returns_final_tx_summary() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn internal_mutation_delete_surfaces_final_tx_over_the_wire() -> anyhow::Result<()> {
+    // Distributed mirror of the standalone internal_delete test.
+    // Runs `create_todo` locally to mint a real id (commits on
+    // the fixture's own DB), then dispatches `internal_delete`
+    // through the wire. The worker runs the handler against its
+    // tx and returns the DistributedFinalTx summary; we just
+    // assert the summary exists and that the writes vec has the
+    // delete entry. A regression in delete-write encoding would
+    // either drop the entry or mis-serialise it.
+    let fx = DbFixture::new_in_memory().await?;
+
+    // Mint a row locally via create_todo so we have a valid id
+    // the internal_delete call can target.
+    let local_runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let usage = FunctionUsageTracker::new();
+    let mut tx = fx
+        .database
+        .begin_with_ts(Identity::system(), *fx.database.now_ts_for_reads(), usage)
+        .await?;
+    let id_value = local_runner
+        .run_mutation(
+            "create_todo",
+            &mut tx,
+            TableNamespace::Global,
+            args(&[
+                ("owner", ConvexValue::try_from("eve".to_string())?),
+                ("text", ConvexValue::try_from("disposable".to_string())?),
+            ]),
+        )
+        .await?;
+    fx.database
+        .commit_with_write_source(tx, "distributed_delete_seed")
+        .await?;
+    let seeded_id = match id_value {
+        ConvexValue::String(s) => s.to_string(),
+        other => panic!("expected id string, got {other:?}"),
+    };
+
+    let addr = spawn_worker(fx.database.clone()).await;
+    let client = TonicWorkerClient::connect(format!("http://{addr}")).await?;
+    let runner = DistributedFunctionRunner::new(vec![client])?;
+
+    let resp = runner
+        .execute(
+            ExecuteRequest {
+                name: "internal_delete".to_string(),
+                namespace: TableNamespace::Global,
+                args: args(&[("id", ConvexValue::try_from(seeded_id)?)]),
+                timeout: None,
+                min_registry_version: None,
+                execution_context: None,
+                begin_timestamp: Some(u64::from(*fx.database.now_ts_for_reads())),
+                existing_writes: Vec::new(),
+                http_request: None,
+                identity: Vec::new(),
+            },
+            UdfType::Mutation,
+        )
+        .await?;
+    resp.result.expect("delete succeeds");
+    let final_tx = resp.final_tx.expect("mutation returns FinalTxSummary");
+    assert!(
+        !final_tx.writes.is_empty(),
+        "internal_delete produces a delete entry in the writes summary",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unknown_function_errors_verbatim_through_the_wire() -> anyhow::Result<()> {
     let fx = DbFixture::new_in_memory().await?;
     let addr = spawn_worker(fx.database.clone()).await;
