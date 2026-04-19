@@ -696,6 +696,22 @@ pub async fn pending_count_http(
     Ok(HttpResponse::text(200, n.to_string()))
 }
 
+/// Echo `req.path_remainder()` back in the response body. The
+/// router-level dispatch populates `routed_path` (which
+/// `path_remainder()` aliases to), so a handler can see what
+/// sub-path the router matched. Complement to the `body_*` /
+/// header accessors covered by the ping / echo_json handlers.
+#[convex::http_action(method = "GET", path = "/api/remainder")]
+pub async fn path_remainder_probe(
+    _ctx: &mut HttpActionCtx<'_, Rt>,
+    req: HttpRequest,
+) -> anyhow::Result<HttpResponse> {
+    Ok(HttpResponse::text(
+        200,
+        format!("remainder={}", req.path_remainder()),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Crons
 // ---------------------------------------------------------------------------

@@ -129,6 +129,29 @@ async fn http_action_sub_calls_native_query_via_callbacks() -> anyhow::Result<()
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn path_remainder_returns_routed_path() -> anyhow::Result<()> {
+    // `HttpRequest::path_remainder()` aliases to `routed_path` —
+    // what the router hands the handler after matching. Asserting
+    // the accessor round-trips the supplied value keeps the
+    // handler-visible contract stable even if the internal storage
+    // shape shifts.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/remainder".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/remainder".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::GET:/api/remainder", request)
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"remainder=/api/remainder"));
+    Ok(())
+}
+
 #[test]
 fn http_router_collects_registered_routes() {
     // `HttpRouter::collect()` enumerates inventory-submitted
