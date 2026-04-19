@@ -161,3 +161,36 @@ async fn mutation_scheduler_cancel_is_idempotent() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mutation_scheduler_run_at_accepts_absolute_timestamp() -> anyhow::Result<()> {
+    // MutationScheduler::run_at converts the absolute timestamp
+    // into a delay against the *runtime* clock (not SystemTime::now
+    // — so mocked-runtime tests stay deterministic) before
+    // delegating to run_after. This test just asserts the call
+    // succeeds and mints an id; deeper delay-math coverage lives
+    // in convex_native_core::ctx::scheduler::tests.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let usage = FunctionUsageTracker::new();
+    let mut tx = fx
+        .database
+        .begin_with_ts(Identity::system(), *fx.database.now_ts_for_reads(), usage)
+        .await?;
+    let out = runner
+        .run_mutation(
+            "schedule_at_absolute_time",
+            &mut tx,
+            TableNamespace::Global,
+            ConvexObject::empty(),
+        )
+        .await?;
+    fx.database
+        .commit_with_write_source(tx, "scheduler_run_at_test")
+        .await?;
+    match out {
+        ConvexValue::String(s) => assert!(!s.is_empty(), "job id must be non-empty"),
+        other => panic!("expected string id, got {other:?}"),
+    }
+    Ok(())
+}

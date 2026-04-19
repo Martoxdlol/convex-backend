@@ -489,6 +489,23 @@ pub async fn schedule_then_cancel(ctx: &mut MutationCtx<'_, Rt>) -> anyhow::Resu
     Ok("ok".to_string())
 }
 
+/// Schedule a mutation at an absolute wall-clock timestamp one
+/// hour after the current runtime clock. Exercises
+/// `MutationScheduler::run_at(UnixTimestamp, ...)`, which
+/// internally converts to a `Duration` via
+/// `self.tx.runtime().unix_timestamp()` — mocked runtimes see
+/// mocked time, so deterministic tests can assert on the
+/// recorded delay. Returns the job id.
+#[convex::mutation]
+pub async fn schedule_at_absolute_time(ctx: &mut MutationCtx<'_, Rt>) -> anyhow::Result<String> {
+    let ts = ctx.unix_timestamp() + Duration::from_secs(3600);
+    let id = ctx
+        .scheduler()
+        .run_at(ts, NightlyCleanup, NightlyCleanupArgs {})
+        .await?;
+    Ok(id.to_string())
+}
+
 /// Internal action used as a cron target to exercise the
 /// `target_kind = "action"` code path in `CronRegistry`.
 #[convex::action(internal)]
