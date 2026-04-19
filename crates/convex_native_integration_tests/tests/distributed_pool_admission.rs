@@ -122,6 +122,23 @@ async fn pool_sees_fixture_function_specs_after_admission() -> anyhow::Result<()
         .expect("http_action advertised under synthetic name");
     assert_eq!(ping.udf_type, UdfType::HttpAction);
 
+    // eligible_for_http is the router-aware lookup the backend
+    // consults when forwarding /http/* traffic to workers. A
+    // regression in the HTTP-route indexing would leave the
+    // name-based lookup working but break the method+path
+    // dispatch. Pin both the happy path and the method-miss
+    // path.
+    let eligible = pool.eligible_for_http("POST", "/api/ping");
+    assert!(
+        !eligible.is_empty(),
+        "eligible_for_http should return at least one worker for a registered route",
+    );
+    let wrong_method = pool.eligible_for_http("GET", "/api/ping");
+    assert!(
+        wrong_method.is_empty(),
+        "method miss must return empty (GET /api/ping is not registered as a GET route)",
+    );
+
     assert!(
         pool.lookup_function("does_not_exist").is_none(),
         "unknown names don't resolve",
