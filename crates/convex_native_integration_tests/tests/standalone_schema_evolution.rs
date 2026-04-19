@@ -19,12 +19,17 @@ type _ForceLink = convex_native_integration_tests::fixture_app::Todo;
 fn warmup_plan_includes_every_fixture_index() -> anyhow::Result<()> {
     let schema = NativeSchema::collect()?;
     let plan = plan_warmup(&schema);
-    // Fixture declares `todos.by_owner`, `todos.by_owner_done`,
-    // `messages.by_channel`. Every entry should be a `DbIndex`
-    // (no text/vector in the baseline fixture).
+    // Fixture declares three db indexes (todos.by_owner,
+    // todos.by_owner_done, messages.by_channel) + one text index
+    // (messages.by_body) + one vector index (messages.by_embedding).
+    // plan_warmup should surface every one of them in its output —
+    // backfill ordering depends on it. A regression in any of the
+    // three WarmupEntry arms would fail this test.
     let mut saw_by_owner = false;
     let mut saw_by_owner_done = false;
     let mut saw_by_channel = false;
+    let mut saw_text_by_body = false;
+    let mut saw_vector_by_embedding = false;
     for entry in &plan {
         match entry {
             WarmupEntry::DbIndex { table, descriptor } => {
@@ -38,8 +43,15 @@ fn warmup_plan_includes_every_fixture_index() -> anyhow::Result<()> {
                     saw_by_channel = true;
                 }
             },
-            WarmupEntry::TextIndex { .. } | WarmupEntry::VectorIndex { .. } => {
-                panic!("fixture doesn't declare text/vector indexes; got {entry:?}");
+            WarmupEntry::TextIndex { table, descriptor } => {
+                if table.to_string() == "messages" && descriptor.to_string() == "by_body" {
+                    saw_text_by_body = true;
+                }
+            },
+            WarmupEntry::VectorIndex { table, descriptor } => {
+                if table.to_string() == "messages" && descriptor.to_string() == "by_embedding" {
+                    saw_vector_by_embedding = true;
+                }
             },
         }
     }
@@ -49,6 +61,14 @@ fn warmup_plan_includes_every_fixture_index() -> anyhow::Result<()> {
         "todos.by_owner_done missing from {plan:?}",
     );
     assert!(saw_by_channel, "messages.by_channel missing from {plan:?}");
+    assert!(
+        saw_text_by_body,
+        "messages.by_body text index missing from {plan:?}",
+    );
+    assert!(
+        saw_vector_by_embedding,
+        "messages.by_embedding vector index missing from {plan:?}",
+    );
     Ok(())
 }
 

@@ -76,18 +76,32 @@ pub struct Todo {
     pub metadata: Option<Metadata>,
 }
 
-/// Secondary table — plain table used by tests that want a second
-/// tablet alongside `todos`. Text + vector indexes live in a
-/// separate fixture module that only the relevant tests opt into,
-/// because wiring their backfill requires the
-/// `SearchAndVectorBootstrapWorker` on top of the plain
-/// `SchemaWorker`.
+/// Secondary table. Declares a text index *and* a vector index so
+/// search-index collection paths (`NativeSchema::collect`,
+/// `warmup::plan_warmup`, the admission envelope's schema JSON)
+/// are exercised by the fixture. The indexes aren't backfilled —
+/// `DbFixture::new_in_memory()` intentionally skips
+/// `publish_native_schema` — but the declaration side is what
+/// survives through the wire and is what regressions tend to
+/// flatten.
 #[derive(ConvexDocument, Debug, Clone)]
 #[convex(table = "messages")]
 #[convex(index(name = "by_channel", fields = ["channel"]))]
+#[convex(text_index(
+    name = "by_body",
+    search_field = "body",
+    filter_fields = ["channel"]
+))]
+#[convex(vector_index(
+    name = "by_embedding",
+    vector_field = "embedding",
+    dimensions = 8,
+    filter_fields = ["channel"]
+))]
 pub struct Message {
     pub channel: String,
     pub body: String,
+    pub embedding: Vec<f64>,
 }
 
 // ---------------------------------------------------------------------------
