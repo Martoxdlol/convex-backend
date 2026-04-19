@@ -351,6 +351,21 @@ pub async fn schedule_follow_up(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<(
     Ok(())
 }
 
+/// Internal action used as a cron target to exercise the
+/// `target_kind = "action"` code path in `CronRegistry`.
+#[convex::action(internal)]
+pub async fn internal_action(_ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[convex::cron(
+    name = "hourly-probe",
+    schedule = "0 * * * *",
+    target = "internal_action",
+    target_kind = "action"
+)]
+fn _hourly_probe_cron() {}
+
 /// Action that stores + retrieves + deletes a blob through
 /// `ctx.storage()`. `TestCallbacks` records the three calls.
 #[convex::action]

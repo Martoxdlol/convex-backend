@@ -31,6 +31,14 @@ fn cron_registry_includes_fixture_entry() {
     assert_eq!(entry.schedule, "0 3 * * *");
     assert_eq!(entry.target, "nightly_cleanup");
     assert_eq!(entry.target_kind, "mutation");
+
+    // Fixture also registers an action-kind cron so the
+    // target_kind = "action" branch is exercised.
+    let action_cron = registry
+        .lookup("hourly-probe")
+        .expect("hourly-probe cron registered");
+    assert_eq!(action_cron.target, "internal_action");
+    assert_eq!(action_cron.target_kind, "action");
 }
 
 #[test]
