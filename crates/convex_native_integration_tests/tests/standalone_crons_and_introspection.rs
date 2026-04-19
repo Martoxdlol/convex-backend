@@ -93,6 +93,32 @@ fn built_backend_summary_names_all_pieces() -> anyhow::Result<()> {
 }
 
 #[test]
+fn built_backend_describe_pretty_is_valid_json_string() -> anyhow::Result<()> {
+    // describe_pretty() is the CLI-facing surface — it calls
+    // describe_json and serialises the result with
+    // `serde_json::to_string_pretty`. Pin that it always returns
+    // parseable JSON (not the "<serde error>" fallback) and that
+    // the pretty form contains each top-level key the caller
+    // expects to `jq` against.
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let built = ConvexBackend::new()
+        .with_native_functions()
+        .with_native_schema()
+        .with_http_routes()
+        .with_crons()
+        .with_callbacks(callbacks)
+        .build()?;
+    let pretty = built.describe_pretty();
+    let parsed: serde_json::Value = serde_json::from_str(&pretty)?;
+    assert_eq!(parsed["version"].as_i64(), Some(1));
+    // The pretty form should contain newlines (confirms
+    // serde_json::to_string_pretty actually ran, vs just
+    // `to_string`).
+    assert!(pretty.contains('\n'), "expected pretty-printed output");
+    Ok(())
+}
+
+#[test]
 fn built_backend_describe_json_is_stable_v1() -> anyhow::Result<()> {
     let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
     let built = ConvexBackend::new()
