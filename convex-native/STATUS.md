@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 244 tests
 cargo test -p convex_native_backend              # 12 tests
 cargo test -p convex_native_distributed          # 161 tests
-cargo test -p convex_native_integration_tests    # 75 tests
+cargo test -p convex_native_integration_tests    # 80 tests
 
-# 492 total — all green
+# 497 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
@@ -1144,8 +1144,8 @@ that drives a shared fixture app through both topologies:
 | Test file | Topology | Coverage |
 |-----------|----------|----------|
 | `standalone_golden_path.rs` | monolith | query/mutation round-trip, `ctx.auth()`, `ctx.unix_timestamp()` |
-| `standalone_actions.rs` | monolith | pure actions, `ctx.log()` drain in both action + mutation ctx, `errors::bad_request` metadata |
-| `standalone_http_actions.rs` | monolith | `#[convex::http_action]` dispatch, router lookup, unknown-route error, JSON body + header round-trip |
+| `standalone_actions.rs` | monolith | pure actions, `ctx.log()` drain in both action + mutation ctx + every level (debug/info/warn/error), `errors::bad_request` metadata |
+| `standalone_http_actions.rs` | monolith | `#[convex::http_action]` dispatch, router lookup, unknown-route error, JSON body + header round-trip, HTTP sub-call through callbacks, `path_remainder` accessor |
 | `standalone_crons_and_introspection.rs` | wire-independent | `CronRegistry::collect`, `NativeSchema::collect`, `HttpRouter::collect`, `ConvexBackend::build().validate()`, `describe_json` v1 envelope |
 | `standalone_runner_knobs.rs` | monolith | `CountingMetrics`, `begin_drain()`, `CircuitBreaker` open/closed |
 | `derive_round_trips.rs` | wire-independent | `ConvexEnum` / `ConvexNested` / `ConvexUnion` / `ConvexDocument` `to_convex`/`from_convex` symmetry |
@@ -1161,8 +1161,8 @@ that drives a shared fixture app through both topologies:
 | `distributed_golden_path.rs` | distributed | query over tonic against seeded DB, mutation returns `DistributedFinalTx`, unknown-function wire error |
 | `distributed_actions.rs` | distributed | pure action wire round-trip, `log_lines` drain, `bad_request` → `Err(String)` |
 | `distributed_http_actions.rs` | distributed | `http_request` / `http_response` text payload + JSON body + header round-trip |
-| `distributed_admission.rs` | distributed | `collect_inventory()` envelope contents + stable hash + `is_internal` propagation |
-| `distributed_execution_context.rs` | distributed | `ExecutionContext.request_id` round-trips into the worker's ctx |
+| `distributed_admission.rs` | distributed | `collect_inventory()` envelope contents + stable hash + `is_internal` propagation + cron schedule/kind round-trip |
+| `distributed_execution_context.rs` | distributed | `ExecutionContext.request_id` + `execution_id` round-trip into the worker's ctx |
 | `distributed_pool_admission.rs` | distributed | full admission loop pushes every fixture function spec (kind, internal flag, HTTP route) into `WorkerPool::lookup_function` |
 | `distributed_action_sub_calls.rs` | distributed | end-to-end action → `ctx.run_query(...)` sub-call chain: worker `FunctionExecutionServer.with_backend_callback_endpoint(...)` → `BackendCallbackClient` → `BackendCallbackServer` → `ActionCallbacks::execute_query` → back into the action's return value |
 
