@@ -109,6 +109,60 @@ async fn request_id_round_trips_through_the_worker_ctx() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn anonymous_identity_round_trips_and_whoami_reports_anonymous() -> anyhow::Result<()> {
+    // Every existing distributed test sends `identity: Vec::new()`,
+    // which the encode_identity_for_wire shortcut hands the
+    // worker as Identity::System. Proving an explicitly-forged
+    // Identity::Unknown(None) encodes through UncheckedIdentity,
+    // reaches the worker, and re-hydrates into ctx.auth() as
+    // the anonymous principal is what pins the "caller identity
+    // survives the wire" contract at full fidelity.
+    use convex_native_distributed::function_runner_impl::encode_identity_for_wire;
+    use keybroker::Identity;
+
+    let fx = DbFixture::new_in_memory().await?;
+    let addr = spawn_worker(fx.database.clone()).await;
+    let client = TonicWorkerClient::connect(format!("http://{addr}")).await?;
+    let runner = DistributedFunctionRunner::new(vec![client])?;
+
+    let anon_bytes = encode_identity_for_wire(&Identity::Unknown(None));
+    assert!(
+        !anon_bytes.is_empty(),
+        "anonymous identity must round-trip through UncheckedIdentity (empty-bytes reserved for \
+         the system short-circuit)",
+    );
+
+    let args: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+    let resp = runner
+        .execute(
+            ExecuteRequest {
+                name: "whoami".to_string(),
+                namespace: TableNamespace::Global,
+                args: ConvexObject::try_from(args)?,
+                timeout: None,
+                min_registry_version: None,
+                execution_context: None,
+                begin_timestamp: Some(u64::from(*fx.database.now_ts_for_reads())),
+                existing_writes: Vec::new(),
+                http_request: None,
+                identity: anon_bytes,
+            },
+            UdfType::Query,
+        )
+        .await?;
+    let got = resp.result.expect("query succeeds");
+    match got {
+        ConvexValue::String(s) => assert_eq!(
+            s.to_string(),
+            "anonymous",
+            "worker ctx.auth() should see the forged Unknown identity",
+        ),
+        other => panic!("expected string, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn execution_id_round_trips_through_the_worker_ctx() -> anyhow::Result<()> {
     // Companion to request_id_round_trips_through_the_worker_ctx;
     // execution_id lives in a separate proto field
