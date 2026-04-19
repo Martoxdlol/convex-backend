@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 242 tests
 cargo test -p convex_native_backend              # 10 tests
 cargo test -p convex_native_distributed          # 72 tests
-cargo test -p convex_native_integration_tests    # 47 tests
+cargo test -p convex_native_integration_tests    # 60 tests
 
-# 371 total — all green
+# 384 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
@@ -1154,10 +1154,16 @@ that drives a shared fixture app through both topologies:
 | `standalone_typed_query_ops.rs` | monolith | `.first()` / `.take(n)` / `.count()` / `.gte` + `.lt` range |
 | `standalone_errors_and_rng.rs` | monolith | every `errors::*` helper + `ctx.rng_u64()` determinism |
 | `standalone_test_callbacks.rs` | monolith | `TestCallbacks` + `CallRecord` + `args!` macro (USAGE.md §17) |
+| `standalone_timeout.rs` | monolith | per-function + runner-default timeouts abort runaway handlers |
+| `standalone_scheduler_storage.rs` | monolith | `ctx.scheduler().run_after(...)` and full `ctx.storage()` flow via `TestCallbacks` |
+| `standalone_mutation_surface.rs` | monolith | `replace`, `delete`, `patch` mutation operators |
+| `http_response_builders.rs` | wire-independent | `HttpResponse::new/text/json/redirect/with_header/with_body` |
 | `distributed_golden_path.rs` | distributed | query over tonic against seeded DB, mutation returns `DistributedFinalTx`, unknown-function wire error |
 | `distributed_actions.rs` | distributed | pure action wire round-trip, `log_lines` drain, `bad_request` → `Err(String)` |
 | `distributed_http_actions.rs` | distributed | `http_request` / `http_response` payload round-trip |
 | `distributed_admission.rs` | distributed | `collect_inventory()` envelope contents + stable hash + `is_internal` propagation |
+| `distributed_execution_context.rs` | distributed | `ExecutionContext.request_id` round-trips into the worker's ctx |
+| `distributed_pool_admission.rs` | distributed | full admission loop pushes every fixture function spec (kind, internal flag, HTTP route) into `WorkerPool::lookup_function` |
 
 Delta since Phase 1: +16 tests on `convex_native_distributed`
 covering the substep-2.1/2.2/2.3/2.4 wire additions, the
