@@ -86,6 +86,32 @@ fn notification_tagged_union_uses_kind_discriminator() -> anyhow::Result<()> {
 }
 
 #[test]
+fn notification_second_variant_round_trips_with_its_own_tag() -> anyhow::Result<()> {
+    // The Email variant pins the discriminator; the Push variant
+    // exercises the second branch of the generated from_convex
+    // match — a regression that only wired one variant would slip
+    // past the Email test.
+    let push = Notification::Push {
+        token: "dev-token".to_string(),
+    };
+    let v = push.clone().to_convex()?;
+    match &v {
+        ConvexValue::Object(o) => {
+            let kind_field: FieldName = "kind".parse()?;
+            let kind = o.get(&kind_field).expect("tag field present");
+            match kind {
+                ConvexValue::String(s) => assert_eq!(s.to_string(), "push"),
+                other => panic!("expected string tag, got {other:?}"),
+            }
+        },
+        other => panic!("expected object, got {other:?}"),
+    }
+    let back = Notification::from_convex(v)?;
+    assert_eq!(push, back);
+    Ok(())
+}
+
+#[test]
 fn todo_document_round_trips_with_optional_nested() -> anyhow::Result<()> {
     // Option<Metadata> should accept both None (serialised as
     // absent / null) and Some(value).
