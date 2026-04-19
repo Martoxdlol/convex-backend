@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 244 tests
 cargo test -p convex_native_backend              # 12 tests
 cargo test -p convex_native_distributed          # 161 tests
-cargo test -p convex_native_integration_tests    # 86 tests
+cargo test -p convex_native_integration_tests    # 88 tests
 
-# 503 total — all green
+# 505 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
@@ -1144,7 +1144,7 @@ that drives a shared fixture app through both topologies:
 | Test file | Topology | Coverage |
 |-----------|----------|----------|
 | `standalone_golden_path.rs` | monolith | query/mutation round-trip, `ctx.auth()`, `ctx.unix_timestamp()` |
-| `standalone_actions.rs` | monolith | pure actions, `ctx.log()` drain in both action + mutation ctx + every level (debug/info/warn/error), `errors::bad_request` metadata |
+| `standalone_actions.rs` | monolith | pure actions, `ctx.log()` drain in both action + mutation ctx + every level (debug/info/warn/error), `errors::bad_request` metadata, action → action local-runner fast path |
 | `standalone_http_actions.rs` | monolith | `#[convex::http_action]` dispatch, router lookup, unknown-route error, JSON body + header round-trip, HTTP sub-call through callbacks, `path_remainder` accessor |
 | `standalone_crons_and_introspection.rs` | wire-independent | `CronRegistry::collect`, `NativeSchema::collect`, `HttpRouter::collect`, `ConvexBackend::build().validate()`, `describe_json` v1 envelope, `describe_pretty` CLI form |
 | `standalone_runner_knobs.rs` | monolith | `CountingMetrics`, `begin_drain()`, `CircuitBreaker` open/closed |
@@ -1155,7 +1155,7 @@ that drives a shared fixture app through both topologies:
 | `standalone_errors_and_rng.rs` | monolith | every `errors::*` helper + `ctx.rng_u64()` determinism + `ctx.rng_fill()` byte-buffer determinism |
 | `standalone_test_callbacks.rs` | monolith | `TestCallbacks` + `CallRecord` + `args!` macro (USAGE.md §17) + `ctx.run_query_raw` untyped sub-call |
 | `standalone_timeout.rs` | monolith | per-function + runner-default timeouts abort runaway handlers |
-| `standalone_scheduler_storage.rs` | monolith | `ctx.scheduler().run_after(...)` and full `ctx.storage()` flow via `TestCallbacks` + mutation-ctx scheduler writes to tx + `cancel` idempotency |
+| `standalone_scheduler_storage.rs` | monolith | `ctx.scheduler().run_after(...)` and full `ctx.storage()` flow via `TestCallbacks` + mutation-ctx scheduler writes to tx + `cancel` idempotency + `run_at` absolute-timestamp |
 | `standalone_mutation_surface.rs` | monolith | `replace`, `delete`, `patch` mutation operators |
 | `http_response_builders.rs` | wire-independent | `HttpResponse::new/text/json/redirect/with_header/with_body` |
 | `distributed_golden_path.rs` | distributed | query over tonic against seeded DB, mutation returns `DistributedFinalTx`, unknown-function wire error |
