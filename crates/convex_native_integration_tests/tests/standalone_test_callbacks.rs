@@ -122,6 +122,61 @@ async fn action_sub_mutation_routes_through_run_mutation_by_name() -> anyhow::Re
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn action_db_get_routes_through_read_document_at_snapshot() -> anyhow::Result<()> {
+    // ActionCtx::db().get(id) routes through
+    // NativeActionCallbacks::read_document_at_snapshot — a
+    // distinct callback method from run_query_by_name /
+    // run_mutation_by_name. TestCallbacks exposes it via
+    // on_doc_read(table, ...). Stub the `todos` table to
+    // synthesise a read result and assert the fixture action
+    // returns the decoded text.
+    use convex_native_core::__private::{
+        ConvexObject,
+        FieldName,
+    };
+    // Synthesise a `Todo` object for the stub to return.
+    let mut fields: std::collections::BTreeMap<FieldName, ConvexValue> =
+        std::collections::BTreeMap::new();
+    fields.insert(
+        "owner".parse()?,
+        ConvexValue::try_from("alice".to_string())?,
+    );
+    fields.insert(
+        "text".parse()?,
+        ConvexValue::try_from("stubbed".to_string())?,
+    );
+    fields.insert("done".parse()?, ConvexValue::Boolean(false));
+    fields.insert("created_at".parse()?, ConvexValue::Float64(0.0));
+    fields.insert("metadata".parse()?, ConvexValue::Null);
+    let obj = ConvexObject::try_from(fields)?;
+
+    let (callbacks, _history) = TestCallbacks::new()
+        .on_doc_read("todos", move |_id| Ok(Some(obj.clone())))
+        .build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+
+    // The id payload is irrelevant — the on_doc_read closure
+    // ignores it — but it must be a valid DeveloperDocumentId
+    // string so arg decoding succeeds. `MIN` is a good pick: a
+    // stable test-only sentinel that parses through FromStr.
+    let id_str = value::DeveloperDocumentId::MIN.encode();
+    let out = runner
+        .run_action_with_callbacks(
+            "read_todo_from_action",
+            TableNamespace::Global,
+            convex_native_core::testing::args! { "id" => id_str },
+            callbacks,
+        )
+        .await?;
+    match out {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "stubbed"),
+        other => panic!("expected stubbed text, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unregistered_sub_query_bails_loudly() -> anyhow::Result<()> {
     // No `on_query` registered, so `ctx.run_query(CountPending,
     // ...)` should produce a clear error that names the missing

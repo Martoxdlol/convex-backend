@@ -310,6 +310,24 @@ pub async fn chain_echo(ctx: &mut ActionCtx<'_, Rt>, message: String) -> anyhow:
     ctx.run_action(EchoAction, EchoActionArgs { message }).await
 }
 
+/// Action that reads a Todo by id from inside the action
+/// context. Exercises `ActionCtx::db().get(id)`, which routes
+/// through `NativeActionCallbacks::read_document_at_snapshot`
+/// (not the per-ctx `ctx.run_query(...)` sub-call path). Returns
+/// the text of the read document, or the string `"(missing)"`
+/// when the callback resolves to `None`.
+#[convex::action]
+pub async fn read_todo_from_action(
+    ctx: &mut ActionCtx<'_, Rt>,
+    id: Id<Todo>,
+) -> anyhow::Result<String> {
+    let got = ctx.db().get(id).await?;
+    Ok(match got {
+        Some(t) => t.text,
+        None => "(missing)".to_string(),
+    })
+}
+
 /// Action that sub-calls `create_todo` through the untyped
 /// mutation-by-name callback path. Exercises the action →
 /// sub-mutation route — distinct from `summarise` (sub-query)
