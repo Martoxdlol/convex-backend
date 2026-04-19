@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 244 tests
 cargo test -p convex_native_backend              # 12 tests
 cargo test -p convex_native_distributed          # 161 tests
-cargo test -p convex_native_integration_tests    # 96 tests
+cargo test -p convex_native_integration_tests    # 97 tests
 
-# 513 total — all green
+# 514 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
@@ -1160,7 +1160,7 @@ that drives a shared fixture app through both topologies:
 | `http_response_builders.rs` | wire-independent | `HttpResponse::new/text/json/redirect/with_header/with_body` |
 | `distributed_golden_path.rs` | distributed | query over tonic against seeded DB, mutation returns `DistributedFinalTx`, replace + internal_delete writes-entry round-trips, unknown-function wire error |
 | `distributed_actions.rs` | distributed | pure action wire round-trip, `log_lines` drain, `bad_request` → `Err(String)` |
-| `distributed_http_actions.rs` | distributed | `http_request` / `http_response` text payload + JSON body + header round-trip |
+| `distributed_http_actions.rs` | distributed | `http_request` / `http_response` text payload + JSON body + header round-trip + HTTP handler sub-mutation through backend callbacks over the wire |
 | `distributed_admission.rs` | distributed | `collect_inventory()` envelope contents + stable hash + `is_internal` propagation on every UdfType kind + cron schedule/kind round-trip |
 | `distributed_execution_context.rs` | distributed | `ExecutionContext.request_id` + `execution_id` round-trip into the worker's ctx |
 | `distributed_pool_admission.rs` | distributed | full admission loop pushes every fixture function spec (kind, internal flag, HTTP route) into `WorkerPool::lookup_function` |
