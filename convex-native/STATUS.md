@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 244 tests
 cargo test -p convex_native_backend              # 12 tests
 cargo test -p convex_native_distributed          # 161 tests
-cargo test -p convex_native_integration_tests    # 94 tests
+cargo test -p convex_native_integration_tests    # 95 tests
 
-# 511 total — all green
+# 512 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
@@ -1153,7 +1153,7 @@ that drives a shared fixture app through both topologies:
 | `standalone_db_api.rs` | monolith | `ctx.db().get(id)` / `exists` / `normalize_id` (accept + reject) / `try_get` error / `get_many` / `get_with_meta` |
 | `standalone_typed_query_ops.rs` | monolith | `.first()` / `.take(n)` / `.count()` / `.gte` + `.lt` range / `.gt` + `.lte` mirror |
 | `standalone_errors_and_rng.rs` | monolith | every `errors::*` helper + `ctx.rng_u64()` determinism + `ctx.rng_fill()` byte-buffer determinism |
-| `standalone_test_callbacks.rs` | monolith | `TestCallbacks` + `CallRecord` + `args!` macro (USAGE.md §17) + `ctx.run_query_raw` untyped sub-call + action → sub-mutation via run_mutation_by_name |
+| `standalone_test_callbacks.rs` | monolith | `TestCallbacks` + `CallRecord` + `args!` macro (USAGE.md §17) + `ctx.run_query_raw` untyped sub-call + action → sub-mutation via run_mutation_by_name + ActionCtx.db().get via read_document_at_snapshot |
 | `standalone_timeout.rs` | monolith | per-function + runner-default timeouts abort runaway handlers |
 | `standalone_scheduler_storage.rs` | monolith | `ctx.scheduler().run_after(...)` and full `ctx.storage()` flow via `TestCallbacks` + mutation-ctx scheduler writes to tx + `cancel` idempotency + `run_at` absolute-timestamp |
 | `standalone_mutation_surface.rs` | monolith | `replace`, `delete`, `patch` mutation operators |
