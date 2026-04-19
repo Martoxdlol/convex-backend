@@ -165,6 +165,31 @@ async fn mutation_log_lines_land_in_the_shared_buffer() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn action_run_action_uses_local_runner_fast_path() -> anyhow::Result<()> {
+    // chain_echo calls ctx.run_action(EchoAction, ...). The action
+    // ctx's run_action_raw checks the local runner first and
+    // dispatches inline when the callee is registered — avoiding
+    // a callback round-trip. NoopCallbacks would normally bail on
+    // an action sub-call, so if the fast path ever regresses (e.g.
+    // the runner handle is dropped), this test surfaces it.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let out = runner
+        .run_action_with_callbacks(
+            "chain_echo",
+            TableNamespace::Global,
+            args(&[("message", ConvexValue::try_from("looped".to_string())?)]),
+            callbacks,
+        )
+        .await?;
+    match out {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "echo:looped"),
+        other => panic!("expected string, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bad_request_error_surfaces_with_metadata() -> anyhow::Result<()> {
     // `always_bad_request` returns an `errors::bad_request` so
     // callers can see a 400-style error with the expected short

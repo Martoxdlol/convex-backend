@@ -267,6 +267,18 @@ pub async fn echo_action(ctx: &mut ActionCtx<'_, Rt>, message: String) -> anyhow
     Ok(format!("echo:{message}"))
 }
 
+/// Action that sub-calls another action (`echo_action`) via
+/// `ctx.run_action(...)`. Exercises the action → action chain's
+/// same-worker fast path: the runner has the callee in its
+/// inventory, so `run_action_raw` dispatches locally without
+/// round-tripping through callbacks. The distinguishing feature
+/// vs `ctx.run_query`/`run_mutation` is that `run_action` prefers
+/// the local runner when available.
+#[convex::action]
+pub async fn chain_echo(ctx: &mut ActionCtx<'_, Rt>, message: String) -> anyhow::Result<String> {
+    ctx.run_action(EchoAction, EchoActionArgs { message }).await
+}
+
 /// Emit one line at each of the four log levels so tests can
 /// assert that `ctx.log().debug/info/warn/error(...)` each land
 /// in the shared `LogBuffer` with the matching `LogLevel`.
