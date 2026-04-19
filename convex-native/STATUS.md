@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 244 tests
 cargo test -p convex_native_backend              # 12 tests
 cargo test -p convex_native_distributed          # 161 tests
-cargo test -p convex_native_integration_tests    # 95 tests
+cargo test -p convex_native_integration_tests    # 96 tests
 
-# 512 total — all green
+# 513 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
@@ -1164,7 +1164,7 @@ that drives a shared fixture app through both topologies:
 | `distributed_admission.rs` | distributed | `collect_inventory()` envelope contents + stable hash + `is_internal` propagation on every UdfType kind + cron schedule/kind round-trip |
 | `distributed_execution_context.rs` | distributed | `ExecutionContext.request_id` + `execution_id` round-trip into the worker's ctx |
 | `distributed_pool_admission.rs` | distributed | full admission loop pushes every fixture function spec (kind, internal flag, HTTP route) into `WorkerPool::lookup_function` |
-| `distributed_action_sub_calls.rs` | distributed | end-to-end action → `ctx.run_query(...)` sub-call chain: worker `FunctionExecutionServer.with_backend_callback_endpoint(...)` → `BackendCallbackClient` → `BackendCallbackServer` → `ActionCallbacks::execute_query` → back into the action's return value |
+| `distributed_action_sub_calls.rs` | distributed | end-to-end action → `ctx.run_query(...)` **and** `ctx.run_mutation_raw(...)` sub-call chain: worker `FunctionExecutionServer.with_backend_callback_endpoint(...)` → `BackendCallbackClient` → `BackendCallbackServer` → `ActionCallbacks::execute_query`/`execute_mutation` → back into the action's return value |
 
 Delta since Phase 1: +16 tests on `convex_native_distributed`
 covering the substep-2.1/2.2/2.3/2.4 wire additions, the
