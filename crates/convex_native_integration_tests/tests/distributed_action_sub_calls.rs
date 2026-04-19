@@ -75,6 +75,125 @@ use vector::PublicVectorSearchQueryResult;
 #[allow(dead_code)]
 type _ForceLink = convex_native_integration_tests::fixture_app::Todo;
 
+/// `ActionCallbacks` stub that returns a fixed `String("stub-id")`
+/// for any `execute_mutation` call and bails on every other
+/// method. Mirrors `FixedQueryCallbacks` but for the sub-mutation
+/// leg of the Phase-4 chain.
+struct FixedMutationCallbacks;
+
+#[async_trait]
+impl ActionCallbacks for FixedMutationCallbacks {
+    async fn execute_query(
+        &self,
+        _: Identity,
+        _: CanonicalizedComponentFunctionPath,
+        _: SerializedArgs,
+        _: ExecutionContext,
+    ) -> anyhow::Result<FunctionResult> {
+        anyhow::bail!("unused")
+    }
+
+    async fn execute_mutation(
+        &self,
+        _identity: Identity,
+        _path: CanonicalizedComponentFunctionPath,
+        _args: SerializedArgs,
+        _context: ExecutionContext,
+    ) -> anyhow::Result<FunctionResult> {
+        // JsonPackedValue for String("stub-id") — wrapped in the
+        // network JSON shape.
+        Ok(FunctionResult {
+            result: Ok(JsonPackedValue::from_network("\"stub-id\"".to_string())?),
+        })
+    }
+
+    async fn execute_action(
+        &self,
+        _: Identity,
+        _: CanonicalizedComponentFunctionPath,
+        _: SerializedArgs,
+        _: ExecutionContext,
+    ) -> anyhow::Result<FunctionResult> {
+        anyhow::bail!("unused")
+    }
+
+    async fn storage_get_url(
+        &self,
+        _: Identity,
+        _: ComponentId,
+        _: FileStorageId,
+    ) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+
+    async fn storage_delete(
+        &self,
+        _: Identity,
+        _: ComponentId,
+        _: FileStorageId,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn storage_get_file_entry(
+        &self,
+        _: Identity,
+        _: ComponentId,
+        _: FileStorageId,
+    ) -> anyhow::Result<Option<(ComponentPath, FileStorageEntry)>> {
+        Ok(None)
+    }
+
+    async fn storage_store_file_entry(
+        &self,
+        _: Identity,
+        _: ComponentId,
+        _: FileStorageEntry,
+    ) -> anyhow::Result<(ComponentPath, DeveloperDocumentId)> {
+        anyhow::bail!("unused")
+    }
+
+    async fn schedule_job(
+        &self,
+        _: Identity,
+        _: ComponentId,
+        _: CanonicalizedComponentFunctionPath,
+        _: SerializedArgs,
+        _: UnixTimestamp,
+        _: ExecutionContext,
+    ) -> anyhow::Result<DeveloperDocumentId> {
+        anyhow::bail!("unused")
+    }
+
+    async fn cancel_job(&self, _: Identity, _: DeveloperDocumentId) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn vector_search(
+        &self,
+        _: Identity,
+        _: JsonValue,
+    ) -> anyhow::Result<(Vec<PublicVectorSearchQueryResult>, FunctionUsageStats)> {
+        anyhow::bail!("unused")
+    }
+
+    async fn lookup_function_handle(
+        &self,
+        _: Identity,
+        _: FunctionHandle,
+    ) -> anyhow::Result<CanonicalizedComponentFunctionPath> {
+        anyhow::bail!("unused")
+    }
+
+    async fn create_function_handle(
+        &self,
+        _: Identity,
+        _: CanonicalizedComponentFunctionPath,
+    ) -> anyhow::Result<FunctionHandle> {
+        anyhow::bail!("unused")
+    }
+}
+
 /// `ActionCallbacks` stub that returns a fixed `Int64(7)` for any
 /// `execute_query` call and bails on every other method. Proves
 /// the action's `ctx.run_query(...)` sub-call crosses the wire
@@ -195,9 +314,13 @@ impl ActionCallbacks for FixedQueryCallbacks {
 }
 
 async fn spawn_backend_callbacks() -> SocketAddr {
+    spawn_backend_callbacks_with(Arc::new(FixedQueryCallbacks)).await
+}
+
+async fn spawn_backend_callbacks_with(impl_: Arc<dyn ActionCallbacks>) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = BackendCallbackServer::new(Arc::new(FixedQueryCallbacks));
+    let server = BackendCallbackServer::new(impl_);
     tokio::spawn(async move {
         Server::builder()
             .add_service(BackendCallbackServiceServer::new(server))
@@ -269,5 +392,53 @@ async fn summarise_action_routes_sub_query_through_backend_callbacks() -> anyhow
         resp.final_tx.is_none(),
         "actions never carry final_tx (Phase-4 invariant)",
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn chain_create_action_routes_sub_mutation_through_backend_callbacks() -> anyhow::Result<()> {
+    // Mirror of summarise_action_routes_sub_query_through_backend_callbacks
+    // but for the sub-*mutation* leg. chain_create_from_action
+    // does ctx.run_mutation_raw("create_todo", ...) from inside
+    // an action; with a stubbed backend-side execute_mutation
+    // returning "stub-id", the whole chain must return that id
+    // to the action caller over the wire.
+    let cb_addr = spawn_backend_callbacks_with(Arc::new(FixedMutationCallbacks)).await;
+    let worker_addr = spawn_worker(format!("http://{cb_addr}")).await;
+
+    let client = TonicWorkerClient::connect(format!("http://{worker_addr}")).await?;
+    let runner = DistributedFunctionRunner::new(vec![client])?;
+
+    let mut map: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+    map.insert(
+        "owner".parse::<FieldName>()?,
+        ConvexValue::try_from("alice".to_string())?,
+    );
+    map.insert(
+        "text".parse::<FieldName>()?,
+        ConvexValue::try_from("over-the-wire".to_string())?,
+    );
+    let resp = runner
+        .execute(
+            ExecuteRequest {
+                name: "chain_create_from_action".to_string(),
+                namespace: TableNamespace::Global,
+                args: ConvexObject::try_from(map)?,
+                timeout: None,
+                min_registry_version: None,
+                execution_context: None,
+                begin_timestamp: None,
+                existing_writes: Vec::new(),
+                http_request: None,
+                identity: Vec::new(),
+            },
+            UdfType::Action,
+        )
+        .await?;
+    let v = resp.result.expect("chain_create_from_action succeeds");
+    match v {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "stub-id"),
+        other => panic!("expected 'stub-id', got {other:?}"),
+    }
     Ok(())
 }
