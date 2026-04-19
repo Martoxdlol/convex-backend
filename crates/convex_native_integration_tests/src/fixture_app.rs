@@ -257,6 +257,17 @@ pub async fn pull_rng(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<i64> {
     Ok(ctx.rng_u64() as i64)
 }
 
+/// Return `ctx.execution_context().request_id` (as a string) or
+/// an empty string when absent. Lets tests assert the dispatch
+/// layer threads the caller's ExecutionContext through.
+#[convex::query]
+pub async fn request_id(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<String> {
+    Ok(ctx
+        .execution_context()
+        .map(|c| c.request_id.to_string())
+        .unwrap_or_default())
+}
+
 /// Long-running action — loops forever. Tests the runner's
 /// `with_default_timeout` / per-function-timeout path by
 /// letting the runner abort it.
