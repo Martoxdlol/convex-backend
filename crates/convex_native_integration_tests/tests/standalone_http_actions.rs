@@ -63,6 +63,31 @@ async fn http_action_lookup_miss_surfaces_error() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn json_body_and_header_round_trip() -> anyhow::Result<()> {
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Via", "tests".parse()?);
+    let request = HttpRequest {
+        method: Method::POST,
+        url: "http://example.invalid/api/echo".to_string(),
+        headers,
+        body: Bytes::from_static(b"{\"name\":\"alice\"}"),
+        routed_path: "/api/echo".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::POST:/api/echo", request)
+        .await?;
+    assert_eq!(resp.status, 200);
+    let parsed: serde_json::Value = serde_json::from_slice(&resp.body)?;
+    assert_eq!(parsed, serde_json::json!({"hello": "alice", "via": "tests"}));
+    assert_eq!(
+        resp.headers.get("Content-Type").unwrap().to_str().unwrap(),
+        "application/json",
+    );
+    Ok(())
+}
+
 #[test]
 fn http_router_collects_registered_routes() {
     // `HttpRouter::collect()` enumerates inventory-submitted

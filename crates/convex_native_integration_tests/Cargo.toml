@@ -28,6 +28,7 @@ model = { workspace = true }
 pb = { workspace = true }
 runtime = { workspace = true }
 search = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sqlite = { workspace = true }
 sync_types = { workspace = true }

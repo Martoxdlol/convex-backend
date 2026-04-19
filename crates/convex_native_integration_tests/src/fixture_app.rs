@@ -549,6 +549,26 @@ pub async fn ping(
     Ok(HttpResponse::text(200, format!("pong:{body}")))
 }
 
+/// Read a JSON body + a custom header, round-trip them through a
+/// JSON response. Exercises `req.body_json(...)`, `req.header(...)`,
+/// and `HttpResponse::json(...)`.
+#[convex::http_action(method = "POST", path = "/api/echo")]
+pub async fn echo_json(
+    _ctx: &mut HttpActionCtx<'_, Rt>,
+    req: HttpRequest,
+) -> anyhow::Result<HttpResponse> {
+    #[derive(serde::Deserialize)]
+    struct Body {
+        name: String,
+    }
+    let body: Body = req.body_json()?;
+    let via = req.header("x-via").unwrap_or("unknown").to_string();
+    Ok(HttpResponse::json(
+        200,
+        serde_json::json!({ "hello": body.name, "via": via }),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Crons
 // ---------------------------------------------------------------------------
