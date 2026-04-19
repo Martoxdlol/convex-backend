@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 244 tests
 cargo test -p convex_native_backend              # 12 tests
 cargo test -p convex_native_distributed          # 161 tests
-cargo test -p convex_native_integration_tests    # 102 tests
+cargo test -p convex_native_integration_tests    # 103 tests
 
-# 519 total — all green
+# 520 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
@@ -1147,7 +1147,7 @@ that drives a shared fixture app through both topologies:
 | `standalone_actions.rs` | monolith | pure actions, `ctx.log()` drain in both action + mutation ctx + every level (debug/info/warn/error), `errors::bad_request` metadata, action → action local-runner fast path |
 | `standalone_http_actions.rs` | monolith | `#[convex::http_action]` dispatch, router lookup, unknown-route error, JSON body + header round-trip, HTTP sub-call through callbacks, `path_remainder` accessor |
 | `standalone_crons_and_introspection.rs` | wire-independent | `CronRegistry::collect`, `NativeSchema::collect`, `HttpRouter::collect`, `ConvexBackend::build().validate()`, `describe_json` v1 envelope, `describe_pretty` CLI form |
-| `standalone_runner_knobs.rs` | monolith | `CountingMetrics`, `begin_drain()`, `CircuitBreaker` open/closed |
+| `standalone_runner_knobs.rs` | monolith | `CountingMetrics` + `.total_latency()`, `begin_drain()`, `CircuitBreaker` open path **and** below-threshold closed path |
 | `derive_round_trips.rs` | wire-independent | `ConvexEnum` / `ConvexNested` / `ConvexUnion` (both variants) / `ConvexDocument` `to_convex`/`from_convex` symmetry + `Vec<u8>` (Bytes) and `BTreeMap<String, String>` (Record) field-type arms |
 | `standalone_schema_evolution.rs` | wire-independent | `plan_warmup(schema)` + `diff_schemas(old, new)` + `SchemaChange::is_destructive` (TableAdded + TableRemoved sides) |
 | `standalone_db_api.rs` | monolith | `ctx.db().get(id)` / `exists` / `normalize_id` (accept + reject) / `try_get` error / `get_many` / `get_with_meta` |
