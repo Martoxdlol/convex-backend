@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 244 tests
 cargo test -p convex_native_backend              # 12 tests
 cargo test -p convex_native_distributed          # 161 tests
-cargo test -p convex_native_integration_tests    # 80 tests
+cargo test -p convex_native_integration_tests    # 83 tests
 
-# 497 total — all green
+# 500 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
@@ -1149,19 +1149,19 @@ that drives a shared fixture app through both topologies:
 | `standalone_crons_and_introspection.rs` | wire-independent | `CronRegistry::collect`, `NativeSchema::collect`, `HttpRouter::collect`, `ConvexBackend::build().validate()`, `describe_json` v1 envelope |
 | `standalone_runner_knobs.rs` | monolith | `CountingMetrics`, `begin_drain()`, `CircuitBreaker` open/closed |
 | `derive_round_trips.rs` | wire-independent | `ConvexEnum` / `ConvexNested` / `ConvexUnion` / `ConvexDocument` `to_convex`/`from_convex` symmetry |
-| `standalone_schema_evolution.rs` | wire-independent | `plan_warmup(schema)` + `diff_schemas(old, new)` + `SchemaChange::is_destructive` |
-| `standalone_db_api.rs` | monolith | `ctx.db().get(id)` / `exists` / `normalize_id` |
+| `standalone_schema_evolution.rs` | wire-independent | `plan_warmup(schema)` + `diff_schemas(old, new)` + `SchemaChange::is_destructive` (TableAdded + TableRemoved sides) |
+| `standalone_db_api.rs` | monolith | `ctx.db().get(id)` / `exists` / `normalize_id` (accept + reject) / `try_get` error / `get_many` / `get_with_meta` |
 | `standalone_typed_query_ops.rs` | monolith | `.first()` / `.take(n)` / `.count()` / `.gte` + `.lt` range / `.gt` + `.lte` mirror |
 | `standalone_errors_and_rng.rs` | monolith | every `errors::*` helper + `ctx.rng_u64()` determinism + `ctx.rng_fill()` byte-buffer determinism |
 | `standalone_test_callbacks.rs` | monolith | `TestCallbacks` + `CallRecord` + `args!` macro (USAGE.md §17) + `ctx.run_query_raw` untyped sub-call |
 | `standalone_timeout.rs` | monolith | per-function + runner-default timeouts abort runaway handlers |
-| `standalone_scheduler_storage.rs` | monolith | `ctx.scheduler().run_after(...)` and full `ctx.storage()` flow via `TestCallbacks` + mutation-ctx scheduler writes to tx |
+| `standalone_scheduler_storage.rs` | monolith | `ctx.scheduler().run_after(...)` and full `ctx.storage()` flow via `TestCallbacks` + mutation-ctx scheduler writes to tx + `cancel` idempotency |
 | `standalone_mutation_surface.rs` | monolith | `replace`, `delete`, `patch` mutation operators |
 | `http_response_builders.rs` | wire-independent | `HttpResponse::new/text/json/redirect/with_header/with_body` |
 | `distributed_golden_path.rs` | distributed | query over tonic against seeded DB, mutation returns `DistributedFinalTx`, unknown-function wire error |
 | `distributed_actions.rs` | distributed | pure action wire round-trip, `log_lines` drain, `bad_request` → `Err(String)` |
 | `distributed_http_actions.rs` | distributed | `http_request` / `http_response` text payload + JSON body + header round-trip |
-| `distributed_admission.rs` | distributed | `collect_inventory()` envelope contents + stable hash + `is_internal` propagation + cron schedule/kind round-trip |
+| `distributed_admission.rs` | distributed | `collect_inventory()` envelope contents + stable hash + `is_internal` propagation on every UdfType kind + cron schedule/kind round-trip |
 | `distributed_execution_context.rs` | distributed | `ExecutionContext.request_id` + `execution_id` round-trip into the worker's ctx |
 | `distributed_pool_admission.rs` | distributed | full admission loop pushes every fixture function spec (kind, internal flag, HTTP route) into `WorkerPool::lookup_function` |
 | `distributed_action_sub_calls.rs` | distributed | end-to-end action → `ctx.run_query(...)` sub-call chain: worker `FunctionExecutionServer.with_backend_callback_endpoint(...)` → `BackendCallbackClient` → `BackendCallbackServer` → `ActionCallbacks::execute_query` → back into the action's return value |
