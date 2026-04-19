@@ -136,6 +136,65 @@ async fn drain_state_refuses_new_invocations() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn circuit_breaker_stays_closed_below_threshold() -> anyhow::Result<()> {
+    // Companion to circuit_breaker_opens_after_threshold_failures:
+    // with failure_threshold=3, two failing calls must leave the
+    // breaker closed (i.e. a third call reaches the handler and
+    // errors with the handler's message, not the breaker's
+    // short-circuit message). Guards against an off-by-one that
+    // would trip the breaker too eagerly.
+    let breaker = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+        failure_threshold: 3,
+        cooldown: Duration::from_secs(30),
+    }));
+    let runner =
+        Arc::new(NativeFunctionRunner::from_inventory()?.with_circuit_breaker(breaker.clone()));
+    let fx = DbFixture::new_in_memory().await?;
+    for _ in 0..2 {
+        let usage = FunctionUsageTracker::new();
+        let mut tx = fx
+            .database
+            .begin_with_ts(Identity::system(), *fx.database.now_ts_for_reads(), usage)
+            .await?;
+        let _ = runner
+            .run_mutation(
+                "always_bad_request",
+                &mut tx,
+                TableNamespace::Global,
+                ConvexObject::empty(),
+            )
+            .await
+            .expect_err("handler-level error");
+    }
+    // Third call — still below threshold. Handler runs (produces
+    // the same bad_request error), *not* the breaker's short-circuit.
+    let usage = FunctionUsageTracker::new();
+    let mut tx = fx
+        .database
+        .begin_with_ts(Identity::system(), *fx.database.now_ts_for_reads(), usage)
+        .await?;
+    let err = runner
+        .run_mutation(
+            "always_bad_request",
+            &mut tx,
+            TableNamespace::Global,
+            ConvexObject::empty(),
+        )
+        .await
+        .expect_err("third call still errors at handler level");
+    let msg = format!("{err:#}");
+    assert!(
+        !msg.contains("circuit breaker"),
+        "breaker must be closed below threshold; got breaker error: {msg}",
+    );
+    assert!(
+        msg.contains("deliberately broken"),
+        "third call should surface the handler's own error, not the breaker; got: {msg}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn circuit_breaker_opens_after_threshold_failures() -> anyhow::Result<()> {
     let breaker = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
         failure_threshold: 2,
