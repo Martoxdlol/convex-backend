@@ -310,6 +310,37 @@ pub async fn chain_echo(ctx: &mut ActionCtx<'_, Rt>, message: String) -> anyhow:
     ctx.run_action(EchoAction, EchoActionArgs { message }).await
 }
 
+/// Action that sub-calls `create_todo` through the untyped
+/// mutation-by-name callback path. Exercises the action →
+/// sub-mutation route — distinct from `summarise` (sub-query)
+/// and `chain_echo` (sub-action / local runner). Returns the
+/// raw id string so tests can stub the callback and assert.
+#[convex::action]
+pub async fn chain_create_from_action(
+    ctx: &mut ActionCtx<'_, Rt>,
+    owner: String,
+    text: String,
+) -> anyhow::Result<String> {
+    let mut map: std::collections::BTreeMap<
+        convex_native_core::__private::FieldName,
+        convex_native_core::__private::ConvexValue,
+    > = std::collections::BTreeMap::new();
+    map.insert(
+        "owner".parse()?,
+        convex_native_core::__private::ConvexValue::try_from(owner)?,
+    );
+    map.insert(
+        "text".parse()?,
+        convex_native_core::__private::ConvexValue::try_from(text)?,
+    );
+    let args = convex_native_core::__private::ConvexObject::try_from(map)?;
+    let ret = ctx.run_mutation_raw("create_todo", args).await?;
+    match ret {
+        convex_native_core::__private::ConvexValue::String(s) => Ok(s.to_string()),
+        other => anyhow::bail!("chain_create_from_action expected String, got {other:?}"),
+    }
+}
+
 /// Emit one line at each of the four log levels so tests can
 /// assert that `ctx.log().debug/info/warn/error(...)` each land
 /// in the shared `LogBuffer` with the matching `LogLevel`.

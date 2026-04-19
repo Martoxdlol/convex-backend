@@ -83,6 +83,45 @@ async fn untyped_run_query_raw_reaches_callbacks_by_name() -> anyhow::Result<()>
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn action_sub_mutation_routes_through_run_mutation_by_name() -> anyhow::Result<()> {
+    // `chain_create_from_action` does `ctx.run_mutation_raw("create_todo", ...)`.
+    // Previous tests cover the sub-*query* path (summarise /
+    // untyped_count_pending) and the sub-*action* local-runner
+    // path (chain_echo). This closes the third leg: an action
+    // reaching the callback layer's run_mutation_by_name entry
+    // point by string name. A regression on that branch would
+    // mis-route to run_query_by_name or bail with "no mutation
+    // handler" without this coverage.
+    let (callbacks, history) = TestCallbacks::new()
+        .on_mutation("create_todo", |_args| {
+            Ok(ConvexValue::try_from("stub-id".to_string()).unwrap())
+        })
+        .build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let args = convex_native_core::testing::args! {
+        "owner" => "alice".to_string(),
+        "text"  => "ship".to_string(),
+    };
+    let out = runner
+        .run_action_with_callbacks(
+            "chain_create_from_action",
+            TableNamespace::Global,
+            args,
+            callbacks,
+        )
+        .await?;
+    match out {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "stub-id"),
+        other => panic!("expected stub-id, got {other:?}"),
+    }
+    let m_count =
+        history.count(|r| matches!(r, CallRecord::Mutation { name, .. } if name == "create_todo"));
+    assert_eq!(m_count, 1, "expected one run_mutation callback hit");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unregistered_sub_query_bails_loudly() -> anyhow::Result<()> {
     // No `on_query` registered, so `ctx.run_query(CountPending,
     // ...)` should produce a clear error that names the missing
