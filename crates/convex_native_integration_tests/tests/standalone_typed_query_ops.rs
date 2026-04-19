@@ -236,6 +236,68 @@ async fn order_desc_reverses_index_traversal() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn page_returns_bounded_items_with_cursor() -> anyhow::Result<()> {
+    // Seed 5 rows, ask for a page of 2; the handler returns
+    // `[2, is_done=0, has_cursor=1]` to prove the page was
+    // capped at 2 and a next-cursor is available.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    seed_todos(&fx.database, &runner, "p", &["a", "b", "c", "d", "e"]).await?;
+    let out = run_query(
+        &fx.database,
+        &runner,
+        "page_todos_probe",
+        args(&[("page_size", ConvexValue::Int64(2))]),
+    )
+    .await?;
+    let arr = match out {
+        ConvexValue::Array(a) => a,
+        other => panic!("expected array, got {other:?}"),
+    };
+    assert_eq!(arr.len(), 3);
+    match &arr[0] {
+        ConvexValue::Int64(n) => assert_eq!(*n, 2, "page_size respected"),
+        other => panic!("expected int, got {other:?}"),
+    }
+    match &arr[1] {
+        ConvexValue::Int64(n) => assert_eq!(*n, 0, "is_done=false (more rows available)"),
+        other => panic!("expected int, got {other:?}"),
+    }
+    match &arr[2] {
+        ConvexValue::Int64(n) => assert_eq!(*n, 1, "has_cursor=true (next page exists)"),
+        other => panic!("expected int, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn page_with_size_larger_than_table_is_done() -> anyhow::Result<()> {
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    seed_todos(&fx.database, &runner, "q", &["a", "b"]).await?;
+    let out = run_query(
+        &fx.database,
+        &runner,
+        "page_todos_probe",
+        args(&[("page_size", ConvexValue::Int64(100))]),
+    )
+    .await?;
+    let arr = match out {
+        ConvexValue::Array(a) => a,
+        other => panic!("expected array, got {other:?}"),
+    };
+    match &arr[0] {
+        ConvexValue::Int64(n) => assert_eq!(*n, 2),
+        other => panic!("expected int, got {other:?}"),
+    }
+    match &arr[1] {
+        ConvexValue::Int64(n) => assert_eq!(*n, 1, "is_done=true when scan is exhausted"),
+        other => panic!("expected int, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn gte_lt_range_filters_correctly() -> anyhow::Result<()> {
     // `create_todo` stamps `ctx.unix_timestamp()` into `created_at`.
     // All rows committed within milliseconds share (approximately)

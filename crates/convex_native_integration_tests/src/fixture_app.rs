@@ -471,6 +471,27 @@ pub async fn take_todos(ctx: &mut QueryCtx<'_, Rt>, n: i64) -> anyhow::Result<Ve
     ctx.db().query::<Todo>().take(n as usize).await
 }
 
+/// Paginate — fetch one page and report `[page_len, is_done_as_i64,
+/// has_cursor_as_i64]` as a Vec<i64> so the test can assert
+/// without round-tripping the opaque cursor through ConvexValue
+/// args.
+#[convex::query]
+pub async fn page_todos_probe(
+    ctx: &mut QueryCtx<'_, Rt>,
+    page_size: i64,
+) -> anyhow::Result<Vec<i64>> {
+    let page = ctx
+        .db()
+        .query::<Todo>()
+        .page(None, page_size as usize)
+        .await?;
+    Ok(vec![
+        page.items.len() as i64,
+        if page.is_done { 1 } else { 0 },
+        if page.cursor.is_some() { 1 } else { 0 },
+    ])
+}
+
 /// Expect at most one row for `owner`; errors if more than one
 /// match — exercises `.unique()`.
 #[convex::query]
