@@ -212,6 +212,28 @@ pub async fn replace_todo(
     Ok(())
 }
 
+/// Insert a todo and then read it back in the same mutation tx.
+/// The returned bool is whether the read found the inserted row
+/// — proving writes-are-visible-within-a-tx semantics.
+#[convex::mutation]
+pub async fn insert_then_read(
+    ctx: &mut MutationCtx<'_, Rt>,
+    owner: String,
+) -> anyhow::Result<bool> {
+    let id = ctx
+        .db()
+        .insert(Todo {
+            owner: owner.clone(),
+            text: "probe".to_string(),
+            done: false,
+            created_at: 0.0,
+            metadata: None,
+        })
+        .await?;
+    let got = ctx.db().get(id).await?;
+    Ok(got.is_some())
+}
+
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------

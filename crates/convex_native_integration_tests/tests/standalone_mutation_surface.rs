@@ -121,6 +121,28 @@ async fn replace_overwrites_document_in_place() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn writes_are_visible_within_the_same_mutation_tx() -> anyhow::Result<()> {
+    // A mutation that inserts a row and then reads it back in
+    // the same `ctx.db()` sees the inserted row — the framework's
+    // transactional-consistency contract. A regression here would
+    // show up as `insert_then_read` returning `false`.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let got = run_mutation(
+        &fx.database,
+        &runner,
+        "insert_then_read",
+        args(&[("owner", ConvexValue::try_from("i".to_string())?)]),
+    )
+    .await?;
+    assert!(
+        matches!(got, ConvexValue::Boolean(true)),
+        "expected true (inserted row read back in same tx); got {got:?}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn internal_delete_removes_document() -> anyhow::Result<()> {
     let fx = DbFixture::new_in_memory().await?;
     let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
