@@ -257,6 +257,36 @@ pub async fn echo_action(ctx: &mut ActionCtx<'_, Rt>, message: String) -> anyhow
     Ok(format!("echo:{message}"))
 }
 
+/// Exercise the untyped sub-call surface: dispatch
+/// `count_pending` by string name through `ctx.run_query_raw(...)`
+/// instead of the typed marker. Returns the raw i64. The
+/// string-name path is what deployers use when the callee is
+/// picked dynamically at runtime (e.g. plugin dispatch) and has a
+/// slightly different failure shape from the typed path — a
+/// regression in name resolution or arg serialization inside
+/// `run_query_raw` would slip past the existing `summarise`-based
+/// test (which goes through `run_query`).
+#[convex::action]
+pub async fn untyped_count_pending(
+    ctx: &mut ActionCtx<'_, Rt>,
+    owner: String,
+) -> anyhow::Result<i64> {
+    let mut map: std::collections::BTreeMap<
+        convex_native_core::__private::FieldName,
+        convex_native_core::__private::ConvexValue,
+    > = std::collections::BTreeMap::new();
+    map.insert(
+        "owner".parse()?,
+        convex_native_core::__private::ConvexValue::try_from(owner)?,
+    );
+    let args = convex_native_core::__private::ConvexObject::try_from(map)?;
+    let ret = ctx.run_query_raw("count_pending", args).await?;
+    match ret {
+        convex_native_core::__private::ConvexValue::Int64(n) => Ok(n),
+        other => anyhow::bail!("untyped_count_pending expected Int64, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Errors — surfaces every `errors::*` helper so both topologies
 // can assert the error metadata survives the dispatch layer.

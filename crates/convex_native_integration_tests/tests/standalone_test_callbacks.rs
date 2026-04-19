@@ -51,6 +51,38 @@ async fn test_callbacks_intercept_sub_query_and_record_history() -> anyhow::Resu
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn untyped_run_query_raw_reaches_callbacks_by_name() -> anyhow::Result<()> {
+    // `untyped_count_pending` calls `ctx.run_query_raw("count_pending", ...)`
+    // by string name — the plumbing underneath typed `run_query`
+    // but also the surface deployers use when the callee is
+    // picked dynamically. Proves the string-name path reaches
+    // `NativeActionCallbacks::run_query_by_name` just like the
+    // typed marker path.
+    let (callbacks, history) = TestCallbacks::new()
+        .on_query("count_pending", |_args| Ok(ConvexValue::Int64(11)))
+        .build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let args = convex_native_core::testing::args! { "owner" => "bob".to_string() };
+    let out = runner
+        .run_action_with_callbacks(
+            "untyped_count_pending",
+            TableNamespace::Global,
+            args,
+            callbacks,
+        )
+        .await?;
+    assert!(
+        matches!(out, ConvexValue::Int64(11)),
+        "expected Int64(11) from the stub; got {out:?}",
+    );
+    let q_count =
+        history.count(|r| matches!(r, CallRecord::Query { name, .. } if name == "count_pending"));
+    assert_eq!(q_count, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unregistered_sub_query_bails_loudly() -> anyhow::Result<()> {
     // No `on_query` registered, so `ctx.run_query(CountPending,
     // ...)` should produce a clear error that names the missing
