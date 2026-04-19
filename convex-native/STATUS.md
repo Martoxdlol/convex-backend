@@ -1130,12 +1130,12 @@ in logs.
 ## Test tallies
 
 ```
-cargo test -p convex_native                      # 242 tests
-cargo test -p convex_native_backend              # 10 tests
-cargo test -p convex_native_distributed          # 72 tests
-cargo test -p convex_native_integration_tests    # 60 tests
+cargo test -p convex_native                      # 244 tests
+cargo test -p convex_native_backend              # 12 tests
+cargo test -p convex_native_distributed          # 161 tests
+cargo test -p convex_native_integration_tests    # 63 tests
 
-# 384 total — all green
+# 480 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
