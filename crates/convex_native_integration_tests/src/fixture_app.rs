@@ -532,6 +532,24 @@ pub async fn todos_in_time_range(
         .await
 }
 
+/// Filter with the strict `.gt` / `.lte` pair — the closed-upper
+/// open-lower counterpart to `todos_in_time_range`. Lets tests
+/// prove both operator directions survive the dispatch + field
+/// encoding paths.
+#[convex::query]
+pub async fn todos_in_time_range_exclusive(
+    ctx: &mut QueryCtx<'_, Rt>,
+    from: f64,
+    to: f64,
+) -> anyhow::Result<Vec<Todo>> {
+    ctx.db()
+        .query::<Todo>()
+        .gt(TodoField::CreatedAt, from)?
+        .lte(TodoField::CreatedAt, to)?
+        .collect()
+        .await
+}
+
 // ---------------------------------------------------------------------------
 // HTTP actions
 // ---------------------------------------------------------------------------

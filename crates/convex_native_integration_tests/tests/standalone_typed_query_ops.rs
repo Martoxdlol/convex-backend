@@ -298,6 +298,49 @@ async fn page_with_size_larger_than_table_is_done() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn gt_lte_range_filters_correctly() -> anyhow::Result<()> {
+    // Mirror of gte_lt_range_filters_correctly against the strict
+    // `.gt` + closed-upper `.lte` operator pair. A regression in
+    // either operator's field-encoding or OCC read-set handling
+    // would show up here without also breaking the `.gte` / `.lt`
+    // test above.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    seed_todos(&fx.database, &runner, "r", &["a", "b", "c"]).await?;
+
+    let all = run_query(
+        &fx.database,
+        &runner,
+        "todos_in_time_range_exclusive",
+        args(&[
+            ("from", ConvexValue::Float64(-1.0)),
+            ("to", ConvexValue::Float64(1e15)),
+        ]),
+    )
+    .await?;
+    match all {
+        ConvexValue::Array(a) => assert_eq!(a.len(), 3, "all 3 in the (-1, 1e15] range"),
+        other => panic!("expected array, got {other:?}"),
+    }
+
+    let none = run_query(
+        &fx.database,
+        &runner,
+        "todos_in_time_range_exclusive",
+        args(&[
+            ("from", ConvexValue::Float64(1e14)),
+            ("to", ConvexValue::Float64(1e14 + 1.0)),
+        ]),
+    )
+    .await?;
+    match none {
+        ConvexValue::Array(a) => assert!(a.is_empty(), "expected empty; got {a:?}"),
+        other => panic!("expected array, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn gte_lt_range_filters_correctly() -> anyhow::Result<()> {
     // `create_todo` stamps `ctx.unix_timestamp()` into `created_at`.
     // All rows committed within milliseconds share (approximately)
