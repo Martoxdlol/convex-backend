@@ -94,6 +94,41 @@ async fn storage_store_get_url_metadata_delete_all_flow() -> anyhow::Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn storage_get_metadata_round_trips_content_type() -> anyhow::Result<()> {
+    // The existing full_storage_flow test pins the *call* landed
+    // in history but discards the returned FileMetadata. The
+    // TestCallbacks default stub returns a canned metadata with
+    // content_type=Some("application/octet-stream"). Round-trip
+    // the accessor through the action ctx to prove the Option<
+    // FileMetadata> wire shape is wired correctly — a regression
+    // collapsing Some to None would pass the call-count test but
+    // break any deployer relying on get_metadata values.
+    let (callbacks, _history) = TestCallbacks::new().build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let out = runner
+        .run_action_with_callbacks(
+            "storage_metadata_probe",
+            TableNamespace::Global,
+            convex_native_core::testing::args! {
+                "content_type" => "image/webp".to_string(),
+            },
+            callbacks,
+        )
+        .await?;
+    match out {
+        ConvexValue::String(s) => assert_eq!(
+            s.to_string(),
+            "application/octet-stream",
+            "TestCallbacks' default FileMetadata content_type round-trips through the action",
+        ),
+        ConvexValue::Null => panic!("metadata content_type was lost across the callbacks boundary"),
+        other => panic!("expected string or null, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mutation_scheduler_writes_job_to_transaction() -> anyhow::Result<()> {
     // The mutation-ctx scheduler writes through `VirtualSchedulerModel`
     // onto the mutation's own transaction, so the scheduled job

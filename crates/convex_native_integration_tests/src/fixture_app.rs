@@ -552,6 +552,24 @@ pub async fn full_storage_flow(
     Ok(url)
 }
 
+/// Action that stores a blob and returns the `content_type` from
+/// the `FileMetadata` returned by `ctx.storage().get_metadata(...)`.
+/// Exercises the metadata round-trip through the callbacks layer:
+/// `full_storage_flow` discards the metadata, so a regression in
+/// the `FileMetadata` decoding would slip past that test.
+#[convex::action]
+pub async fn storage_metadata_probe(
+    ctx: &mut ActionCtx<'_, Rt>,
+    content_type: String,
+) -> anyhow::Result<Option<String>> {
+    let id = ctx
+        .storage()
+        .store(Bytes::from_static(b"probe"), &content_type)
+        .await?;
+    let meta = ctx.storage().get_metadata(id).await?;
+    Ok(meta.and_then(|m| m.content_type))
+}
+
 // ---------------------------------------------------------------------------
 // Single-doc read APIs — exercises `ctx.db().get(...)` /
 // `get_with_meta` / `exists` / `normalize_id`. Each is a tiny
