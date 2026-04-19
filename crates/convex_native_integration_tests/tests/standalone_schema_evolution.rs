@@ -97,3 +97,40 @@ fn diff_against_empty_reports_every_table_as_added() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn diff_reports_table_removed_as_destructive() -> anyhow::Result<()> {
+    // Symmetric to diff_against_empty_reports_every_table_as_added:
+    // diffing the fixture schema → empty reports `TableRemoved`
+    // entries that `is_destructive()` flags as dangerous. Real
+    // migrations consult that flag to refuse accidental drops.
+    use std::collections::BTreeMap;
+
+    use common::schemas::DatabaseSchema;
+    let empty = DatabaseSchema {
+        tables: BTreeMap::new(),
+        schema_validation: true,
+    };
+    let current = NativeSchema::collect()?;
+    let changes = diff_schemas(&current, &empty);
+    let removed: Vec<_> = changes
+        .iter()
+        .filter_map(|c| match c {
+            SchemaChange::TableRemoved(t) => Some(t.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        removed.iter().any(|t| t == "todos"),
+        "expected todos in TableRemoved; got {removed:?}",
+    );
+    assert!(
+        removed.iter().any(|t| t == "messages"),
+        "expected messages in TableRemoved; got {removed:?}",
+    );
+    assert!(
+        changes.iter().any(|c| c.is_destructive()),
+        "at least one TableRemoved must be flagged destructive; got {changes:?}",
+    );
+    Ok(())
+}
