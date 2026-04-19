@@ -397,6 +397,27 @@ pub async fn schedule_follow_up(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<(
     Ok(())
 }
 
+/// Mutation that schedules a follow-up mutation through the
+/// mutation-ctx scheduler. Unlike the action-ctx scheduler
+/// (which routes through `NativeActionCallbacks::schedule`),
+/// the mutation-ctx scheduler writes directly through
+/// `VirtualSchedulerModel` onto the mutation's own transaction
+/// — the job commits atomically with the rest of the
+/// mutation's writes. Returns the scheduled job id as a string
+/// so tests can round-trip it through ConvexValue.
+#[convex::mutation]
+pub async fn schedule_from_mutation(ctx: &mut MutationCtx<'_, Rt>) -> anyhow::Result<String> {
+    let id = ctx
+        .scheduler()
+        .run_after(
+            Duration::from_secs(30),
+            NightlyCleanup,
+            NightlyCleanupArgs {},
+        )
+        .await?;
+    Ok(id.to_string())
+}
+
 /// Internal action used as a cron target to exercise the
 /// `target_kind = "action"` code path in `CronRegistry`.
 #[convex::action(internal)]

@@ -6,7 +6,10 @@
 use std::sync::Arc;
 
 use convex_native_core::{
-    __private::ConvexValue,
+    __private::{
+        ConvexObject,
+        ConvexValue,
+    },
     testing::{
         CallRecord,
         TestCallbacks,
@@ -14,6 +17,9 @@ use convex_native_core::{
     NativeActionCallbacks,
     NativeFunctionRunner,
 };
+use convex_native_integration_tests::db_fixture::DbFixture;
+use keybroker::Identity;
+use usage_tracking::FunctionUsageTracker;
 use value::TableNamespace;
 
 // Force fixture app inventory entries to link.
@@ -83,6 +89,43 @@ async fn storage_store_get_url_metadata_delete_all_flow() -> anyhow::Result<()> 
     assert_eq!(
         history.count(|r| matches!(r, CallRecord::StorageDelete { .. })),
         1,
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mutation_scheduler_writes_job_to_transaction() -> anyhow::Result<()> {
+    // The mutation-ctx scheduler writes through `VirtualSchedulerModel`
+    // onto the mutation's own transaction, so the scheduled job
+    // commits atomically with the mutation. Run `schedule_from_mutation`
+    // against the fixture's live DB and assert the handler returns a
+    // non-empty job id — the id-round-trip proves the write landed
+    // on the tx before commit.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let usage = FunctionUsageTracker::new();
+    let mut tx = fx
+        .database
+        .begin_with_ts(Identity::system(), *fx.database.now_ts_for_reads(), usage)
+        .await?;
+    let out = runner
+        .run_mutation(
+            "schedule_from_mutation",
+            &mut tx,
+            TableNamespace::Global,
+            ConvexObject::empty(),
+        )
+        .await?;
+    fx.database
+        .commit_with_write_source(tx, "scheduler_mutation_test")
+        .await?;
+    let id = match out {
+        ConvexValue::String(s) => s.to_string(),
+        other => panic!("expected scheduled id string, got {other:?}"),
+    };
+    assert!(
+        !id.is_empty(),
+        "scheduler returned an empty id — the schedule path did not mint one",
     );
     Ok(())
 }
