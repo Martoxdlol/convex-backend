@@ -94,6 +94,32 @@ async fn storage_store_get_url_metadata_delete_all_flow() -> anyhow::Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn storage_get_url_returns_none_when_builder_opts_out() -> anyhow::Result<()> {
+    // `TestCallbacks::new().with_storage_url(None)` configures
+    // the stub to return `None` from `storage_get_url`.
+    // `full_storage_flow` propagates that Option through to its
+    // own return value, so the handler comes back as `Null`.
+    // Pins the "no url minted" path, distinct from the default-
+    // url path covered by storage_store_get_url_metadata_delete_all_flow.
+    let (callbacks, _history) = TestCallbacks::new().with_storage_url(None).build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let out = runner
+        .run_action_with_callbacks(
+            "full_storage_flow",
+            TableNamespace::Global,
+            convex_native_core::testing::args! { "content_type" => "image/png".to_string() },
+            callbacks,
+        )
+        .await?;
+    assert!(
+        matches!(out, ConvexValue::Null),
+        "with_storage_url(None) should propagate through storage_get_url; got {out:?}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn storage_get_metadata_round_trips_content_type() -> anyhow::Result<()> {
     // The existing full_storage_flow test pins the *call* landed
     // in history but discards the returned FileMetadata. The
