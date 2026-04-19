@@ -130,6 +130,43 @@ async fn http_action_sub_calls_native_query_via_callbacks() -> anyhow::Result<()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn http_action_sub_mutation_reaches_callbacks() -> anyhow::Result<()> {
+    // Sub-query path is covered; the sub-mutation path is a
+    // distinct code path on `HttpActionCtx` (routes through
+    // `NativeActionCallbacks::run_mutation_by_name` rather
+    // than `run_query_by_name`). Stub `create_todo` to return a
+    // canned id and assert the handler returns it back in the
+    // response body.
+    let (callbacks, _history) = TestCallbacks::new()
+        .on_mutation("create_todo", |_args| {
+            Ok(ConvexValue::try_from("stub-id".to_string()).unwrap())
+        })
+        .build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Owner", "alice".parse()?);
+    let request = HttpRequest {
+        method: Method::POST,
+        url: "http://example.invalid/api/create".to_string(),
+        headers,
+        body: Bytes::from_static(b"hi"),
+        routed_path: "/api/create".to_string(),
+    };
+    let resp = runner
+        .run_http_action_with_callbacks(
+            "__http::POST:/api/create",
+            request,
+            callbacks,
+            Some(LogBuffer::new()),
+        )
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"stub-id"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn path_remainder_returns_routed_path() -> anyhow::Result<()> {
     // `HttpRequest::path_remainder()` aliases to `routed_path` —
     // what the router hands the handler after matching. Asserting

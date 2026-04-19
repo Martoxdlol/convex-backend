@@ -745,6 +745,40 @@ pub async fn path_remainder_probe(
     ))
 }
 
+/// HTTP handler that issues a sub-*mutation* (as opposed to the
+/// sub-query path covered by `pending_count_http`). Exercises
+/// `HttpActionCtx::run_mutation_raw(...)` — the untyped surface
+/// that routes through `NativeActionCallbacks::run_mutation_by_name`
+/// without the typed-result `FromConvex` check, so tests can stub
+/// the callback return value directly.
+#[convex::http_action(method = "POST", path = "/api/create")]
+pub async fn create_via_http(
+    ctx: &mut HttpActionCtx<'_, Rt>,
+    req: HttpRequest,
+) -> anyhow::Result<HttpResponse> {
+    let owner = req.header("x-owner").unwrap_or("anon").to_string();
+    let text = req.body_text().unwrap_or_default();
+    let mut map: std::collections::BTreeMap<
+        convex_native_core::__private::FieldName,
+        convex_native_core::__private::ConvexValue,
+    > = std::collections::BTreeMap::new();
+    map.insert(
+        "owner".parse()?,
+        convex_native_core::__private::ConvexValue::try_from(owner)?,
+    );
+    map.insert(
+        "text".parse()?,
+        convex_native_core::__private::ConvexValue::try_from(text)?,
+    );
+    let args = convex_native_core::__private::ConvexObject::try_from(map)?;
+    let ret = ctx.run_mutation_raw("create_todo", args).await?;
+    let body = match ret {
+        convex_native_core::__private::ConvexValue::String(s) => s.to_string(),
+        other => anyhow::bail!("create_via_http expected String from stub, got {other:?}"),
+    };
+    Ok(HttpResponse::text(200, body))
+}
+
 // ---------------------------------------------------------------------------
 // Crons
 // ---------------------------------------------------------------------------
