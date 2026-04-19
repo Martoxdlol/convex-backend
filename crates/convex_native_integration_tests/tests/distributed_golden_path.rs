@@ -225,6 +225,77 @@ async fn mutation_dispatch_returns_final_tx_summary() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn replace_mutation_surfaces_final_tx_over_the_wire() -> anyhow::Result<()> {
+    // Mirrors standalone_mutation_surface::replace_overwrites_document_in_place
+    // but dispatches `replace_todo` through the wire. The
+    // DistributedFinalTx writes entry for a replace carries both
+    // a non-empty document *and* a non-None prev_ts — different
+    // wire shape from insert (prev_ts=None) and delete
+    // (document=None). This pins the replace branch of the
+    // DocumentUpdateWithPrevTs encoding.
+    let fx = DbFixture::new_in_memory().await?;
+
+    let local_runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let usage = FunctionUsageTracker::new();
+    let mut tx = fx
+        .database
+        .begin_with_ts(Identity::system(), *fx.database.now_ts_for_reads(), usage)
+        .await?;
+    let id_value = local_runner
+        .run_mutation(
+            "create_todo",
+            &mut tx,
+            TableNamespace::Global,
+            args(&[
+                ("owner", ConvexValue::try_from("rep".to_string())?),
+                ("text", ConvexValue::try_from("draft".to_string())?),
+            ]),
+        )
+        .await?;
+    fx.database
+        .commit_with_write_source(tx, "distributed_replace_seed")
+        .await?;
+    let seeded_id = match id_value {
+        ConvexValue::String(s) => s.to_string(),
+        other => panic!("expected id string, got {other:?}"),
+    };
+
+    let addr = spawn_worker(fx.database.clone()).await;
+    let client = TonicWorkerClient::connect(format!("http://{addr}")).await?;
+    let runner = DistributedFunctionRunner::new(vec![client])?;
+
+    let resp = runner
+        .execute(
+            ExecuteRequest {
+                name: "replace_todo".to_string(),
+                namespace: TableNamespace::Global,
+                args: args(&[
+                    ("id", ConvexValue::try_from(seeded_id)?),
+                    ("owner", ConvexValue::try_from("rep".to_string())?),
+                    ("text", ConvexValue::try_from("final".to_string())?),
+                    ("done", ConvexValue::Boolean(true)),
+                ]),
+                timeout: None,
+                min_registry_version: None,
+                execution_context: None,
+                begin_timestamp: Some(u64::from(*fx.database.now_ts_for_reads())),
+                existing_writes: Vec::new(),
+                http_request: None,
+                identity: Vec::new(),
+            },
+            UdfType::Mutation,
+        )
+        .await?;
+    resp.result.expect("replace succeeds");
+    let final_tx = resp.final_tx.expect("mutation returns FinalTxSummary");
+    assert!(
+        !final_tx.writes.is_empty(),
+        "replace_todo produces a write entry in the summary",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn internal_mutation_delete_surfaces_final_tx_over_the_wire() -> anyhow::Result<()> {
     // Distributed mirror of the standalone internal_delete test.
     // Runs `create_todo` locally to mint a real id (commits on
