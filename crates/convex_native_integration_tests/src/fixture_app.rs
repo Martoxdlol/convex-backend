@@ -188,6 +188,30 @@ pub async fn internal_delete(ctx: &mut MutationCtx<'_, Rt>, id: Id<Todo>) -> any
     Ok(())
 }
 
+/// Replace the whole document — exercises `ctx.db().replace(...)`.
+#[convex::mutation]
+pub async fn replace_todo(
+    ctx: &mut MutationCtx<'_, Rt>,
+    id: Id<Todo>,
+    owner: String,
+    text: String,
+    done: bool,
+) -> anyhow::Result<()> {
+    ctx.db()
+        .replace(
+            id,
+            Todo {
+                owner,
+                text,
+                done,
+                created_at: 0.0,
+                metadata: None,
+            },
+        )
+        .await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
