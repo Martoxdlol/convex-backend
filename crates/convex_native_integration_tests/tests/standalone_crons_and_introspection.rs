@@ -45,14 +45,12 @@ fn cron_registry_includes_fixture_entry() {
 fn native_schema_collects_fixture_tables() {
     let schema = NativeSchema::collect().expect("collect schema");
     let tables: Vec<_> = schema.tables.keys().map(|t| t.to_string()).collect();
-    assert!(
-        tables.iter().any(|t| t == "todos"),
-        "expected `todos` table in schema; got {tables:?}",
-    );
-    assert!(
-        tables.iter().any(|t| t == "messages"),
-        "expected `messages` table in schema; got {tables:?}",
-    );
+    for expected in ["todos", "messages", "attachments"] {
+        assert!(
+            tables.iter().any(|t| t == expected),
+            "expected `{expected}` table in schema; got {tables:?}",
+        );
+    }
 }
 
 #[test]
@@ -113,6 +111,35 @@ fn built_backend_summary_names_all_pieces() -> anyhow::Result<()> {
     assert!(
         summary.contains("fn") && summary.contains("table"),
         "summary should mention fn/table counts; got: {summary}",
+    );
+    Ok(())
+}
+
+#[test]
+fn built_backend_warmup_plan_reflects_schema_opt_in() -> anyhow::Result<()> {
+    // BuiltBackend::warmup_plan() delegates to
+    // plan_warmup(schema) when schema was opted in, and returns
+    // an empty vec when it wasn't. The direct plan_warmup(schema)
+    // path is covered by the schema-evolution tests; this pins
+    // the BuiltBackend-level wrapper so a regression that
+    // returned an empty plan even with schema opted in wouldn't
+    // fall out of the direct-path test.
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+
+    let opted_in = ConvexBackend::new()
+        .with_native_schema()
+        .with_callbacks(callbacks.clone())
+        .build()?;
+    assert!(
+        !opted_in.warmup_plan().is_empty(),
+        "with_native_schema opt-in must surface a non-empty warmup plan",
+    );
+
+    let opted_out = ConvexBackend::new().with_callbacks(callbacks).build()?;
+    assert!(
+        opted_out.warmup_plan().is_empty(),
+        "no schema opt-in must yield an empty warmup plan; got {:?}",
+        opted_out.warmup_plan(),
     );
     Ok(())
 }
