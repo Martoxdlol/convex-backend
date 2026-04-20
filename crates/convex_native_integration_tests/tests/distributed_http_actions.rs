@@ -157,6 +157,50 @@ async fn http_action_json_body_and_header_round_trip_over_the_wire() -> anyhow::
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn delete_method_dispatches_over_the_wire() -> anyhow::Result<()> {
+    // Standalone test covers the DELETE verb registration +
+    // dispatch. Mirroring it over the wire confirms the proto
+    // `method` field survives the transport intact — a
+    // regression that uppercase-normalised the method (e.g.
+    // "Delete" / "delete" → "DELETE" only on send, leaving the
+    // receiver looking up "Delete") would break every
+    // non-GET/POST handler in the distributed topology.
+    let fx = DbFixture::new_in_memory().await?;
+    let addr = spawn_worker(fx.database.clone()).await;
+    let client = TonicWorkerClient::connect(format!("http://{addr}")).await?;
+    let runner = DistributedFunctionRunner::new(vec![client])?;
+    let resp = runner
+        .execute(
+            ExecuteRequest {
+                name: "__http::DELETE:/api/item".to_string(),
+                namespace: TableNamespace::Global,
+                args: empty_args(),
+                timeout: None,
+                min_registry_version: None,
+                execution_context: None,
+                begin_timestamp: None,
+                existing_writes: Vec::new(),
+                http_request: Some(HttpActionRequestPayload {
+                    method: "DELETE".to_string(),
+                    url: "http://example.invalid/api/item".to_string(),
+                    headers: vec![],
+                    body: bytes::Bytes::new(),
+                    routed_path: "/api/item".to_string(),
+                }),
+                identity: Vec::new(),
+            },
+            UdfType::HttpAction,
+        )
+        .await?;
+    let http = resp
+        .http_response
+        .expect("HttpAction response must carry an http_response payload");
+    assert_eq!(http.status, 204);
+    assert!(http.body.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn http_action_sub_mutation_routes_through_backend_callbacks_over_the_wire(
 ) -> anyhow::Result<()> {
     // The HTTP-action branch of FunctionExecutionServer shares
