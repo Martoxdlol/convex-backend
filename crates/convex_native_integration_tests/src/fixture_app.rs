@@ -444,6 +444,20 @@ pub async fn read_todo_from_action(
     })
 }
 
+/// Action variant that calls `ctx.db().get_many(ids)`. The
+/// get_many path issues one read_document_at_snapshot callback
+/// per id — a distinct shape from get(id) (single call) and
+/// worth pinning separately. Returns the count of hits the
+/// callbacks resolved.
+#[convex::action]
+pub async fn get_many_from_action(
+    ctx: &mut ActionCtx<'_, Rt>,
+    ids: Vec<Id<Todo>>,
+) -> anyhow::Result<i64> {
+    let out = ctx.db().get_many(ids).await?;
+    Ok(out.iter().filter(|o| o.is_some()).count() as i64)
+}
+
 /// Action that sub-calls `create_todo` through the untyped
 /// mutation-by-name callback path. Exercises the action →
 /// sub-mutation route — distinct from `summarise` (sub-query)

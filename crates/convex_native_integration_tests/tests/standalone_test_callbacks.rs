@@ -177,6 +177,66 @@ async fn action_db_get_routes_through_read_document_at_snapshot() -> anyhow::Res
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn action_db_get_many_issues_one_read_per_id() -> anyhow::Result<()> {
+    // ActionCtx::db().get_many(ids) fans out to one
+    // read_document_at_snapshot callback per id, preserving
+    // input order. Distinct shape from .get(id) (single call);
+    // a regression that mis-counted iterations would slip past
+    // the single-doc test.
+    use convex_native_core::__private::{
+        ConvexObject,
+        FieldName,
+    };
+    use value::ConvexArray;
+    let mut fields: std::collections::BTreeMap<FieldName, ConvexValue> =
+        std::collections::BTreeMap::new();
+    fields.insert(
+        "owner".parse()?,
+        ConvexValue::try_from("alice".to_string())?,
+    );
+    fields.insert("text".parse()?, ConvexValue::try_from("row".to_string())?);
+    fields.insert("done".parse()?, ConvexValue::Boolean(false));
+    fields.insert("created_at".parse()?, ConvexValue::Float64(0.0));
+    fields.insert("metadata".parse()?, ConvexValue::Null);
+    let obj = ConvexObject::try_from(fields)?;
+    let (callbacks, _history) = TestCallbacks::new()
+        .on_doc_read("todos", move |_id| Ok(Some(obj.clone())))
+        .build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    // Three valid DeveloperDocumentId strings; the stub returns
+    // Some for every id. Expected hit count = 3.
+    let id_str = value::DeveloperDocumentId::MIN.encode();
+    let id_vals = vec![
+        ConvexValue::try_from(id_str.clone())?,
+        ConvexValue::try_from(id_str.clone())?,
+        ConvexValue::try_from(id_str)?,
+    ];
+    let args_obj = {
+        let mut m: std::collections::BTreeMap<FieldName, ConvexValue> =
+            std::collections::BTreeMap::new();
+        m.insert(
+            "ids".parse()?,
+            ConvexValue::Array(ConvexArray::try_from(id_vals)?),
+        );
+        ConvexObject::try_from(m)?
+    };
+    let out = runner
+        .run_action_with_callbacks(
+            "get_many_from_action",
+            TableNamespace::Global,
+            args_obj,
+            callbacks,
+        )
+        .await?;
+    match out {
+        ConvexValue::Int64(n) => assert_eq!(n, 3),
+        other => panic!("expected 3, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unregistered_sub_query_bails_loudly() -> anyhow::Result<()> {
     // No `on_query` registered, so `ctx.run_query(CountPending,
     // ...)` should produce a clear error that names the missing
