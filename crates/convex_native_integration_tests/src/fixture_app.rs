@@ -243,6 +243,27 @@ pub async fn echo_metadata(_ctx: &mut MutationCtx<'_, Rt>, md: Metadata) -> anyh
     Ok(format!("{}/{:?}", md.source, md.priority))
 }
 
+/// Query that *returns* a `#[derive(ConvexUnion)]` value — the
+/// return-side symmetry for the ConvexUnion derive. Existing
+/// tests cover arg decoding + `to_convex`/`from_convex` round
+/// trips at the type level, but no handler exercises the
+/// return-type path where the generated ToConvex impl runs
+/// through the runner's response serialisation.
+#[convex::query]
+pub async fn fetch_notification(
+    _ctx: &mut QueryCtx<'_, Rt>,
+    kind: String,
+) -> anyhow::Result<Notification> {
+    Ok(match kind.as_str() {
+        "email" => Notification::Email {
+            to: "a@b.com".to_string(),
+        },
+        _ => Notification::Push {
+            token: "dev-token".to_string(),
+        },
+    })
+}
+
 /// Flip a todo's `done` flag. Exercises `ctx.db().patch(...)` +
 /// `TodoPatch`.
 #[convex::mutation]

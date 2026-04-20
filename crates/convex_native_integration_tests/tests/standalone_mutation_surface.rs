@@ -218,6 +218,41 @@ async fn nested_struct_arg_round_trips_through_convex_value() -> anyhow::Result<
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn query_returning_convex_union_round_trips_via_runner() -> anyhow::Result<()> {
+    // fetch_notification returns Notification — a ConvexUnion
+    // variant. The runner's response serialisation calls the
+    // generated ToConvex::to_convex on the return value; this
+    // test pins that the response tag/body survive into the
+    // dispatched ConvexValue. A regression that mis-serialised
+    // ConvexUnion on return would pass the derive-level
+    // round-trip test but break every deployer whose query
+    // returns a tagged union.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    for (kind, expected_tag) in [("email", "email"), ("anything_else", "push")] {
+        let out = run_query(
+            &fx.database,
+            &runner,
+            "fetch_notification",
+            args(&[("kind", ConvexValue::try_from(kind.to_string())?)]),
+        )
+        .await?;
+        let obj = match out {
+            ConvexValue::Object(o) => o,
+            other => panic!("expected object, got {other:?}"),
+        };
+        let tag = obj
+            .get(&"kind".parse::<FieldName>()?)
+            .expect("tag field present");
+        match tag {
+            ConvexValue::String(s) => assert_eq!(s.to_string(), expected_tag),
+            other => panic!("expected tag string, got {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn internal_delete_removes_document() -> anyhow::Result<()> {
     let fx = DbFixture::new_in_memory().await?;
     let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
