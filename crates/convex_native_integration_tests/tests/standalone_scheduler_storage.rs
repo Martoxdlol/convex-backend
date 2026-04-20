@@ -54,6 +54,45 @@ async fn scheduler_run_after_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn action_scheduler_run_action_at_reaches_callbacks() -> anyhow::Result<()> {
+    // Fourth and last scheduler entry: run_action_at
+    // (action-kind target + absolute timestamp). Complements
+    // run_after / run_at / run_action_after. Each entry has
+    // independent type-parameter constraints and delegation
+    // shapes — this one routes through run_action_after under
+    // the hood but still requires its own wrapper body. Pin the
+    // delay computation lands the expected "internal_action"
+    // schedule entry.
+    let (callbacks, history) = TestCallbacks::new().build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    runner
+        .run_action_with_callbacks(
+            "schedule_action_at_absolute_time",
+            TableNamespace::Global,
+            convex_native_core::testing::args! {},
+            callbacks,
+        )
+        .await?;
+    let scheduled = history
+        .snapshot()
+        .into_iter()
+        .filter_map(|r| match r {
+            CallRecord::Schedule { name, delay } => Some((name, delay)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(scheduled.len(), 1);
+    assert_eq!(scheduled[0].0, "internal_action");
+    let delay = scheduled[0].1;
+    assert!(
+        delay <= std::time::Duration::from_secs(121),
+        "run_action_at with timestamp = now+120 should compute a delay <= 121s; got {delay:?}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn action_scheduler_run_at_reaches_callbacks_with_computed_delay() -> anyhow::Result<()> {
     // Scheduler::run_at on the action-ctx side computes the
     // delay as (timestamp - callbacks.unix_timestamp_now()) and

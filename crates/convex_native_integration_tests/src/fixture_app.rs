@@ -651,6 +651,21 @@ pub async fn schedule_follow_up_action(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::R
     Ok(())
 }
 
+/// Action-ctx `run_action_at` — absolute-timestamp entry for
+/// action-kind targets. Exercises the fourth scheduler entry
+/// (the other three are run_after / run_at / run_action_after).
+/// Each has its own type-parameter constraint + delegation
+/// shape, so a regression that only wired the other three would
+/// slip past their tests.
+#[convex::action]
+pub async fn schedule_action_at_absolute_time(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
+    let ts = ctx.unix_timestamp() + Duration::from_secs(120);
+    ctx.scheduler()
+        .run_action_at(ts, InternalAction, InternalActionArgs {})
+        .await?;
+    Ok(())
+}
+
 /// Mutation that schedules a follow-up mutation through the
 /// mutation-ctx scheduler. Unlike the action-ctx scheduler
 /// (which routes through `NativeActionCallbacks::schedule`),
