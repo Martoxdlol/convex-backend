@@ -237,6 +237,36 @@ async fn action_db_get_many_issues_one_read_per_id() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn action_db_try_get_errors_loudly_on_missing_document() -> anyhow::Result<()> {
+    // ActionCtx::db().try_get(id) is .get(id)?.ok_or_else(...);
+    // a separate error-shaped surface from .get. With the stub
+    // resolving every read to None, try_get must error rather
+    // than silently returning None. Pins the "blow up loudly"
+    // contract for missing documents in action ctxs.
+    let (callbacks, _history) = TestCallbacks::new()
+        .on_doc_read("todos", |_id| Ok(None))
+        .build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let id_str = value::DeveloperDocumentId::MIN.encode();
+    let err = runner
+        .run_action_with_callbacks(
+            "try_get_from_action",
+            TableNamespace::Global,
+            convex_native_core::testing::args! { "id" => id_str },
+            callbacks,
+        )
+        .await
+        .expect_err("try_get on a missing id must error");
+    let msg = format!("{err:#}").to_lowercase();
+    assert!(
+        msg.contains("not found") || msg.contains("missing") || msg.contains("no such"),
+        "expected missing-document error; got: {msg}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unregistered_sub_query_bails_loudly() -> anyhow::Result<()> {
     // No `on_query` registered, so `ctx.run_query(CountPending,
     // ...)` should produce a clear error that names the missing

@@ -458,6 +458,21 @@ pub async fn get_many_from_action(
     Ok(out.iter().filter(|o| o.is_some()).count() as i64)
 }
 
+/// Action variant that calls `ctx.db().try_get(id)`. try_get
+/// converts a None from read_document_at_snapshot into an
+/// explicit error (saves the .ok_or_else ceremony). Distinct
+/// from the .get(id) path — a regression that swapped the
+/// error-on-missing behaviour for a silent None would slip past
+/// the .get test. Returns the text on hit.
+#[convex::action]
+pub async fn try_get_from_action(
+    ctx: &mut ActionCtx<'_, Rt>,
+    id: Id<Todo>,
+) -> anyhow::Result<String> {
+    let t = ctx.db().try_get(id).await?;
+    Ok(t.text)
+}
+
 /// Action that sub-calls `create_todo` through the untyped
 /// mutation-by-name callback path. Exercises the action →
 /// sub-mutation route — distinct from `summarise` (sub-query)
