@@ -24,6 +24,29 @@ use convex_native_core::{
 type _ForceLink = convex_native_integration_tests::fixture_app::Todo;
 
 #[test]
+fn function_registration_udf_type_reflects_handler_kind() -> anyhow::Result<()> {
+    // NativeFunctionRegistration::udf_type() reads the UdfType
+    // off the HandlerFn enum. The fixture registers one handler
+    // per kind (Query / Mutation / Action / HttpAction). A
+    // regression that mis-bucketed handlers (e.g. returned
+    // Mutation for every shape) would silently break every
+    // dev-tooling + admission consumer that branches on type.
+    use common::types::UdfType;
+    let reg = NativeFunctionRegistry::collect()?;
+    assert_eq!(reg.get("count_pending").unwrap().udf_type(), UdfType::Query);
+    assert_eq!(
+        reg.get("create_todo").unwrap().udf_type(),
+        UdfType::Mutation
+    );
+    assert_eq!(reg.get("summarise").unwrap().udf_type(), UdfType::Action);
+    assert_eq!(
+        reg.get("__http::POST:/api/ping").unwrap().udf_type(),
+        UdfType::HttpAction,
+    );
+    Ok(())
+}
+
+#[test]
 fn function_registration_surfaces_timeout_and_arg_names() -> anyhow::Result<()> {
     // NativeFunctionRegistration carries arg_names and timeout_ms
     // populated by the macro. The fixture's sleep_forever has
