@@ -167,6 +167,33 @@ async fn http_action_sub_mutation_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn delete_method_registers_and_dispatches() -> anyhow::Result<()> {
+    // The fixture otherwise only uses GET / POST, so this test
+    // exercises the macro's method-string expansion for the
+    // DELETE verb. The synthesised name embeds the method
+    // verbatim, so a regression in the method-string handling
+    // would break registration / lookup for any verb beyond the
+    // two common ones.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::DELETE,
+        url: "http://example.invalid/api/item".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/item".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::DELETE:/api/item", request)
+        .await?;
+    assert_eq!(resp.status, 204);
+    assert!(resp.body.is_empty());
+    // Router-side lookup must also find it.
+    let router = convex_native_core::http::HttpRouter::collect()?;
+    assert!(router.lookup("DELETE", "/api/item").is_some());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn redirect_handler_returns_location_header() -> anyhow::Result<()> {
     // HttpResponse::redirect is pinned at the builder layer by
     // http_response_builders.rs. Driving it through the runner

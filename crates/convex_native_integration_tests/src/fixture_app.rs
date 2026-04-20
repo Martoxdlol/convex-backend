@@ -1101,6 +1101,19 @@ pub async fn redirect_to_home(
     Ok(HttpResponse::redirect(302, "/home"))
 }
 
+/// DELETE handler — the fixture otherwise only exercises
+/// GET + POST methods. The macro-synthesised name includes the
+/// method verbatim (`__http::DELETE:/api/item`), so a regression
+/// in the method-string expansion would break registration for
+/// anything beyond the two common verbs.
+#[convex::http_action(method = "DELETE", path = "/api/item")]
+pub async fn delete_item(
+    _ctx: &mut HttpActionCtx<'_, Rt>,
+    _req: HttpRequest,
+) -> anyhow::Result<HttpResponse> {
+    Ok(HttpResponse::new(204))
+}
+
 /// HTTP handler that issues a sub-*mutation* (as opposed to the
 /// sub-query path covered by `pending_count_http`). Exercises
 /// `HttpActionCtx::run_mutation_raw(...)` — the untyped surface
