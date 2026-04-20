@@ -1114,6 +1114,21 @@ pub async fn delete_item(
     Ok(HttpResponse::new(204))
 }
 
+/// HTTP handler that reports the raw body length via
+/// `req.body_bytes()`. The other handlers use `body_text` or
+/// `body_json`; `body_bytes` is its own accessor returning a
+/// Bytes reference, and the only path deployers use when they
+/// need the untrusted raw bytes (binary uploads, signed
+/// webhooks, etc.). A regression that silently UTF-8-decoded
+/// body_bytes into a String would slip past the text-body test.
+#[convex::http_action(method = "POST", path = "/api/rawlen")]
+pub async fn raw_body_len(
+    _ctx: &mut HttpActionCtx<'_, Rt>,
+    req: HttpRequest,
+) -> anyhow::Result<HttpResponse> {
+    Ok(HttpResponse::text(200, req.body_bytes().len().to_string()))
+}
+
 /// HTTP handler that reports the caller's auth status. Exercises
 /// `HttpActionCtx::auth()` — a parallel accessor to the
 /// `QueryCtx::auth()` / `MutationCtx::auth()` / `ActionCtx::auth()`

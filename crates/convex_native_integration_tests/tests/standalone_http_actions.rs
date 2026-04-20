@@ -167,6 +167,31 @@ async fn http_action_sub_mutation_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn raw_body_bytes_accessor_returns_byte_length() -> anyhow::Result<()> {
+    // HttpRequest::body_bytes() returns the raw Bytes reference —
+    // distinct from body_text (UTF-8 decode) and body_json
+    // (serde_json decode), and the only accessor deployers use
+    // when the body is binary (webhook signatures, uploads).
+    // Send a 5-byte payload (including one invalid UTF-8 byte)
+    // to prove body_bytes doesn't validate UTF-8; text/json
+    // accessors would reject this body.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::POST,
+        url: "http://example.invalid/api/rawlen".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::from_static(&[0xff, b'a', b'b', b'c', 0xfe]),
+        routed_path: "/api/rawlen".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::POST:/api/rawlen", request)
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"5"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn http_ctx_auth_reports_system_when_system_identity_forwarded() -> anyhow::Result<()> {
     // Complement to http_ctx_auth_defaults_to_anonymous_without_identity:
     // run_http_action_with_callbacks_and_identity(Identity::system())
