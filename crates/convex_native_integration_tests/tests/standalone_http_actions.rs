@@ -167,6 +167,47 @@ async fn http_action_sub_mutation_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn http_handler_log_lines_drain_into_the_shared_buffer() -> anyhow::Result<()> {
+    // HttpActionCtx::log() is the HTTP counterpart to the
+    // query / mutation / action ctx loggers. A regression that
+    // left the HTTP logger without a bound buffer would
+    // silently drop every log line a handler emitted. Drive
+    // http_log through the runner and confirm the "http-logged"
+    // line lands in the buffer.
+    use convex_native_core::{
+        callbacks::NoopCallbacks,
+        logging::LogLevel,
+    };
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let buffer = LogBuffer::new();
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/log".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/log".to_string(),
+    };
+    let resp = runner
+        .run_http_action_with_callbacks(
+            "__http::GET:/api/log",
+            request,
+            callbacks,
+            Some(buffer.clone()),
+        )
+        .await?;
+    assert_eq!(resp.status, 204);
+    let lines = buffer.snapshot();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.level == LogLevel::Info && l.message.contains("http-logged")),
+        "HTTP ctx.log().info(...) line must land in the drain buffer; got {lines:?}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn raw_body_bytes_accessor_returns_byte_length() -> anyhow::Result<()> {
     // HttpRequest::body_bytes() returns the raw Bytes reference —
     // distinct from body_text (UTF-8 decode) and body_json

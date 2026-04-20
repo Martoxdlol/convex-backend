@@ -1114,6 +1114,20 @@ pub async fn delete_item(
     Ok(HttpResponse::new(204))
 }
 
+/// HTTP handler that logs via `ctx.log()` and returns ok.
+/// Exercises the HTTP-ctx log surface (parallel to
+/// QueryCtx::log / MutationCtx::log / ActionCtx::log). A
+/// regression that left HTTP handlers without a working
+/// logger would slip past the other-ctx log tests.
+#[convex::http_action(method = "GET", path = "/api/log")]
+pub async fn http_log(
+    ctx: &mut HttpActionCtx<'_, Rt>,
+    _req: HttpRequest,
+) -> anyhow::Result<HttpResponse> {
+    ctx.log().info("http-logged");
+    Ok(HttpResponse::new(204))
+}
+
 /// HTTP handler that reports the raw body length via
 /// `req.body_bytes()`. The other handlers use `body_text` or
 /// `body_json`; `body_bytes` is its own accessor returning a
