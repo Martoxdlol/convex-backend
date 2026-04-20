@@ -20,6 +20,7 @@ use convex_native_integration_tests::fixture_app::{
     Metadata,
     Notification,
     Priority,
+    Shape,
     Todo,
 };
 use value::{
@@ -110,6 +111,31 @@ fn notification_tagged_union_uses_kind_discriminator() -> anyhow::Result<()> {
     }
     let back = Notification::from_convex(v)?;
     assert_eq!(email, back);
+    Ok(())
+}
+
+#[test]
+fn convex_union_without_tag_attribute_defaults_to_type_field() -> anyhow::Result<()> {
+    // Notification + Event pin the explicit tag = "kind" path.
+    // Shape declares no tag attribute, so the macro's parser
+    // defaults it to "type". A regression that dropped the
+    // default-fallback branch would reject Shape at compile
+    // time, or write to a field name other than "type" at
+    // runtime.
+    let circle = Shape::Circle { radius: 1.5 };
+    let v = circle.clone().to_convex()?;
+    match &v {
+        ConvexValue::Object(o) => {
+            let type_field: FieldName = "type".parse()?;
+            let tag = o.get(&type_field).expect("default tag field present");
+            match tag {
+                ConvexValue::String(s) => assert_eq!(s.to_string(), "circle"),
+                other => panic!("expected string tag, got {other:?}"),
+            }
+        },
+        other => panic!("expected object, got {other:?}"),
+    }
+    assert_eq!(Shape::from_convex(v)?, circle);
     Ok(())
 }
 

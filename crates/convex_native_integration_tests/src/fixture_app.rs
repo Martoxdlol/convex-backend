@@ -92,6 +92,18 @@ pub enum Event {
     OrderRefunded { reason: String },
 }
 
+/// ConvexUnion *without* an explicit `#[convex(tag = "...")]`
+/// attribute. The macro's tag parser defaults to "type" when
+/// unset — a separate code path from the `tag = "kind"` form
+/// used by Notification/Event. A regression that dropped the
+/// default-tag fallback would reject this union at compile time
+/// or produce a malformed object at runtime.
+#[derive(ConvexUnion, Debug, Clone, PartialEq)]
+pub enum Shape {
+    Circle { radius: f64 },
+    Square { side: f64 },
+}
+
 /// Primary table — every feature that touches an `Id<Todo>` goes
 /// through this.
 #[derive(ConvexDocument, Debug, Clone)]
