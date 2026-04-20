@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 244 tests
 cargo test -p convex_native_backend              # 12 tests
 cargo test -p convex_native_distributed          # 161 tests
-cargo test -p convex_native_integration_tests    # 138 tests
+cargo test -p convex_native_integration_tests    # 139 tests
 
-# 555 total — all green
+# 556 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
