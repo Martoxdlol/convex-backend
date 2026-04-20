@@ -107,6 +107,56 @@ async fn metrics_sink_records_ok_and_err_outcomes() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn in_flight_counter_increments_during_handler_and_drops_after() -> anyhow::Result<()> {
+    // NativeFunctionRunner::in_flight tracks the number of
+    // currently-executing handlers. The existing drain test
+    // only reads in_flight() == 0 post-completion. This test
+    // wraps the runner's action invocation in a task that pauses
+    // (sleep_forever is annotated timeout_ms=100 — it'll abort
+    // on its own) and reads the counter while the handler is
+    // suspended, then asserts it drops back to 0 after the task
+    // finishes. A regression that stopped bumping the counter on
+    // enter would leave the drain path silently stuck.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+
+    assert_eq!(runner.in_flight(), 0, "idle runner has no in-flight work");
+    let r2 = runner.clone();
+    let cb2 = callbacks.clone();
+    let join = tokio::spawn(async move {
+        let _ = r2
+            .run_action_with_callbacks(
+                "sleep_forever",
+                TableNamespace::Global,
+                ConvexObject::empty(),
+                cb2,
+            )
+            .await;
+    });
+
+    // Poll briefly until the counter registers the enqueued call.
+    let mut seen_in_flight = false;
+    for _ in 0..20 {
+        if runner.in_flight() >= 1 {
+            seen_in_flight = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        seen_in_flight,
+        "in_flight should increment while the handler is executing",
+    );
+    let _ = join.await;
+    assert_eq!(
+        runner.in_flight(),
+        0,
+        "counter must drop back to 0 after the task finishes",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn drain_state_refuses_new_invocations() -> anyhow::Result<()> {
     let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
     runner.begin_drain();
