@@ -107,6 +107,67 @@ async fn metrics_sink_records_ok_and_err_outcomes() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn concurrent_actions_complete_independently() -> anyhow::Result<()> {
+    // Spawn three concurrent echo_action invocations on the same
+    // runner. Each should complete with its own result — a
+    // regression that serialised dispatch or shared per-invocation
+    // state across tasks would show up as a deadlock (if locking
+    // goes wrong) or as crossed-over result strings. The test
+    // doubles as a smoke test for the runner's async-safety
+    // contract.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let r = runner.clone();
+    let cb = callbacks.clone();
+    let t1 = tokio::spawn(async move {
+        r.run_action_with_callbacks(
+            "echo_action",
+            TableNamespace::Global,
+            args(&[("message", ConvexValue::try_from("one".to_string())?)]),
+            cb,
+        )
+        .await
+    });
+    let r = runner.clone();
+    let cb = callbacks.clone();
+    let t2 = tokio::spawn(async move {
+        r.run_action_with_callbacks(
+            "echo_action",
+            TableNamespace::Global,
+            args(&[("message", ConvexValue::try_from("two".to_string())?)]),
+            cb,
+        )
+        .await
+    });
+    let r = runner.clone();
+    let cb = callbacks.clone();
+    let t3 = tokio::spawn(async move {
+        r.run_action_with_callbacks(
+            "echo_action",
+            TableNamespace::Global,
+            args(&[("message", ConvexValue::try_from("three".to_string())?)]),
+            cb,
+        )
+        .await
+    });
+    let results = tokio::try_join!(t1, t2, t3)?;
+    let (a, b, c) = (results.0?, results.1?, results.2?);
+    let texts: Vec<String> = [a, b, c]
+        .into_iter()
+        .map(|v| match v {
+            ConvexValue::String(s) => s.to_string(),
+            other => panic!("expected string, got {other:?}"),
+        })
+        .collect();
+    // Each response must contain its own input, not another
+    // concurrent task's.
+    assert!(texts.contains(&"echo:one".to_string()));
+    assert!(texts.contains(&"echo:two".to_string()));
+    assert!(texts.contains(&"echo:three".to_string()));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn in_flight_counter_increments_during_handler_and_drops_after() -> anyhow::Result<()> {
     // NativeFunctionRunner::in_flight tracks the number of
     // currently-executing handlers. The existing drain test
