@@ -24,6 +24,26 @@ use convex_native_core::{
 type _ForceLink = convex_native_integration_tests::fixture_app::Todo;
 
 #[test]
+fn built_backend_version_matches_crate_constant() -> anyhow::Result<()> {
+    // ConvexBackend::convex_native_version() is what dev tooling
+    // reads to guard forward-compat. It delegates to
+    // convex_native_core::VERSION, which tracks the crate's
+    // Cargo.toml version. A regression that stubbed the
+    // accessor (or read from the wrong source) would silently
+    // misreport the version to dashboards + CI checks.
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let built = ConvexBackend::new().with_callbacks(callbacks).build()?;
+    let v = built.convex_native_version();
+    assert!(!v.is_empty(), "version must be non-empty; got {v:?}");
+    // VERSION is a semver string — at minimum a digit + dot.
+    assert!(
+        v.chars().any(|c| c.is_ascii_digit()) && v.contains('.'),
+        "expected a semver-shaped version; got {v:?}",
+    );
+    Ok(())
+}
+
+#[test]
 fn function_registration_udf_type_reflects_handler_kind() -> anyhow::Result<()> {
     // NativeFunctionRegistration::udf_type() reads the UdfType
     // off the HandlerFn enum. The fixture registers one handler
