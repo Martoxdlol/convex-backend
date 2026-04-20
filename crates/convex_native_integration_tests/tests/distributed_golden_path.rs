@@ -365,6 +365,46 @@ async fn internal_mutation_delete_surfaces_final_tx_over_the_wire() -> anyhow::R
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn secondary_table_query_dispatches_over_the_wire() -> anyhow::Result<()> {
+    // Distributed mirror of
+    // secondary_table_query_dispatches_through_the_same_ctx:
+    // confirms list_messages_in_channel (targeting the `messages`
+    // tablet, not `todos`) dispatches through the worker pool
+    // and returns an empty array for an unseeded channel. A
+    // regression that over-indexed on the todos table in the
+    // worker's registry would fail here without breaking the
+    // todos-specific tests.
+    let fx = DbFixture::new_in_memory().await?;
+    let addr = spawn_worker(fx.database.clone()).await;
+    let client = TonicWorkerClient::connect(format!("http://{addr}")).await?;
+    let runner = DistributedFunctionRunner::new(vec![client])?;
+
+    let resp = runner
+        .execute(
+            ExecuteRequest {
+                name: "list_messages_in_channel".to_string(),
+                namespace: TableNamespace::Global,
+                args: args(&[("channel", ConvexValue::try_from("general".to_string())?)]),
+                timeout: None,
+                min_registry_version: None,
+                execution_context: None,
+                begin_timestamp: Some(u64::from(*fx.database.now_ts_for_reads())),
+                existing_writes: Vec::new(),
+                http_request: None,
+                identity: Vec::new(),
+            },
+            UdfType::Query,
+        )
+        .await?;
+    let value = resp.result.expect("query succeeds");
+    match value {
+        ConvexValue::Array(a) => assert!(a.is_empty(), "expected empty array; got {a:?}"),
+        other => panic!("expected array, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unknown_function_errors_verbatim_through_the_wire() -> anyhow::Result<()> {
     let fx = DbFixture::new_in_memory().await?;
     let addr = spawn_worker(fx.database.clone()).await;
