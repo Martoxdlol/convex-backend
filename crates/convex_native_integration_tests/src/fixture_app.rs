@@ -539,6 +539,26 @@ pub async fn schedule_follow_up(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<(
     Ok(())
 }
 
+/// Action that schedules a followup *action* via `run_action_after`.
+/// Distinct wrapper from `run_after` at the scheduler surface —
+/// both methods delegate to `schedule_by_name` underneath, but
+/// the typed entry points have independent type-parameter
+/// constraints (`ConvexActionFunction` vs `ConvexMutationFunction`).
+/// A regression that only wired the mutation entry point would
+/// leave run_action_after working at compile time but silently
+/// routing to the mutation side.
+#[convex::action]
+pub async fn schedule_follow_up_action(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
+    ctx.scheduler()
+        .run_action_after(
+            Duration::from_secs(90),
+            InternalAction,
+            InternalActionArgs {},
+        )
+        .await?;
+    Ok(())
+}
+
 /// Mutation that schedules a follow-up mutation through the
 /// mutation-ctx scheduler. Unlike the action-ctx scheduler
 /// (which routes through `NativeActionCallbacks::schedule`),

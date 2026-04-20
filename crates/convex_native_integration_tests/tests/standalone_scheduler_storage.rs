@@ -54,6 +54,38 @@ async fn scheduler_run_after_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn action_scheduler_run_action_after_reaches_callbacks() -> anyhow::Result<()> {
+    // Mirror of scheduler_run_after_reaches_callbacks, but
+    // through the *run_action_after* entry point on the
+    // action-ctx scheduler. A regression that wired only the
+    // mutation typed entry point into the callbacks layer would
+    // pass the run_after test while silently dropping every
+    // action schedule_by_name.
+    let (callbacks, history) = TestCallbacks::new().build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    runner
+        .run_action_with_callbacks(
+            "schedule_follow_up_action",
+            TableNamespace::Global,
+            convex_native_core::testing::args! {},
+            callbacks,
+        )
+        .await?;
+    let scheduled = history
+        .snapshot()
+        .into_iter()
+        .filter_map(|r| match r {
+            CallRecord::Schedule { name, delay } => Some((name, delay)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(scheduled.len(), 1);
+    assert_eq!(scheduled[0].0, "internal_action");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn storage_store_get_url_metadata_delete_all_flow() -> anyhow::Result<()> {
     let (callbacks, history) = TestCallbacks::new()
         .with_storage_url(Some("https://files/test"))
