@@ -167,6 +167,32 @@ async fn http_action_sub_mutation_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn redirect_handler_returns_location_header() -> anyhow::Result<()> {
+    // HttpResponse::redirect is pinned at the builder layer by
+    // http_response_builders.rs. Driving it through the runner
+    // surfaces any regression in the response serialisation path
+    // that might strip headers or mis-encode the status. Assert
+    // the handler's 302 + Location survive end-to-end.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/goto".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/goto".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::GET:/api/goto", request)
+        .await?;
+    assert_eq!(resp.status, 302);
+    assert_eq!(
+        resp.headers.get("Location").unwrap().to_str().unwrap(),
+        "/home",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn path_remainder_returns_routed_path() -> anyhow::Result<()> {
     // `HttpRequest::path_remainder()` aliases to `routed_path` —
     // what the router hands the handler after matching. Asserting

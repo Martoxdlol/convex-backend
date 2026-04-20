@@ -1087,6 +1087,20 @@ pub async fn path_remainder_probe(
     ))
 }
 
+/// HTTP handler that returns a redirect. Exercises
+/// `HttpResponse::redirect(...)` end-to-end through the runner
+/// dispatch path (not just the builder-level test in
+/// http_response_builders.rs). A regression that mis-set the
+/// Location header or stripped it during response serialisation
+/// would slip past the builder-only test.
+#[convex::http_action(method = "GET", path = "/api/goto")]
+pub async fn redirect_to_home(
+    _ctx: &mut HttpActionCtx<'_, Rt>,
+    _req: HttpRequest,
+) -> anyhow::Result<HttpResponse> {
+    Ok(HttpResponse::redirect(302, "/home"))
+}
+
 /// HTTP handler that issues a sub-*mutation* (as opposed to the
 /// sub-query path covered by `pending_count_http`). Exercises
 /// `HttpActionCtx::run_mutation_raw(...)` — the untyped surface
