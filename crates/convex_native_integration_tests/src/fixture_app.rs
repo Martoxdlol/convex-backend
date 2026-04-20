@@ -539,6 +539,21 @@ pub async fn schedule_follow_up(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<(
     Ok(())
 }
 
+/// Action that schedules a followup via the absolute-timestamp
+/// entry point. Exercises `Scheduler::run_at(UnixTimestamp, ...)`
+/// on the action-ctx (distinct from the mutation-ctx run_at
+/// that writes through VirtualSchedulerModel). Computes the
+/// target timestamp relative to the action-ctx clock so mocked
+/// runtimes see the mocked time.
+#[convex::action]
+pub async fn schedule_at_absolute_time_action(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<()> {
+    let ts = ctx.unix_timestamp() + Duration::from_secs(3600);
+    ctx.scheduler()
+        .run_at(ts, NightlyCleanup, NightlyCleanupArgs {})
+        .await?;
+    Ok(())
+}
+
 /// Action that schedules a followup *action* via `run_action_after`.
 /// Distinct wrapper from `run_after` at the scheduler surface —
 /// both methods delegate to `schedule_by_name` underneath, but

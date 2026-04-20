@@ -54,6 +54,45 @@ async fn scheduler_run_after_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn action_scheduler_run_at_reaches_callbacks_with_computed_delay() -> anyhow::Result<()> {
+    // Scheduler::run_at on the action-ctx side computes the
+    // delay as (timestamp - callbacks.unix_timestamp_now()) and
+    // delegates to run_after. TestCallbacks' NoopCallbacks
+    // fallback uses SystemTime::now, so the recorded delay
+    // should land between 0s and ~3600s (the fixture schedules
+    // one hour out; the test-level clock can drift a handful of
+    // milliseconds at most between the handler's timestamp read
+    // and the callback's now read).
+    let (callbacks, history) = TestCallbacks::new().build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    runner
+        .run_action_with_callbacks(
+            "schedule_at_absolute_time_action",
+            TableNamespace::Global,
+            convex_native_core::testing::args! {},
+            callbacks,
+        )
+        .await?;
+    let scheduled = history
+        .snapshot()
+        .into_iter()
+        .filter_map(|r| match r {
+            CallRecord::Schedule { name, delay } => Some((name, delay)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(scheduled.len(), 1);
+    assert_eq!(scheduled[0].0, "nightly_cleanup");
+    let delay = scheduled[0].1;
+    assert!(
+        delay <= std::time::Duration::from_secs(3601),
+        "run_at with timestamp = now+3600 should compute a delay <= 3601s; got {delay:?}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn action_scheduler_run_action_after_reaches_callbacks() -> anyhow::Result<()> {
     // Mirror of scheduler_run_after_reaches_callbacks, but
     // through the *run_action_after* entry point on the
