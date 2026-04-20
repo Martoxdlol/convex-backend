@@ -1143,6 +1143,24 @@ pub async fn delete_item(
     Ok(HttpResponse::new(204))
 }
 
+/// HTTP handler that reports `ctx.execution_context().request_id`
+/// in the body. Exercises the HTTP-ctx execution_context
+/// accessor — parallel to the query/mutation/action-ctx
+/// variants. A regression that left HTTP handlers unable to
+/// read the request trace id would break structured-logging
+/// / trace correlation without showing up anywhere else.
+#[convex::http_action(method = "GET", path = "/api/request-id")]
+pub async fn http_request_id(
+    ctx: &mut HttpActionCtx<'_, Rt>,
+    _req: HttpRequest,
+) -> anyhow::Result<HttpResponse> {
+    let body = ctx
+        .execution_context()
+        .map(|c| c.request_id.to_string())
+        .unwrap_or_default();
+    Ok(HttpResponse::text(200, body))
+}
+
 /// HTTP handler that logs via `ctx.log()` and returns ok.
 /// Exercises the HTTP-ctx log surface (parallel to
 /// QueryCtx::log / MutationCtx::log / ActionCtx::log). A

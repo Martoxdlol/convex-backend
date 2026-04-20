@@ -167,6 +167,54 @@ async fn http_action_sub_mutation_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn http_ctx_execution_context_propagates_request_id() -> anyhow::Result<()> {
+    // HttpActionCtx::execution_context() exposes the request's
+    // ExecutionContext (request_id, execution_id, parent job) to
+    // HTTP handlers. Parallel accessor to query/mutation/action
+    // ctx variants; a regression leaving it unwired would break
+    // structured logging + trace correlation across worker
+    // boundaries. Drive through
+    // run_http_action_with_callbacks_identity_and_context with a
+    // known context and assert the handler echoes the request id.
+    use common::execution_context::{
+        ExecutionContext,
+        ExecutionId,
+        RequestId,
+    };
+    use convex_native_core::callbacks::NoopCallbacks;
+    use keybroker::Identity;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let context =
+        ExecutionContext::new_from_parts(RequestId::new(), ExecutionId::new(), None, false);
+    let expected = context.request_id.to_string();
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/request-id".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/request-id".to_string(),
+    };
+    let resp = runner
+        .run_http_action_with_callbacks_identity_and_context(
+            "__http::GET:/api/request-id",
+            request,
+            callbacks,
+            Some(LogBuffer::new()),
+            Identity::system(),
+            Some(context),
+        )
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(
+        std::str::from_utf8(&resp.body)?,
+        expected,
+        "HTTP ctx.execution_context().request_id must echo back the caller's id",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn http_handler_log_lines_drain_into_the_shared_buffer() -> anyhow::Result<()> {
     // HttpActionCtx::log() is the HTTP counterpart to the
     // query / mutation / action ctx loggers. A regression that
