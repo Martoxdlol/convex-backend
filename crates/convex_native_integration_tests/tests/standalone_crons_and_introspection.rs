@@ -23,6 +23,27 @@ use convex_native_core::{
 type _ForceLink = convex_native_integration_tests::fixture_app::Todo;
 
 #[test]
+fn cron_registry_iter_surfaces_every_fixture_entry() {
+    // CronRegistry::iter is the dev-tooling entry point for
+    // enumerating every declared cron without naming them
+    // individually. A regression that short-circuited the
+    // iterator (e.g. returned an empty vec or stopped after
+    // the first) would pass lookup-by-name tests while silently
+    // breaking the operator surface. Pin both fixture entries
+    // land in iter().
+    let registry = CronRegistry::collect().expect("collect crons");
+    let names: Vec<&'static str> = registry.iter().map(|c| c.name).collect();
+    assert!(
+        names.contains(&"nightly-cleanup"),
+        "iter missing nightly-cleanup; got {names:?}",
+    );
+    assert!(
+        names.contains(&"hourly-probe"),
+        "iter missing hourly-probe; got {names:?}",
+    );
+}
+
+#[test]
 fn cron_registry_includes_fixture_entry() {
     let registry = CronRegistry::collect().expect("collect crons");
     let entry = registry
@@ -82,6 +103,22 @@ fn native_schema_surfaces_text_and_vector_indexes_on_messages() {
 fn http_router_collects_fixture_routes() {
     let router = HttpRouter::collect().expect("collect routes");
     assert!(router.lookup("POST", "/api/ping").is_some());
+    // .len() / .is_empty() / .iter() are part of the HttpRouter
+    // public surface alongside .lookup(). A regression that
+    // mis-wired the count or the iterator body would break dev
+    // tooling (convex dev) but slip past the lookup-only
+    // assertion above.
+    let count = router.len();
+    assert!(
+        count >= 3,
+        "at least ping + echo + pending routes; got {count}"
+    );
+    assert!(!router.is_empty());
+    let route_names: Vec<&'static str> = router.iter().map(|r| r.name).collect();
+    assert!(
+        route_names.contains(&"__http::POST:/api/ping"),
+        "iter() surface should include ping; got {route_names:?}",
+    );
 }
 
 #[test]
