@@ -426,6 +426,18 @@ pub async fn chain_echo(ctx: &mut ActionCtx<'_, Rt>, message: String) -> anyhow:
     ctx.run_action(EchoAction, EchoActionArgs { message }).await
 }
 
+/// Action that returns `ctx.unix_timestamp()` as seconds. The
+/// query-ctx variant is covered implicitly via create_todo's
+/// created_at field; actions have their own parallel accessor
+/// that reads from `NativeActionCallbacks::unix_timestamp_now`
+/// (runtime-sourced with a SystemTime fallback). A regression
+/// that returned 0 or the epoch would slip past the query-ctx
+/// test.
+#[convex::action]
+pub async fn action_ctx_now(ctx: &mut ActionCtx<'_, Rt>) -> anyhow::Result<f64> {
+    Ok(ctx.unix_timestamp().as_secs_f64())
+}
+
 /// Action that reads a Todo by id from inside the action
 /// context. Exercises `ActionCtx::db().get(id)`, which routes
 /// through `NativeActionCallbacks::read_document_at_snapshot`

@@ -165,6 +165,35 @@ async fn mutation_log_lines_land_in_the_shared_buffer() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn action_ctx_unix_timestamp_is_non_zero_current_era() -> anyhow::Result<()> {
+    // ActionCtx::unix_timestamp() reads from
+    // callbacks.unix_timestamp_now() (NoopCallbacks falls back to
+    // SystemTime::now). A regression that returned 0 or the
+    // epoch would slip past the query-ctx timestamp test covered
+    // via create_todo.created_at.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let out = runner
+        .run_action_with_callbacks(
+            "action_ctx_now",
+            TableNamespace::Global,
+            ConvexObject::empty(),
+            callbacks,
+        )
+        .await?;
+    match out {
+        ConvexValue::Float64(ts) => {
+            assert!(
+                ts > 1_000_000_000.0,
+                "expected a current-era timestamp (>= 2001); got {ts}",
+            );
+        },
+        other => panic!("expected Float64 timestamp, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn action_run_action_uses_local_runner_fast_path() -> anyhow::Result<()> {
     // chain_echo calls ctx.run_action(EchoAction, ...). The action
     // ctx's run_action_raw checks the local runner first and
