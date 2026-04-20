@@ -218,6 +218,62 @@ async fn nested_struct_arg_round_trips_through_convex_value() -> anyhow::Result<
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn convex_union_as_arg_decodes_both_variants() -> anyhow::Result<()> {
+    // Companion to query_returning_convex_union_round_trips_via_runner:
+    // the arg side of ConvexUnion, where the macro-generated args
+    // struct decodes the tag + body from ConvexValue::Object. A
+    // regression that mis-routed variants by tag would pass the
+    // return-type test but corrupt incoming arg values.
+    use std::collections::BTreeMap;
+
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+
+    // Email variant → expect "email:x@y"
+    let mut email_inner: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+    email_inner.insert("kind".parse()?, ConvexValue::try_from("email".to_string())?);
+    email_inner.insert("to".parse()?, ConvexValue::try_from("x@y".to_string())?);
+    let mut arg_map: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+    arg_map.insert(
+        "note".parse()?,
+        ConvexValue::Object(ConvexObject::try_from(email_inner)?),
+    );
+    let out = run_mutation(
+        &fx.database,
+        &runner,
+        "echo_notification",
+        ConvexObject::try_from(arg_map)?,
+    )
+    .await?;
+    match out {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "email:x@y"),
+        other => panic!("expected email, got {other:?}"),
+    }
+
+    // Push variant → expect "push:tok"
+    let mut push_inner: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+    push_inner.insert("kind".parse()?, ConvexValue::try_from("push".to_string())?);
+    push_inner.insert("token".parse()?, ConvexValue::try_from("tok".to_string())?);
+    let mut arg_map: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+    arg_map.insert(
+        "note".parse()?,
+        ConvexValue::Object(ConvexObject::try_from(push_inner)?),
+    );
+    let out = run_mutation(
+        &fx.database,
+        &runner,
+        "echo_notification",
+        ConvexObject::try_from(arg_map)?,
+    )
+    .await?;
+    match out {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "push:tok"),
+        other => panic!("expected push, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn query_returning_convex_union_round_trips_via_runner() -> anyhow::Result<()> {
     // fetch_notification returns Notification — a ConvexUnion
     // variant. The runner's response serialisation calls the

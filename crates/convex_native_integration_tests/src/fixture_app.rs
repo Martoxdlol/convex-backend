@@ -264,6 +264,22 @@ pub async fn fetch_notification(
     })
 }
 
+/// Mutation that *accepts* a `#[derive(ConvexUnion)]` value. The
+/// complement to fetch_notification; exercises the arg-side of
+/// the ConvexUnion derive at the dispatch layer. Returns the
+/// inner email/token so tests can assert the variant was
+/// decoded correctly.
+#[convex::mutation]
+pub async fn echo_notification(
+    _ctx: &mut MutationCtx<'_, Rt>,
+    note: Notification,
+) -> anyhow::Result<String> {
+    Ok(match note {
+        Notification::Email { to } => format!("email:{to}"),
+        Notification::Push { token } => format!("push:{token}"),
+    })
+}
+
 /// Flip a todo's `done` flag. Exercises `ctx.db().patch(...)` +
 /// `TodoPatch`.
 #[convex::mutation]
