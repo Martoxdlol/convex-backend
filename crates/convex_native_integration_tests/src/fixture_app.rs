@@ -280,6 +280,21 @@ pub async fn echo_notification(
     })
 }
 
+/// Mutation that accepts a `Vec<u8>` arg — the Bytes special-case.
+/// Distinct from Vec<u8> as a document field (covered by
+/// Attachment::payload). The args-side of the macro threads
+/// Vec<u8> through FromConvex → ConvexValue::Bytes, a separate
+/// code path from the field-level derive. Returns the byte
+/// count so tests can confirm the full payload survived the
+/// boundary.
+#[convex::mutation]
+pub async fn echo_bytes_len(
+    _ctx: &mut MutationCtx<'_, Rt>,
+    payload: Vec<u8>,
+) -> anyhow::Result<i64> {
+    Ok(payload.len() as i64)
+}
+
 /// Flip a todo's `done` flag. Exercises `ctx.db().patch(...)` +
 /// `TodoPatch`.
 #[convex::mutation]

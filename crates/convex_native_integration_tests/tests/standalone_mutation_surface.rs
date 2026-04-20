@@ -218,6 +218,37 @@ async fn nested_struct_arg_round_trips_through_convex_value() -> anyhow::Result<
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn bytes_arg_round_trips_through_convex_value() -> anyhow::Result<()> {
+    // Vec<u8> as a *field* is covered via Attachment::payload. As
+    // a mutation *arg*, Vec<u8> goes through the macro-generated
+    // args struct's FromConvex impl, which routes through the
+    // ConvexValue::Bytes variant rather than ConvexValue::Array.
+    // A regression that routed it through Array<Byte> would
+    // inflate every byte to an integer and blow up the transit
+    // size without corrupting the deserialised length — which is
+    // why we assert the length, not the content.
+    use value::ConvexBytes;
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let payload: Vec<u8> = vec![1, 2, 3, 4, 250, 251, 252];
+    let out = run_mutation(
+        &fx.database,
+        &runner,
+        "echo_bytes_len",
+        args(&[(
+            "payload",
+            ConvexValue::Bytes(ConvexBytes::try_from(payload.clone())?),
+        )]),
+    )
+    .await?;
+    match out {
+        ConvexValue::Int64(n) => assert_eq!(n as usize, payload.len()),
+        other => panic!("expected length int, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn convex_union_as_arg_decodes_both_variants() -> anyhow::Result<()> {
     // Companion to query_returning_convex_union_round_trips_via_runner:
     // the arg side of ConvexUnion, where the macro-generated args
