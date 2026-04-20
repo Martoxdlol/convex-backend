@@ -1133,9 +1133,9 @@ in logs.
 cargo test -p convex_native                      # 244 tests
 cargo test -p convex_native_backend              # 12 tests
 cargo test -p convex_native_distributed          # 161 tests
-cargo test -p convex_native_integration_tests    # 107 tests
+cargo test -p convex_native_integration_tests    # 109 tests
 
-# 524 total — all green
+# 526 total — all green
 ```
 
 `convex_native_integration_tests` is a breadth-over-depth crate
@@ -1157,7 +1157,7 @@ that drives a shared fixture app through both topologies:
 | `standalone_timeout.rs` | monolith | per-function + runner-default timeouts abort runaway handlers |
 | `standalone_scheduler_storage.rs` | monolith | `ctx.scheduler().run_after(...)` and full `ctx.storage()` flow via `TestCallbacks` + mutation-ctx scheduler writes to tx + `cancel` idempotency + `run_at` absolute-timestamp |
 | `standalone_mutation_surface.rs` | monolith | `replace`, `delete`, `patch` mutation operators |
-| `http_response_builders.rs` | wire-independent | `HttpResponse::new/text/json/redirect/with_header/with_body` |
+| `http_response_builders.rs` | wire-independent | `HttpResponse::new/text/json/redirect/with_header/with_body` + `with_header` reject-invalid + multi-header accumulate |
 | `distributed_golden_path.rs` | distributed | query over tonic against seeded DB, mutation returns `DistributedFinalTx`, replace + internal_delete writes-entry round-trips, unknown-function wire error |
 | `distributed_actions.rs` | distributed | pure action wire round-trip, `log_lines` drain, `bad_request` → `Err(String)` |
 | `distributed_http_actions.rs` | distributed | `http_request` / `http_response` text payload + JSON body + header round-trip + HTTP handler sub-mutation through backend callbacks over the wire |
