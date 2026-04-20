@@ -167,6 +167,31 @@ async fn http_action_sub_mutation_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn http_ctx_auth_defaults_to_anonymous_without_identity() -> anyhow::Result<()> {
+    // The HTTP-action ctx holds identity through its own builder
+    // (HttpActionCtx::with_identity) parallel to query/mutation
+    // ctxs. run_http_action with no identity hooks must expose
+    // an Unknown(None) identity — which whoami_http reports as
+    // "anonymous". Pins the accessor wiring; a regression that
+    // accidentally routed through system identity would report
+    // "system".
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/whoami-http".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/whoami-http".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::GET:/api/whoami-http", request)
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"anonymous"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn delete_method_registers_and_dispatches() -> anyhow::Result<()> {
     // The fixture otherwise only uses GET / POST, so this test
     // exercises the macro's method-string expansion for the

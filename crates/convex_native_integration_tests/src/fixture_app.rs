@@ -1114,6 +1114,31 @@ pub async fn delete_item(
     Ok(HttpResponse::new(204))
 }
 
+/// HTTP handler that reports the caller's auth status. Exercises
+/// `HttpActionCtx::auth()` — a parallel accessor to the
+/// `QueryCtx::auth()` / `MutationCtx::auth()` / `ActionCtx::auth()`
+/// variants. The HTTP-action ctx holds identity through a
+/// distinct builder (`with_identity`) from the query/mutation
+/// ctxs, so a regression wiring only three of the four would
+/// leave HTTP handlers reporting stale/system identity while
+/// query/mutation kept working.
+#[convex::http_action(method = "GET", path = "/api/whoami-http")]
+pub async fn whoami_http(
+    ctx: &mut HttpActionCtx<'_, Rt>,
+    _req: HttpRequest,
+) -> anyhow::Result<HttpResponse> {
+    let body = if ctx.auth().is_system() {
+        "system"
+    } else if ctx.auth().is_admin() {
+        "admin"
+    } else if ctx.auth().is_authenticated() {
+        "user"
+    } else {
+        "anonymous"
+    };
+    Ok(HttpResponse::text(200, body))
+}
+
 /// HTTP handler that issues a sub-*mutation* (as opposed to the
 /// sub-query path covered by `pending_count_http`). Exercises
 /// `HttpActionCtx::run_mutation_raw(...)` — the untyped surface
