@@ -232,6 +232,17 @@ pub async fn echo_optional_owner(
     Ok(owner.unwrap_or_else(|| "none".to_string()))
 }
 
+/// Mutation whose args include a `#[derive(ConvexNested)]`
+/// struct. Exercises the nested-object arg-decoding path —
+/// distinct from the primitive/Option/Vec paths already
+/// covered. The Metadata struct embeds a ConvexEnum (Priority),
+/// so this handler also round-trips an enum-inside-struct
+/// through the generated args decoder.
+#[convex::mutation]
+pub async fn echo_metadata(_ctx: &mut MutationCtx<'_, Rt>, md: Metadata) -> anyhow::Result<String> {
+    Ok(format!("{}/{:?}", md.source, md.priority))
+}
+
 /// Flip a todo's `done` flag. Exercises `ctx.db().patch(...)` +
 /// `TodoPatch`.
 #[convex::mutation]

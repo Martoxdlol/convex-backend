@@ -179,6 +179,45 @@ async fn option_arg_decodes_both_some_and_none() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn nested_struct_arg_round_trips_through_convex_value() -> anyhow::Result<()> {
+    // echo_metadata takes `Metadata` (a ConvexNested struct with
+    // an embedded ConvexEnum field) as an arg. The macro-
+    // generated args struct routes it through the nested
+    // FromConvex impl — a code path none of the existing tests
+    // exercise at the arg layer. A regression that mis-wired
+    // nested decoding would silently flatten or corrupt the
+    // Priority enum variant.
+    use std::collections::BTreeMap;
+
+    use value::FieldName;
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let mut nested: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+    nested.insert("source".parse()?, ConvexValue::try_from("web".to_string())?);
+    nested.insert(
+        "priority".parse()?,
+        ConvexValue::try_from("high".to_string())?,
+    );
+    let mut arg_map: BTreeMap<FieldName, ConvexValue> = BTreeMap::new();
+    arg_map.insert(
+        "md".parse()?,
+        ConvexValue::Object(ConvexObject::try_from(nested)?),
+    );
+    let out = run_mutation(
+        &fx.database,
+        &runner,
+        "echo_metadata",
+        ConvexObject::try_from(arg_map)?,
+    )
+    .await?;
+    match out {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "web/High"),
+        other => panic!("expected 'web/High', got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn internal_delete_removes_document() -> anyhow::Result<()> {
     let fx = DbFixture::new_in_memory().await?;
     let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
