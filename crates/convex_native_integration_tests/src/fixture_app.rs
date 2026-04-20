@@ -218,6 +218,20 @@ pub async fn create_todo(
     Ok(id)
 }
 
+/// Mutation whose args include an `Option<String>`. Exercises
+/// the Option<T> arg-decoding path on the generated
+/// `CreateTodoOptionalArgs` struct — distinct from the
+/// Option<T> *field* path already covered by `Todo::metadata`.
+/// Returns the owner back (or `"none"` when absent) so tests can
+/// round-trip both Some and None through ConvexValue args.
+#[convex::mutation]
+pub async fn echo_optional_owner(
+    _ctx: &mut MutationCtx<'_, Rt>,
+    owner: Option<String>,
+) -> anyhow::Result<String> {
+    Ok(owner.unwrap_or_else(|| "none".to_string()))
+}
+
 /// Flip a todo's `done` flag. Exercises `ctx.db().patch(...)` +
 /// `TodoPatch`.
 #[convex::mutation]

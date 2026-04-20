@@ -143,6 +143,42 @@ async fn writes_are_visible_within_the_same_mutation_tx() -> anyhow::Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn option_arg_decodes_both_some_and_none() -> anyhow::Result<()> {
+    // The #[convex::mutation] macro generates an args struct
+    // whose Option<String> fields decode absent-or-Null values
+    // into None and present-as-String into Some. Both branches
+    // live in the macro expansion's FromConvex impl. Round-trip
+    // echo_optional_owner through both shapes.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let some = run_mutation(
+        &fx.database,
+        &runner,
+        "echo_optional_owner",
+        args(&[("owner", ConvexValue::try_from("alice".to_string())?)]),
+    )
+    .await?;
+    match some {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "alice"),
+        other => panic!("expected alice, got {other:?}"),
+    }
+    // Omit the arg entirely — the macro-generated FromConvex
+    // should treat missing Option<T> args as None.
+    let none = run_mutation(
+        &fx.database,
+        &runner,
+        "echo_optional_owner",
+        ConvexObject::empty(),
+    )
+    .await?;
+    match none {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "none"),
+        other => panic!("expected 'none', got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn internal_delete_removes_document() -> anyhow::Result<()> {
     let fx = DbFixture::new_in_memory().await?;
     let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
