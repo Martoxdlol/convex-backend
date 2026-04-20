@@ -24,6 +24,33 @@ use convex_native_core::{
 type _ForceLink = convex_native_integration_tests::fixture_app::Todo;
 
 #[test]
+fn function_registration_surfaces_timeout_and_arg_names() -> anyhow::Result<()> {
+    // NativeFunctionRegistration carries arg_names and timeout_ms
+    // populated by the macro. The fixture's sleep_forever has
+    // timeout_ms = 100 and zero args; create_todo has timeout_ms
+    // = 0 (default) and ("owner", "text"). Pin both so a
+    // regression in the macro expansion (e.g. losing the
+    // timeout_ms attribute) fails here instead of silently in a
+    // deployer's per-function timeout config.
+    let reg = NativeFunctionRegistry::collect()?;
+    let sleep = reg.get("sleep_forever").expect("registered");
+    assert_eq!(
+        sleep.timeout_ms, 100,
+        "per-function timeout survives registration"
+    );
+    assert!(sleep.arg_names.is_empty(), "sleep_forever takes no args");
+
+    let create = reg.get("create_todo").expect("registered");
+    assert_eq!(create.timeout_ms, 0, "no per-function timeout means 0");
+    assert_eq!(
+        create.arg_names,
+        &["owner", "text"],
+        "arg_names preserve declaration order",
+    );
+    Ok(())
+}
+
+#[test]
 fn function_registry_iter_len_get_cover_fixture_handlers() -> anyhow::Result<()> {
     // NativeFunctionRegistry::iter / .len() / .get() form the
     // dev-tooling surface parallel to HttpRouter's. A regression
