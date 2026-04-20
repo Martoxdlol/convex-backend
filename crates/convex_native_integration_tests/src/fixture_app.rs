@@ -311,6 +311,31 @@ pub async fn mark_done(ctx: &mut MutationCtx<'_, Rt>, id: Id<Todo>) -> anyhow::R
     Ok(())
 }
 
+/// Patch that updates `text` only — leaves every other field
+/// untouched. Exercises the partial-patch path against a
+/// non-boolean field. A regression in the `TodoPatch`
+/// to_convex_object serializer that dropped non-set fields
+/// incorrectly would corrupt existing data silently — the
+/// `mark_done` test only flips a bool, so this closes the
+/// scalar-field partial-update gap.
+#[convex::mutation]
+pub async fn patch_todo_text(
+    ctx: &mut MutationCtx<'_, Rt>,
+    id: Id<Todo>,
+    text: String,
+) -> anyhow::Result<()> {
+    ctx.db()
+        .patch(
+            id,
+            TodoPatch {
+                text: Some(text),
+                ..Default::default()
+            },
+        )
+        .await?;
+    Ok(())
+}
+
 /// Internal-only mutation — exercises the `internal` modifier. A
 /// direct external call should be refused by the validation layer;
 /// internal sub-calls still work.

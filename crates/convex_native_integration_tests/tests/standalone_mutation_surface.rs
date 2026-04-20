@@ -218,6 +218,68 @@ async fn nested_struct_arg_round_trips_through_convex_value() -> anyhow::Result<
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn patch_updates_only_the_named_field() -> anyhow::Result<()> {
+    // mark_done covers patching a Boolean field; this covers
+    // patching a String field and proves the other fields on
+    // Todo (owner, done, created_at, metadata) stay at their
+    // original values. A regression in TodoPatch::to_convex_object
+    // that emitted unset fields as ConvexValue::Null would
+    // overwrite existing data instead of leaving it alone.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+
+    let id = run_mutation(
+        &fx.database,
+        &runner,
+        "create_todo",
+        args(&[
+            ("owner", ConvexValue::try_from("patcher".to_string())?),
+            ("text", ConvexValue::try_from("initial".to_string())?),
+        ]),
+    )
+    .await?;
+    let id_str = match &id {
+        ConvexValue::String(s) => s.to_string(),
+        other => panic!("expected id, got {other:?}"),
+    };
+
+    run_mutation(
+        &fx.database,
+        &runner,
+        "patch_todo_text",
+        args(&[
+            ("id", ConvexValue::try_from(id_str.clone())?),
+            ("text", ConvexValue::try_from("updated".to_string())?),
+        ]),
+    )
+    .await?;
+
+    let got = run_query(
+        &fx.database,
+        &runner,
+        "get_todo",
+        args(&[("id", ConvexValue::try_from(id_str)?)]),
+    )
+    .await?;
+    let obj = match got {
+        ConvexValue::Object(o) => o,
+        other => panic!("expected object, got {other:?}"),
+    };
+    let text = obj.get(&"text".parse::<FieldName>()?).unwrap();
+    match text {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "updated"),
+        other => panic!("expected 'updated', got {other:?}"),
+    }
+    // owner must survive the partial patch unchanged.
+    let owner = obj.get(&"owner".parse::<FieldName>()?).unwrap();
+    match owner {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "patcher"),
+        other => panic!("owner should be untouched; got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bytes_arg_round_trips_through_convex_value() -> anyhow::Result<()> {
     // Vec<u8> as a *field* is covered via Attachment::payload. As
     // a mutation *arg*, Vec<u8> goes through the macro-generated
