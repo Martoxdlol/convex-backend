@@ -183,6 +183,47 @@ fn http_router_collects_fixture_routes() {
 }
 
 #[test]
+fn built_backend_counts_match_collected_counterparts() -> anyhow::Result<()> {
+    // function_count / table_count / route_count / cron_count
+    // delegate to the collected registries + schema. Pin that
+    // each count matches the free-fn collector's equivalent.
+    // A regression that returned 0 or a stale count would slip
+    // past the summary test (which only asserts ">= non-zero").
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let built = ConvexBackend::new()
+        .with_native_functions()
+        .with_native_schema()
+        .with_http_routes()
+        .with_crons()
+        .with_callbacks(callbacks)
+        .build()?;
+    assert_eq!(
+        built.function_count(),
+        NativeFunctionRegistry::collect()?.len(),
+        "function_count should equal registry.len()",
+    );
+    assert_eq!(
+        built.route_count(),
+        HttpRouter::collect()?.len(),
+        "route_count should equal router.len()",
+    );
+    assert_eq!(
+        built.table_count(),
+        NativeSchema::collect()?.tables.len(),
+        "table_count should equal schema.tables.len()",
+    );
+    // Cron count — the registry exposes iter/lookup; len isn't
+    // on the public API so compare against the iter count.
+    let cron_iter_count = CronRegistry::collect()?.iter().count();
+    assert_eq!(
+        built.cron_count(),
+        cron_iter_count,
+        "cron_count should equal iter().count()",
+    );
+    Ok(())
+}
+
+#[test]
 fn built_backend_summary_names_all_pieces() -> anyhow::Result<()> {
     let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
     let built = ConvexBackend::new()
