@@ -784,6 +784,21 @@ pub async fn todos_by_created_desc(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result
         .await
 }
 
+/// Ascending-order counterpart — exercises `.order(Order::Asc)`
+/// explicitly. Asc is the default when `.order(...)` is omitted,
+/// but explicitly setting it flows through the same code path
+/// `.order(...)` uses for Desc, so a regression that only wired
+/// the default case would slip past the existing `_by_created_desc`
+/// test.
+#[convex::query]
+pub async fn todos_by_created_asc(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<Vec<Todo>> {
+    ctx.db()
+        .query::<Todo>()
+        .order(convex_native::Order::Asc)
+        .collect()
+        .await
+}
+
 /// Filter by creation timestamp range — exercises `.gte` / `.lt`.
 #[convex::query]
 pub async fn todos_in_time_range(

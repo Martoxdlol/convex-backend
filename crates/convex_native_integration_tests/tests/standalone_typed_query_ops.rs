@@ -210,6 +210,31 @@ async fn unique_returns_none_empty_some_one_errors_many() -> anyhow::Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn order_asc_explicitly_returns_all_rows() -> anyhow::Result<()> {
+    // Order::Desc is covered via todos_by_created_desc; the
+    // explicit Order::Asc branch goes through the same
+    // TypedQueryBuilder::order path but with a different
+    // enum variant. Without a handler that passes Asc we
+    // only ever see it as the default, so a regression that
+    // rejected the Asc variant explicitly would slip through.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    seed_todos(&fx.database, &runner, "a1", &["one", "two"]).await?;
+    let out = run_query(
+        &fx.database,
+        &runner,
+        "todos_by_created_asc",
+        ConvexObject::empty(),
+    )
+    .await?;
+    match out {
+        ConvexValue::Array(a) => assert!(a.len() >= 2, "expected at least the seeded rows"),
+        other => panic!("expected array, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn order_desc_reverses_index_traversal() -> anyhow::Result<()> {
     let fx = DbFixture::new_in_memory().await?;
     let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
