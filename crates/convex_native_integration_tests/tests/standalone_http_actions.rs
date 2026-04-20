@@ -167,6 +167,39 @@ async fn http_action_sub_mutation_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn http_ctx_auth_reports_system_when_system_identity_forwarded() -> anyhow::Result<()> {
+    // Complement to http_ctx_auth_defaults_to_anonymous_without_identity:
+    // run_http_action_with_callbacks_and_identity(Identity::system())
+    // threads the identity through HttpActionCtx::with_identity —
+    // the handler's ctx.auth() should see System. A regression in
+    // the identity-forward wiring would leave the handler seeing
+    // Unknown even when the caller supplied a principal.
+    use convex_native_core::callbacks::NoopCallbacks;
+    use keybroker::Identity;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/whoami-http".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/whoami-http".to_string(),
+    };
+    let resp = runner
+        .run_http_action_with_callbacks_and_identity(
+            "__http::GET:/api/whoami-http",
+            request,
+            callbacks,
+            Some(LogBuffer::new()),
+            Identity::system(),
+        )
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"system"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn http_ctx_auth_defaults_to_anonymous_without_identity() -> anyhow::Result<()> {
     // The HTTP-action ctx holds identity through its own builder
     // (HttpActionCtx::with_identity) parallel to query/mutation
