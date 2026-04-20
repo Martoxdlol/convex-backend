@@ -54,6 +54,34 @@ async fn scheduler_run_after_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn action_scheduler_under_noop_callbacks_bails_with_guided_error() -> anyhow::Result<()> {
+    // NoopCallbacks' default schedule impl bails with
+    // "no callbacks attached — cannot schedule {name:?}". A
+    // regression that returned Ok from the no-op branch would
+    // let unit tests silently pass while handlers tried to
+    // schedule jobs that never got persisted. Pin the guided
+    // error under NoopCallbacks.
+    use convex_native_core::callbacks::NoopCallbacks;
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let err = runner
+        .run_action_with_callbacks(
+            "schedule_follow_up",
+            TableNamespace::Global,
+            ConvexObject::empty(),
+            callbacks,
+        )
+        .await
+        .expect_err("scheduling under NoopCallbacks must fail loudly");
+    let msg = format!("{err:#}").to_lowercase();
+    assert!(
+        msg.contains("no callbacks attached") || msg.contains("cannot schedule"),
+        "expected guided NoopCallbacks error; got: {msg}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn action_scheduler_run_action_at_reaches_callbacks() -> anyhow::Result<()> {
     // Fourth and last scheduler entry: run_action_at
     // (action-kind target + absolute timestamp). Complements
