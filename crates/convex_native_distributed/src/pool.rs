@@ -1,0 +1,1304 @@
+//! Substep 3.3 of `convex-native/STATUS.md` — churn-tolerant
+//! `WorkerPool`.
+//!
+//! Replaces the Phase-2 `Vec<Arc<dyn WorkerClient>>` fixed pool
+//! that `DistributedFunctionRunner::new` takes with a dynamic
+//! `WorkerPool` that admits + retires workers at arbitrary times
+//! during the backend's lifetime. The admission server
+//! (substep 3.4) feeds it; the `FunctionRunner` impl
+//! (substep 3.6) reads from it.
+//!
+//! The Phase-2 `DistributedFunctionRunner` stays — it becomes a
+//! specialisation of this: a `WorkerPool` seeded at construction
+//! with one entry per `CONVEX_NATIVE_WORKERS` endpoint,
+//! equivalent to "admit these N workers, never retire". The
+//! new type is additive.
+//!
+//! ## Semantics
+//!
+//! - **Stable ids.** Each admitted worker gets a `WorkerId(u64)` handed out in
+//!   admission order. The id is stable for that worker's lifetime in the pool —
+//!   a single worker restarting produces a **new** id even if it comes back
+//!   with the same endpoint.
+//! - **by_function index.** The pool maintains a `name → Vec<WorkerId>` map
+//!   derived from each worker's advertised inventory. Dispatch picks from the
+//!   list for the requested function; empty list means 503 (substep 3.7).
+//! - **Registry-version floor.** The operator-settable floor (Phase 4.7 from
+//!   the plan) steers traffic away from stragglers during a rolling deploy.
+//!   Workers below the floor aren't considered for dispatch even if their name
+//!   is in the index.
+//! - **No implicit P2C here.** The pool returns a slice of eligible worker ids;
+//!   the caller (substep 3.6) picks one via the existing `Chooser` trait and
+//!   in-flight estimate. Keeping the pool ignorant of dispatch policy means new
+//!   strategies can land without touching the pool.
+
+use std::{
+    collections::{
+        BTreeMap,
+        HashMap,
+    },
+    sync::{
+        atomic::{
+            AtomicU64,
+            Ordering,
+        },
+        Arc,
+    },
+};
+
+use parking_lot::RwLock;
+
+use crate::client::WorkerClient;
+
+/// Stable handle for a worker's membership in the pool. Newly
+/// admitted workers get a fresh id — a restart does **not**
+/// resurrect the previous id.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WorkerId(pub u64);
+
+/// Substep 7.1 of `convex-native/STATUS.md` — operator-facing
+/// snapshot of the current pool state. JSON-serializable so
+/// substep 7.2's admin HTTP surface can render the shape
+/// directly.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct PoolSnapshot {
+    /// Total admitted workers.
+    pub total: usize,
+    /// Pool-wide floor — workers below this `registry_version`
+    /// aren't considered for dispatch.
+    pub min_registry_version: Option<String>,
+    /// `registry_version → count` grouping.
+    pub by_version: BTreeMap<String, usize>,
+    /// `kind → count` grouping (`native-rust`, `javascript`,
+    /// `unspecified`).
+    pub by_kind: BTreeMap<String, usize>,
+    /// Per-function routing preferences (substep 6.2). Keys
+    /// are dotted function names; values are the preferred
+    /// kind's string form.
+    pub kind_preferences: BTreeMap<String, String>,
+    /// Per-worker detail. Ordered by admission sequence
+    /// because the inner map iteration order is undefined;
+    /// operators read this through a serializer that respects
+    /// the `Vec`'s order, not the caller's iteration.
+    pub workers: Vec<PoolWorkerSnapshot>,
+}
+
+/// Substep 7.3 of `convex-native/STATUS.md` — structured
+/// inventory diff a new `registry_version` produces against
+/// the pool's current active version. Emitted by the
+/// admission server into the tracing log on each version
+/// change so the deploy history reads as "v2.0.0 added
+/// [foo, bar], removed [legacy]".
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct InventoryDiff {
+    /// `registry_version` that currently has the largest
+    /// worker count (ties broken lexicographically). The
+    /// incoming worker's diff is computed against this
+    /// version's function set.
+    pub active_version: String,
+    /// `registry_version` the newly-admitted worker
+    /// advertised.
+    pub incoming_version: String,
+    /// Function names the incoming version serves that the
+    /// active version doesn't. Sorted alphabetically.
+    pub added: Vec<String>,
+    /// Function names the active version serves that the
+    /// incoming version doesn't. Sorted alphabetically.
+    pub removed: Vec<String>,
+    /// Function names present in both (sanity-check for log
+    /// readers — a healthy rolling deploy keeps most names
+    /// in this bucket).
+    pub carried_over: Vec<String>,
+}
+
+/// Per-worker slice of the pool snapshot.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct PoolWorkerSnapshot {
+    /// Stable monotonically-allocated handle.
+    pub worker_id: u64,
+    pub registry_version: String,
+    /// Runtime kind in its string form (`native-rust`, `javascript`,
+    /// `unspecified`).
+    pub kind: String,
+    /// Dotted function names the worker advertised.
+    pub functions: Vec<String>,
+    /// Live in-flight estimate from the transport client.
+    pub in_flight: u64,
+    /// Transport-level label (typically the execute_endpoint URL).
+    pub label: String,
+    /// Worker-reported in-flight (from the latest `WorkerStatus`
+    /// heartbeat). May be 0 before the first heartbeat lands;
+    /// the dispatcher prefers the transport-side `in_flight`
+    /// when this is unset.
+    #[serde(default)]
+    pub reported_in_flight: u64,
+    /// Worker-reported CPU percent (0..=100). 0 ⇒ "not
+    /// reported" — operators should not interpret as idle.
+    #[serde(default)]
+    pub cpu_percent: u32,
+}
+
+/// Runtime kind the worker is using. Mirrors
+/// `pb::worker_admission::WorkerKind` but tonic-free so the
+/// pool doesn't leak generated proto types into the dispatch
+/// surface. Substep 6.1 of `convex-native/STATUS.md`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub enum WorkerKind {
+    /// The default for Phase 3..5 native workers — no explicit
+    /// kind was set in the envelope (treated as native Rust for
+    /// backward compatibility).
+    Unspecified,
+    /// Worker is built on `convex_native_distributed`'s native
+    /// Rust runner.
+    NativeRust,
+    /// Worker is built on the V8 isolate farm. Phase 6.
+    Javascript,
+}
+
+impl WorkerKind {
+    /// Decode a proto enum-int into the native variant. Unknown
+    /// integers fall back to `Unspecified` — the wire contract
+    /// pins the known values, but a forward-compatible
+    /// admission handler tolerates unknowns rather than bailing.
+    pub fn from_proto_i32(v: i32) -> Self {
+        // Match the proto values without importing `pb` here —
+        // keeps this module free of the generated types.
+        match v {
+            1 => Self::NativeRust,
+            2 => Self::Javascript,
+            _ => Self::Unspecified,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::NativeRust => "native-rust",
+            Self::Javascript => "javascript",
+        }
+    }
+}
+
+/// One entry in the pool. Carries the transport client + the
+/// worker's advertised registration metadata. Substep 3.4 grows
+/// this with status-update fields (`in_flight`, `cpu_percent`,
+/// last-heartbeat timestamp) so the dispatcher can skip workers
+/// whose stream is stale.
+pub struct WorkerEntry {
+    /// Transport handle the dispatcher uses for function calls.
+    pub client: Arc<dyn WorkerClient>,
+    /// Live worker-reported status (drained from the periodic
+    /// `WorkerStatus` heartbeats on the admission stream).
+    /// Updated by `WorkerPool::update_worker_status`. Never
+    /// set on admit — heartbeats catch up within seconds.
+    pub status: parking_lot::Mutex<WorkerLiveStatus>,
+    /// `registry_version` the worker advertised at admission
+    /// time. Used to gate dispatch via the pool-wide floor.
+    pub registry_version: String,
+    /// Dotted function names the worker advertised. Kept here so
+    /// retirement can remove the worker from the `by_function`
+    /// index without re-parsing the envelope.
+    pub functions: Vec<String>,
+    /// Per-function metadata (`udf_type`, `is_internal`) for every
+    /// name in `functions`. Populated from the admission envelope's
+    /// `FunctionRegistration` entries. The backend-side native
+    /// resolver consults this via `WorkerPool::lookup_function` so
+    /// HTTP / WebSocket validation accepts a worker-registered
+    /// handler without needing a local `_modules` row (which
+    /// pure-native deployments never write). `BTreeMap` so
+    /// look-ups stay O(log n) under the pool's read lock.
+    pub function_specs: BTreeMap<String, FunctionSpec>,
+    /// Runtime kind the worker advertised. Populated from the
+    /// admission envelope's `WorkerKind` field — defaults to
+    /// `Unspecified` for workers that didn't set it. Substep
+    /// 6.1 of `convex-native/STATUS.md`; dispatch routing
+    /// currently treats all kinds as interchangeable from
+    /// `eligible_for`'s perspective, but operator dashboards
+    /// use this to show the NativeRust vs JS mix.
+    pub kind: WorkerKind,
+    /// HTTP routes the worker advertised. Each entry pairs
+    /// `(method, path)` with the synthetic function name the
+    /// worker dispatches the route through (matches
+    /// `convex_native_core::HttpRouteRegistration::{method,
+    /// path, name}`). Enables distributed HTTP-action dispatch:
+    /// the backend can route an incoming HTTP request to the
+    /// worker whose `(method, path)` matches.
+    pub http_routes: Vec<HttpRouteEntry>,
+}
+
+/// Worker-reported status snapshot. Updated by
+/// `WorkerPool::update_worker_status` from `WorkerStatus`
+/// heartbeats. Default `(0, 0)` until the first heartbeat
+/// lands; consumers tolerate the zero state by falling back
+/// to the transport client's local `in_flight_estimate`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorkerLiveStatus {
+    /// In-flight handler invocations the worker reports.
+    pub in_flight: u64,
+    /// CPU utilisation percent (0..=100). 0 means the worker
+    /// didn't report CPU; the dispatcher should ignore the
+    /// field rather than treat 0 as "idle".
+    pub cpu_percent: u32,
+}
+
+/// Pool-side representation of an HTTP route advertised by a
+/// worker. Mirrors `pb::worker_admission::HttpRouteRegistration`
+/// without the proto type leak.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpRouteEntry {
+    pub method: String,
+    pub path: String,
+    /// Synthetic dotted name the worker registered the handler
+    /// under (typically `__http::<METHOD>:<path>`). The backend
+    /// uses this as the `ExecuteRequest.name` when dispatching.
+    pub name: String,
+}
+
+/// Per-function metadata advertised by a worker. Carries what the
+/// backend needs to accept (or reject) an inbound HTTP / WebSocket
+/// request without consulting `_modules`: the handler kind
+/// (query/mutation/action) and whether the handler was registered
+/// as `internal = true`.
+///
+/// Mirrors `udf::validation::NativeFunctionDescriptor`; kept as a
+/// separate type in this crate to avoid pulling `udf` into the
+/// pool's dependency set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FunctionSpec {
+    pub udf_type: common::types::UdfType,
+    pub is_internal: bool,
+}
+
+/// Dynamic pool of workers. Thread-safe via a single `RwLock`
+/// on the inner state — the admission rate is tiny (seconds
+/// between admits/retires on a real pool) so a coarser lock
+/// than `DashMap` is simpler and sufficient. Upgrade to sharded
+/// maps if the pool ever exceeds a few hundred members.
+pub struct WorkerPool {
+    inner: RwLock<PoolInner>,
+    next_id: AtomicU64,
+}
+
+struct PoolInner {
+    workers: HashMap<WorkerId, WorkerEntry>,
+    /// Dispatch-time name → eligible worker ids lookup.
+    /// Invariants:
+    /// - Every `WorkerId` in any value list is also a key in `workers`.
+    /// - `admit` appends to each of the worker's advertised function lists;
+    ///   `retire` removes the id from every list it appears in (and drops empty
+    ///   lists).
+    by_function: HashMap<String, Vec<WorkerId>>,
+    /// HTTP (method, path) → `(worker_id, synthetic function
+    /// name)` lookup. Populated from `WorkerEntry.http_routes`.
+    /// Keys are `(method.to_uppercase(), path)` so dispatchers
+    /// can pass the method verbatim from the incoming request
+    /// without worrying about case. Invariants mirror
+    /// `by_function`: every listed id is in `workers`; admit
+    /// appends, retire drops empty lists.
+    by_http_route: HashMap<(String, String), Vec<(WorkerId, String)>>,
+    /// `min_registry_version` floor. Workers whose
+    /// `registry_version` doesn't meet the floor are skipped in
+    /// `eligible_for`. `None` means no floor.
+    min_registry_version: Option<String>,
+    /// Substep 6.2 of `convex-native/STATUS.md` — per-function
+    /// routing preference by runtime kind. When set for a
+    /// function name, `eligible_for(name)` returns only
+    /// workers of the preferred kind **unless** the preferred
+    /// set is empty, in which case it falls back to the
+    /// unfiltered set (so a preference is a soft routing hint,
+    /// not a hard requirement — the dispatcher never 503s on a
+    /// preference mismatch when a fallback exists). Default
+    /// empty map ⇒ kind-agnostic routing.
+    kind_preferences: HashMap<String, WorkerKind>,
+}
+
+impl Default for WorkerPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WorkerPool {
+    pub fn new() -> Self {
+        Self {
+            inner: RwLock::new(PoolInner {
+                workers: HashMap::new(),
+                by_function: HashMap::new(),
+                by_http_route: HashMap::new(),
+                min_registry_version: None,
+                kind_preferences: HashMap::new(),
+            }),
+            next_id: AtomicU64::new(0),
+        }
+    }
+
+    /// Admit a worker. Returns the newly allocated `WorkerId`.
+    /// The worker is immediately eligible for dispatch on every
+    /// function name it advertised.
+    pub fn admit(&self, entry: WorkerEntry) -> WorkerId {
+        let id = WorkerId(self.next_id.fetch_add(1, Ordering::SeqCst));
+        let mut inner = self.inner.write();
+        for name in &entry.functions {
+            inner.by_function.entry(name.clone()).or_default().push(id);
+        }
+        for route in &entry.http_routes {
+            let key = (route.method.to_uppercase(), route.path.clone());
+            inner
+                .by_http_route
+                .entry(key)
+                .or_default()
+                .push((id, route.name.clone()));
+        }
+        inner.workers.insert(id, entry);
+        id
+    }
+
+    /// Look up the `FunctionSpec` (udf_type + is_internal) for a
+    /// name advertised by any currently-admitted worker. Returns
+    /// `None` when no admitted worker serves the name. First match
+    /// wins — advertising conflicting specs across workers (e.g.
+    /// one reports it as Query, another as Mutation) is a deploy
+    /// mistake the admission diff log surfaces.
+    ///
+    /// Used by the backend's HTTP / WebSocket validation path to
+    /// synthesize a `NativeFunctionDescriptor` for a pool-provided
+    /// handler, so pure-native deployments whose backend binary
+    /// carries zero inventory can still validate and dispatch
+    /// handlers that live on a remote worker.
+    pub fn lookup_function(&self, name: &str) -> Option<FunctionSpec> {
+        let inner = self.inner.read();
+        let ids = inner.by_function.get(name)?;
+        for id in ids {
+            if let Some(entry) = inner.workers.get(id)
+                && let Some(spec) = entry.function_specs.get(name)
+            {
+                return Some(*spec);
+            }
+        }
+        None
+    }
+
+    /// Retire a worker. Removes it from the pool and from every
+    /// function list it appears in. Returns `true` when the id
+    /// was present; `false` for a double-retirement (idempotent).
+    /// Update a worker's live status from a `WorkerStatus`
+    /// heartbeat. No-op when the worker isn't admitted (a
+    /// heartbeat for an already-retired worker is harmless and
+    /// shouldn't surface as an error). Returns `true` when an
+    /// update landed.
+    pub fn update_worker_status(&self, id: WorkerId, status: WorkerLiveStatus) -> bool {
+        let inner = self.inner.read();
+        let Some(entry) = inner.workers.get(&id) else {
+            return false;
+        };
+        *entry.status.lock() = status;
+        true
+    }
+
+    pub fn retire(&self, id: WorkerId) -> bool {
+        let mut inner = self.inner.write();
+        let Some(entry) = inner.workers.remove(&id) else {
+            return false;
+        };
+        for name in &entry.functions {
+            if let Some(list) = inner.by_function.get_mut(name) {
+                list.retain(|&wid| wid != id);
+            }
+        }
+        inner.by_function.retain(|_, list| !list.is_empty());
+        for route in &entry.http_routes {
+            let key = (route.method.to_uppercase(), route.path.clone());
+            if let Some(list) = inner.by_http_route.get_mut(&key) {
+                list.retain(|(wid, _)| *wid != id);
+            }
+        }
+        inner.by_http_route.retain(|_, list| !list.is_empty());
+        true
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.read().workers.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().workers.is_empty()
+    }
+
+    /// Set the operator-level `min_registry_version` floor.
+    /// `None` clears the floor.
+    pub fn set_min_registry_version(&self, floor: Option<String>) {
+        self.inner.write().min_registry_version = floor;
+    }
+
+    /// Snapshot the current floor.
+    pub fn min_registry_version(&self) -> Option<String> {
+        self.inner.read().min_registry_version.clone()
+    }
+
+    /// Look up the workers eligible to serve `function_name`.
+    /// Filters out workers whose `registry_version` doesn't meet
+    /// the pool-wide floor. Returns each eligible worker's
+    /// `(WorkerId, Arc<dyn WorkerClient>)` so the caller can
+    /// run P2C / failover without re-entering the pool.
+    ///
+    /// Substep 6.2 layers an optional per-function kind
+    /// preference on top: when
+    /// `kind_preferences[function_name]` is set and at least
+    /// one worker of that kind serves the name, the result is
+    /// restricted to that kind. If no worker of the preferred
+    /// kind is present the dispatcher falls back to the full
+    /// floor-filtered set — a preference is a soft hint, not
+    /// a hard filter (avoids turning a preference mis-config
+    /// into a 503).
+    pub fn eligible_for(&self, function_name: &str) -> Vec<(WorkerId, Arc<dyn WorkerClient>)> {
+        let inner = self.inner.read();
+        let Some(ids) = inner.by_function.get(function_name) else {
+            return Vec::new();
+        };
+        let floor = inner.min_registry_version.as_deref();
+        let base: Vec<(WorkerId, Arc<dyn WorkerClient>, WorkerKind)> = ids
+            .iter()
+            .filter_map(|id| {
+                let entry = inner.workers.get(id)?;
+                if let Some(f) = floor
+                    && !meets_floor(&entry.registry_version, f)
+                {
+                    return None;
+                }
+                Some((*id, entry.client.clone(), entry.kind))
+            })
+            .collect();
+        // Apply the per-function kind preference if one is set,
+        // soft-falling-back to the full set when the preferred
+        // slice is empty.
+        if let Some(&pref) = inner.kind_preferences.get(function_name) {
+            let preferred: Vec<(WorkerId, Arc<dyn WorkerClient>)> = base
+                .iter()
+                .filter(|(_, _, k)| *k == pref)
+                .map(|(id, c, _)| (*id, c.clone()))
+                .collect();
+            if !preferred.is_empty() {
+                return preferred;
+            }
+        }
+        base.into_iter().map(|(id, c, _)| (id, c)).collect()
+    }
+
+    /// Distributed HTTP-action dispatch lookup. Returns the
+    /// floor-filtered workers that advertise a handler for the
+    /// given `(method, path)` pair, each paired with the
+    /// synthetic function name the worker dispatches that route
+    /// through. Used by `local_backend::native_http_dispatch`
+    /// when the local `HttpRouter` has no match so the backend
+    /// can route HTTP requests to a remote worker.
+    ///
+    /// Returns an empty vec when no worker serves the route.
+    /// Method comparison is case-insensitive (upper-cased on
+    /// lookup).
+    pub fn eligible_for_http(
+        &self,
+        method: &str,
+        path: &str,
+    ) -> Vec<(WorkerId, Arc<dyn WorkerClient>, String)> {
+        let inner = self.inner.read();
+        let key = (method.to_uppercase(), path.to_string());
+        let Some(entries) = inner.by_http_route.get(&key) else {
+            return Vec::new();
+        };
+        let floor = inner.min_registry_version.as_deref();
+        let base: Vec<(WorkerId, Arc<dyn WorkerClient>, String, WorkerKind)> = entries
+            .iter()
+            .filter_map(|(id, name)| {
+                let entry = inner.workers.get(id)?;
+                if let Some(f) = floor
+                    && !meets_floor(&entry.registry_version, f)
+                {
+                    return None;
+                }
+                Some((*id, entry.client.clone(), name.clone(), entry.kind))
+            })
+            .collect();
+        // Apply the per-handler kind preference when set. The
+        // preference key is the synthetic HTTP handler name
+        // (e.g. `__http::POST:/api/foo`) that the macro emits —
+        // same namespace `set_kind_preference` stores under, so
+        // operator tooling sets it with the same route name
+        // workers advertise.
+        let first_name = base.first().map(|(_, _, n, _)| n.clone());
+        if let Some(name) = first_name
+            && let Some(&pref) = inner.kind_preferences.get(&name)
+        {
+            let preferred: Vec<(WorkerId, Arc<dyn WorkerClient>, String)> = base
+                .iter()
+                .filter(|(_, _, _, k)| *k == pref)
+                .map(|(id, c, n, _)| (*id, c.clone(), n.clone()))
+                .collect();
+            if !preferred.is_empty() {
+                return preferred;
+            }
+        }
+        base.into_iter().map(|(id, c, n, _)| (id, c, n)).collect()
+    }
+
+    /// Substep 6.2: pin a routing preference for `function_name`
+    /// so dispatches for that name prefer workers of `kind`
+    /// when at least one is available. Passing the same name
+    /// again overwrites the prior setting.
+    pub fn set_kind_preference(&self, function_name: impl Into<String>, kind: WorkerKind) {
+        self.inner
+            .write()
+            .kind_preferences
+            .insert(function_name.into(), kind);
+    }
+
+    /// Clear a per-function kind preference.
+    pub fn clear_kind_preference(&self, function_name: &str) {
+        self.inner.write().kind_preferences.remove(function_name);
+    }
+
+    /// Snapshot the current per-function kind preferences for
+    /// operator dashboards (and tests). Ordered by function
+    /// name via `BTreeMap` so the output is deterministic.
+    pub fn kind_preferences(&self) -> BTreeMap<String, WorkerKind> {
+        self.inner
+            .read()
+            .kind_preferences
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect()
+    }
+
+    /// Debug-friendly snapshot — `registry_version → count` of
+    /// workers currently in the pool. Used by the Phase-7
+    /// operator dashboards (and by tests here).
+    pub fn by_version(&self) -> BTreeMap<String, usize> {
+        let inner = self.inner.read();
+        let mut out = BTreeMap::new();
+        for entry in inner.workers.values() {
+            *out.entry(entry.registry_version.clone()).or_default() += 1;
+        }
+        out
+    }
+
+    /// Substep 6.1 of `convex-native/STATUS.md` — snapshot
+    /// worker counts grouped by `WorkerKind`. Shape matches
+    /// `by_version()` so operator tooling can render either
+    /// grouping through a single helper.
+    pub fn by_kind(&self) -> BTreeMap<WorkerKind, usize> {
+        let inner = self.inner.read();
+        let mut out = BTreeMap::new();
+        for entry in inner.workers.values() {
+            *out.entry(entry.kind).or_default() += 1;
+        }
+        out
+    }
+
+    /// Substep 7.3 of `convex-native/STATUS.md` — compute the
+    /// `InventoryDiff` between a proposed worker's advertised
+    /// function set and the pool's current "active"
+    /// inventory. The active inventory is the function set of
+    /// the **most populated** `registry_version` currently in
+    /// the pool, tie-broken by version string (lexicographic).
+    ///
+    /// Callers pass the envelope's `(registry_version,
+    /// functions)` pair; the helper returns the diff against
+    /// the active version **and** the active version string
+    /// itself, so the admission handler can log something like:
+    ///
+    ///   registry 2.1.0 joining alongside active 2.0.0:
+    ///     +added [new_user, set_avatar]
+    ///     -removed [legacy_stub]
+    ///     carried-over [get_user, list_users]
+    ///
+    /// Returns `None` when the pool is empty or when the
+    /// incoming version is already the most-populated version
+    /// (nothing interesting to log).
+    pub fn diff_against_active_inventory(
+        &self,
+        incoming_version: &str,
+        incoming_functions: &[String],
+    ) -> Option<InventoryDiff> {
+        use std::collections::HashSet;
+        let inner = self.inner.read();
+        if inner.workers.is_empty() {
+            return None;
+        }
+        // Group function sets by version.
+        let mut by_version: BTreeMap<&str, (usize, HashSet<&str>)> = BTreeMap::new();
+        for entry in inner.workers.values() {
+            let slot = by_version
+                .entry(entry.registry_version.as_str())
+                .or_insert_with(|| (0, HashSet::new()));
+            slot.0 += 1;
+            for f in &entry.functions {
+                slot.1.insert(f.as_str());
+            }
+        }
+        // Pick the most-populated version, tie-broken
+        // lexicographically (deterministic).
+        let (active_version, (_count, active_fns)) = by_version
+            .iter()
+            .max_by(|(ak, av), (bk, bv)| av.0.cmp(&bv.0).then_with(|| ak.cmp(bk)))?;
+        if *active_version == incoming_version {
+            return None;
+        }
+        let incoming: HashSet<&str> = incoming_functions.iter().map(String::as_str).collect();
+        let mut added: Vec<String> = incoming
+            .difference(active_fns)
+            .map(|s| s.to_string())
+            .collect();
+        let mut removed: Vec<String> = active_fns
+            .difference(&incoming)
+            .map(|s| s.to_string())
+            .collect();
+        let mut carried: Vec<String> = active_fns
+            .intersection(&incoming)
+            .map(|s| s.to_string())
+            .collect();
+        added.sort();
+        removed.sort();
+        carried.sort();
+        Some(InventoryDiff {
+            active_version: active_version.to_string(),
+            incoming_version: incoming_version.to_string(),
+            added,
+            removed,
+            carried_over: carried,
+        })
+    }
+
+    /// Substep 7.1 of `convex-native/STATUS.md` — one-shot
+    /// operator-facing snapshot of pool state. Bundles
+    /// `len()`, `by_version()`, `by_kind()`, `kind_preferences()`,
+    /// and `min_registry_version()` into a single
+    /// JSON-serializable struct so the admin surface
+    /// (substep 7.2) can return everything an operator dashboard
+    /// needs in one RPC.
+    pub fn snapshot(&self) -> PoolSnapshot {
+        let inner = self.inner.read();
+        let mut workers: Vec<PoolWorkerSnapshot> = inner
+            .workers
+            .iter()
+            .map(|(id, entry)| {
+                let live = *entry.status.lock();
+                let mut functions = entry.functions.clone();
+                // Sort the function list per-worker so snapshots
+                // remain stable across calls regardless of
+                // admission-envelope iteration order.
+                functions.sort();
+                PoolWorkerSnapshot {
+                    worker_id: id.0,
+                    registry_version: entry.registry_version.clone(),
+                    kind: entry.kind.as_str().to_string(),
+                    functions,
+                    in_flight: entry.client.in_flight_estimate(),
+                    label: entry.client.label().to_string(),
+                    reported_in_flight: live.in_flight,
+                    cpu_percent: live.cpu_percent,
+                }
+            })
+            .collect();
+        // Sort workers by admission id so `/admin/pool` returns
+        // them in a deterministic admission order — operator
+        // dashboards and snapshot tests rely on stable output.
+        workers.sort_by_key(|w| w.worker_id);
+        let mut by_version: BTreeMap<String, usize> = BTreeMap::new();
+        let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
+        for entry in inner.workers.values() {
+            *by_version
+                .entry(entry.registry_version.clone())
+                .or_default() += 1;
+            *by_kind.entry(entry.kind.as_str().to_string()).or_default() += 1;
+        }
+        let kind_preferences = inner
+            .kind_preferences
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().to_string()))
+            .collect();
+        PoolSnapshot {
+            total: inner.workers.len(),
+            min_registry_version: inner.min_registry_version.clone(),
+            by_version,
+            by_kind,
+            kind_preferences,
+            workers,
+        }
+    }
+}
+
+/// Lexicographic parts comparison — same shape as the version
+/// gate on `FunctionExecutionServer` in `server.rs`. Keeps the
+/// two floor checks consistent: worker accepts its own request
+/// iff the pool admits its dispatch.
+fn meets_floor(have: &str, want: &str) -> bool {
+    fn parts(s: &str) -> Vec<u64> {
+        s.split(['.', '-', '+'])
+            .filter_map(|p| p.parse::<u64>().ok())
+            .collect()
+    }
+    parts(have) >= parts(want)
+}
+
+/// Public-surface variant of [`meets_floor`] so the worker-side
+/// admission client can run the same check against its own
+/// `registry_version` + the latest broadcast floor. Returns
+/// `true` when `have` meets or exceeds `want`.
+pub fn version_meets_floor(have: &str, want: &str) -> bool {
+    meets_floor(have, want)
+}
+
+/// Adapter exposing a `WorkerPool`'s advertised inventory to
+/// `udf::validation` as a `NativeFunctionResolver`. Installed by
+/// `local_backend::make_app` when the backend runs in distributed
+/// mode so HTTP / WebSocket validation accepts handler names that
+/// only live on remote workers — without this, pure-native
+/// distributed deployments bail every client request with
+/// "Could not find public function" because the backend binary
+/// carries zero local `inventory` entries and never writes
+/// `_modules` rows.
+pub struct PoolNativeFunctionResolver {
+    pool: Arc<WorkerPool>,
+}
+
+impl PoolNativeFunctionResolver {
+    pub fn new(pool: Arc<WorkerPool>) -> Self {
+        Self { pool }
+    }
+}
+
+impl udf::validation::NativeFunctionResolver for PoolNativeFunctionResolver {
+    fn lookup(&self, function_name: &str) -> Option<udf::validation::NativeFunctionDescriptor> {
+        let spec = self.pool.lookup_function(function_name)?;
+        Some(udf::validation::NativeFunctionDescriptor {
+            udf_type: spec.udf_type,
+            is_internal: spec.is_internal,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU64;
+
+    use async_trait::async_trait;
+    use common::types::UdfType;
+    use convex_native_core::distributed::{
+        ExecuteRequest,
+        ExecuteResponse,
+    };
+    use pb::function_execution as proto;
+    use tonic::Status;
+
+    use super::*;
+
+    /// Stub client that reports a constant in_flight and label.
+    /// Matches the `WorkerClient` trait surface but never makes a
+    /// network call — the pool only cares about `label()` and
+    /// doesn't inspect the handler.
+    struct StubClient {
+        label: String,
+    }
+
+    #[async_trait]
+    impl WorkerClient for StubClient {
+        async fn execute(
+            &self,
+            _req: ExecuteRequest,
+            _udf_type: UdfType,
+        ) -> Result<ExecuteResponse, Status> {
+            Err(Status::unimplemented("StubClient::execute"))
+        }
+
+        async fn health(&self) -> Result<proto::HealthResponse, Status> {
+            Err(Status::unimplemented("StubClient::health"))
+        }
+
+        fn in_flight_estimate(&self) -> u64 {
+            0
+        }
+
+        fn label(&self) -> &str {
+            &self.label
+        }
+    }
+
+    fn stub(label: &str) -> Arc<dyn WorkerClient> {
+        Arc::new(StubClient {
+            label: label.to_string(),
+        })
+    }
+
+    fn entry(label: &str, version: &str, functions: &[&str]) -> WorkerEntry {
+        WorkerEntry {
+            client: stub(label),
+            registry_version: version.to_string(),
+            functions: functions.iter().map(|s| s.to_string()).collect(),
+            function_specs: functions
+                .iter()
+                .map(|s| {
+                    (
+                        s.to_string(),
+                        FunctionSpec {
+                            udf_type: common::types::UdfType::Query,
+                            is_internal: false,
+                        },
+                    )
+                })
+                .collect(),
+            kind: WorkerKind::NativeRust,
+            http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
+        }
+    }
+
+    #[test]
+    fn admit_assigns_stable_ids_in_order() {
+        // Pool hands out `WorkerId(0)`, `WorkerId(1)`, … in
+        // admission order. Restarting a worker (admit → retire →
+        // admit again) must produce a **new** id, not reuse the
+        // old one — otherwise in-flight dispatches could race
+        // against a stale client.
+        let pool = WorkerPool::new();
+        let a = pool.admit(entry("a", "1.0", &["get"]));
+        let b = pool.admit(entry("b", "1.0", &["get"]));
+        assert_eq!(a, WorkerId(0));
+        assert_eq!(b, WorkerId(1));
+        pool.retire(a);
+        let a2 = pool.admit(entry("a", "1.0", &["get"]));
+        assert_eq!(a2, WorkerId(2), "restart = fresh id");
+    }
+
+    #[test]
+    fn eligible_for_returns_workers_serving_the_function() {
+        let pool = WorkerPool::new();
+        pool.admit(entry("w1", "1.0", &["get", "list"]));
+        pool.admit(entry("w2", "1.0", &["get"]));
+        pool.admit(entry("w3", "1.0", &["unrelated"]));
+
+        let eligible_get: Vec<_> = pool
+            .eligible_for("get")
+            .into_iter()
+            .map(|(_, c)| c.label().to_string())
+            .collect();
+        assert_eq!(eligible_get.len(), 2);
+        let mut names = eligible_get;
+        names.sort();
+        assert_eq!(names, vec!["w1".to_string(), "w2".to_string()]);
+
+        let eligible_list: Vec<_> = pool
+            .eligible_for("list")
+            .into_iter()
+            .map(|(_, c)| c.label().to_string())
+            .collect();
+        assert_eq!(eligible_list, vec!["w1".to_string()]);
+
+        assert!(pool.eligible_for("missing").is_empty());
+    }
+
+    #[test]
+    fn update_worker_status_lands_on_snapshot() {
+        let pool = WorkerPool::new();
+        let id = pool.admit(entry("w", "1.0", &["get"]));
+        assert!(pool.update_worker_status(
+            id,
+            WorkerLiveStatus {
+                in_flight: 7,
+                cpu_percent: 42,
+            },
+        ));
+        let snapshot = pool.snapshot();
+        let entry_snapshot = snapshot
+            .workers
+            .iter()
+            .find(|w| w.worker_id == id.0)
+            .unwrap();
+        assert_eq!(entry_snapshot.reported_in_flight, 7);
+        assert_eq!(entry_snapshot.cpu_percent, 42);
+        // Heartbeat for an absent worker is a no-op (returns false).
+        let absent = WorkerId(9999);
+        assert!(!pool.update_worker_status(absent, WorkerLiveStatus::default()));
+    }
+
+    #[test]
+    fn retire_removes_from_both_maps() {
+        let pool = WorkerPool::new();
+        let id = pool.admit(entry("w", "1.0", &["get"]));
+        assert_eq!(pool.eligible_for("get").len(), 1);
+        assert!(pool.retire(id));
+        assert_eq!(pool.len(), 0);
+        assert!(
+            pool.eligible_for("get").is_empty(),
+            "retired worker drops out of the by_function index",
+        );
+        // Idempotent retire.
+        assert!(!pool.retire(id));
+    }
+
+    #[test]
+    fn floor_filters_eligible_set() {
+        let pool = WorkerPool::new();
+        pool.admit(entry("old", "1.0.0", &["get"]));
+        pool.admit(entry("new", "1.2.0", &["get"]));
+
+        // No floor → both eligible.
+        assert_eq!(pool.eligible_for("get").len(), 2);
+
+        // Floor at 1.1.0 → only `new` survives.
+        pool.set_min_registry_version(Some("1.1.0".to_string()));
+        let eligible: Vec<_> = pool
+            .eligible_for("get")
+            .into_iter()
+            .map(|(_, c)| c.label().to_string())
+            .collect();
+        assert_eq!(eligible, vec!["new".to_string()]);
+
+        // Clearing the floor → both back.
+        pool.set_min_registry_version(None);
+        assert_eq!(pool.eligible_for("get").len(), 2);
+    }
+
+    fn js_entry(label: &str, version: &str, functions: &[&str]) -> WorkerEntry {
+        WorkerEntry {
+            client: stub(label),
+            registry_version: version.to_string(),
+            functions: functions.iter().map(|s| s.to_string()).collect(),
+            function_specs: functions
+                .iter()
+                .map(|s| {
+                    (
+                        s.to_string(),
+                        FunctionSpec {
+                            udf_type: common::types::UdfType::Query,
+                            is_internal: false,
+                        },
+                    )
+                })
+                .collect(),
+            kind: WorkerKind::Javascript,
+            http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
+        }
+    }
+
+    #[test]
+    fn kind_preference_routes_to_preferred_kind_when_available() {
+        // Substep 6.2: a preference for `compute_heavy = NativeRust`
+        // filters dispatch to the native-Rust worker even
+        // though a JS worker also serves the name.
+        let pool = WorkerPool::new();
+        pool.admit(entry("rust-1", "1.0.0", &["compute_heavy"]));
+        pool.admit(js_entry("js-1", "1.0.0", &["compute_heavy"]));
+        pool.set_kind_preference("compute_heavy", WorkerKind::NativeRust);
+        let eligible: Vec<_> = pool
+            .eligible_for("compute_heavy")
+            .into_iter()
+            .map(|(_, c)| c.label().to_string())
+            .collect();
+        assert_eq!(eligible, vec!["rust-1".to_string()]);
+    }
+
+    #[test]
+    fn kind_preference_falls_back_to_full_set_when_preferred_absent() {
+        // Substep 6.2: preference is a soft hint — if the
+        // preferred kind isn't available, fall back to any
+        // worker serving the name so we don't 503 on a
+        // preference mis-config.
+        let pool = WorkerPool::new();
+        pool.admit(js_entry("js-only", "1.0.0", &["transform"]));
+        pool.set_kind_preference("transform", WorkerKind::NativeRust);
+        let eligible: Vec<_> = pool
+            .eligible_for("transform")
+            .into_iter()
+            .map(|(_, c)| c.label().to_string())
+            .collect();
+        assert_eq!(
+            eligible,
+            vec!["js-only".to_string()],
+            "no NativeRust worker ⇒ fall back to the JS one; preference is a soft hint",
+        );
+    }
+
+    #[test]
+    fn kind_preference_ignored_for_unlisted_function() {
+        // A preference for one function name doesn't leak into
+        // routing for other names.
+        let pool = WorkerPool::new();
+        pool.admit(entry("rust-1", "1.0.0", &["compute_heavy", "cheap"]));
+        pool.admit(js_entry("js-1", "1.0.0", &["cheap"]));
+        pool.set_kind_preference("compute_heavy", WorkerKind::NativeRust);
+        let eligible: Vec<_> = pool
+            .eligible_for("cheap")
+            .into_iter()
+            .map(|(_, c)| c.label().to_string())
+            .collect();
+        assert_eq!(
+            eligible.len(),
+            2,
+            "no preference set for \"cheap\" ⇒ both kinds are eligible: {eligible:?}",
+        );
+    }
+
+    #[test]
+    fn kind_preference_clearable() {
+        let pool = WorkerPool::new();
+        pool.admit(entry("rust", "1.0.0", &["x"]));
+        pool.admit(js_entry("js", "1.0.0", &["x"]));
+        pool.set_kind_preference("x", WorkerKind::NativeRust);
+        assert_eq!(pool.eligible_for("x").len(), 1);
+        pool.clear_kind_preference("x");
+        assert_eq!(pool.eligible_for("x").len(), 2);
+    }
+
+    #[test]
+    fn http_kind_preference_filters_eligible_set() {
+        // A mixed-kind pool where both workers serve the same
+        // HTTP route. A kind preference pinned to the synthetic
+        // handler name routes to the preferred-kind worker
+        // while both are healthy, and falls back to the full
+        // set when the preferred kind is absent.
+        let pool = WorkerPool::new();
+        let http_route_rust = HttpRouteEntry {
+            method: "POST".to_string(),
+            path: "/api/stripe".to_string(),
+            name: "__http::POST:/api/stripe".to_string(),
+        };
+        let http_route_js = http_route_rust.clone();
+        pool.admit(WorkerEntry {
+            client: stub("rust-worker"),
+            registry_version: "1.0.0".to_string(),
+            functions: Vec::new(),
+            function_specs: BTreeMap::new(),
+            kind: WorkerKind::NativeRust,
+            http_routes: vec![http_route_rust],
+            status: parking_lot::Mutex::new(Default::default()),
+        });
+        pool.admit(WorkerEntry {
+            client: stub("js-worker"),
+            registry_version: "1.0.0".to_string(),
+            functions: Vec::new(),
+            function_specs: BTreeMap::new(),
+            kind: WorkerKind::Javascript,
+            http_routes: vec![http_route_js],
+            status: parking_lot::Mutex::new(Default::default()),
+        });
+        // Without a preference both workers are eligible.
+        assert_eq!(pool.eligible_for_http("POST", "/api/stripe").len(), 2);
+
+        // Preference pins dispatch to the Rust worker.
+        pool.set_kind_preference("__http::POST:/api/stripe", WorkerKind::NativeRust);
+        let eligible: Vec<String> = pool
+            .eligible_for_http("POST", "/api/stripe")
+            .into_iter()
+            .map(|(_, client, _)| client.label().to_string())
+            .collect();
+        assert_eq!(eligible, vec!["rust-worker".to_string()]);
+    }
+
+    #[test]
+    fn snapshot_workers_are_ordered_by_id() {
+        // Admit workers in an order that, under HashMap
+        // iteration, would likely produce a different ordering
+        // than the admission order. The snapshot must still
+        // return them sorted by worker_id.
+        let pool = WorkerPool::new();
+        pool.admit(entry("b", "1.0", &["get"]));
+        pool.admit(entry("d", "1.0", &["get"]));
+        pool.admit(entry("a", "1.0", &["get"]));
+        pool.admit(entry("c", "1.0", &["get"]));
+        let snapshot = pool.snapshot();
+        let ids: Vec<u64> = snapshot.workers.iter().map(|w| w.worker_id).collect();
+        assert_eq!(ids, vec![0, 1, 2, 3]);
+        // And per-worker function lists are sorted.
+        for worker in &snapshot.workers {
+            let mut sorted = worker.functions.clone();
+            sorted.sort();
+            assert_eq!(worker.functions, sorted);
+        }
+    }
+
+    #[test]
+    fn by_kind_groups_native_and_js_workers() {
+        // Substep 6.1: operator dashboards need to see the
+        // Rust vs JS worker mix at a glance.
+        // `by_kind()` produces a `kind → count` snapshot
+        // directly from the pool's entries.
+        let pool = WorkerPool::new();
+        pool.admit(WorkerEntry {
+            client: stub("a"),
+            registry_version: "1.0".to_string(),
+            functions: vec!["get".to_string()],
+            function_specs: BTreeMap::new(),
+            kind: WorkerKind::NativeRust,
+            http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
+        });
+        pool.admit(WorkerEntry {
+            client: stub("b"),
+            registry_version: "1.0".to_string(),
+            functions: vec!["list".to_string()],
+            function_specs: BTreeMap::new(),
+            kind: WorkerKind::Javascript,
+            http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
+        });
+        pool.admit(WorkerEntry {
+            client: stub("c"),
+            registry_version: "1.0".to_string(),
+            functions: vec!["crunch".to_string()],
+            function_specs: BTreeMap::new(),
+            kind: WorkerKind::NativeRust,
+            http_routes: Vec::new(),
+            status: parking_lot::Mutex::new(Default::default()),
+        });
+        let mix = pool.by_kind();
+        assert_eq!(mix.get(&WorkerKind::NativeRust), Some(&2));
+        assert_eq!(mix.get(&WorkerKind::Javascript), Some(&1));
+    }
+
+    #[test]
+    fn worker_kind_from_proto_i32_handles_known_and_unknown() {
+        assert_eq!(WorkerKind::from_proto_i32(0), WorkerKind::Unspecified);
+        assert_eq!(WorkerKind::from_proto_i32(1), WorkerKind::NativeRust);
+        assert_eq!(WorkerKind::from_proto_i32(2), WorkerKind::Javascript);
+        // Forward-compat: an unknown proto value (e.g. a future
+        // kind enum member this binary doesn't know about) maps
+        // to `Unspecified` rather than panicking.
+        assert_eq!(WorkerKind::from_proto_i32(99), WorkerKind::Unspecified);
+    }
+
+    #[test]
+    fn inventory_diff_returns_none_for_empty_pool() {
+        let pool = WorkerPool::new();
+        let diff = pool.diff_against_active_inventory("1.0.0", &["get".to_string()]);
+        assert!(diff.is_none(), "no active version to diff against yet");
+    }
+
+    #[test]
+    fn inventory_diff_returns_none_when_versions_match() {
+        // Incoming registry_version equals the active one →
+        // nothing interesting to log; caller silently drops.
+        let pool = WorkerPool::new();
+        pool.admit(entry("a", "1.0.0", &["get", "list"]));
+        let diff =
+            pool.diff_against_active_inventory("1.0.0", &["get".to_string(), "list".to_string()]);
+        assert!(diff.is_none());
+    }
+
+    #[test]
+    fn inventory_diff_reports_added_and_removed_function_names() {
+        // Substep 7.3 rollout-log shape: active v1.0.0 serves
+        // [get, list, legacy]; incoming v2.0.0 serves
+        // [get, list, create]. Diff names the delta +
+        // carryover explicitly.
+        let pool = WorkerPool::new();
+        pool.admit(entry("a", "1.0.0", &["get", "list", "legacy"]));
+        pool.admit(entry("b", "1.0.0", &["get", "list", "legacy"]));
+        let diff = pool
+            .diff_against_active_inventory(
+                "2.0.0",
+                &["get".to_string(), "list".to_string(), "create".to_string()],
+            )
+            .expect("different version ⇒ diff populated");
+        assert_eq!(diff.active_version, "1.0.0");
+        assert_eq!(diff.incoming_version, "2.0.0");
+        assert_eq!(diff.added, vec!["create".to_string()]);
+        assert_eq!(diff.removed, vec!["legacy".to_string()]);
+        assert_eq!(
+            diff.carried_over,
+            vec!["get".to_string(), "list".to_string()],
+        );
+    }
+
+    #[test]
+    fn inventory_diff_active_is_most_populated_version() {
+        // When workers on several versions coexist, "active"
+        // picks the one with the highest count (tie-broken
+        // lexicographically). Pin the shape so a later-version
+        // lone worker doesn't masquerade as "active" the
+        // moment a single new pod comes up.
+        let pool = WorkerPool::new();
+        pool.admit(entry("a", "1.0.0", &["get"]));
+        pool.admit(entry("b", "1.0.0", &["get"]));
+        pool.admit(entry("c", "1.0.0", &["get"]));
+        pool.admit(entry("d", "2.0.0", &["get"]));
+        let diff = pool
+            .diff_against_active_inventory("2.1.0", &["get".to_string()])
+            .expect("incoming 2.1.0 differs from active 1.0.0");
+        assert_eq!(
+            diff.active_version, "1.0.0",
+            "3x 1.0.0 beats 1x 2.0.0 as active",
+        );
+        assert_eq!(diff.incoming_version, "2.1.0");
+    }
+
+    #[test]
+    fn snapshot_bundles_everything_operators_need() {
+        // Substep 7.1: the operator-facing snapshot must
+        // include total, per-version, per-kind, per-function
+        // preferences, and per-worker detail in one JSON-
+        // serializable shape. Pin each slice so a future
+        // refactor doesn't silently drop one of the fields.
+        let pool = WorkerPool::new();
+        pool.admit(entry("a", "1.0.0", &["get"]));
+        pool.admit(js_entry("b", "1.0.0", &["get", "list"]));
+        pool.set_kind_preference("get", WorkerKind::NativeRust);
+        pool.set_min_registry_version(Some("0.9.0".to_string()));
+
+        let snap = pool.snapshot();
+        assert_eq!(snap.total, 2);
+        assert_eq!(snap.min_registry_version.as_deref(), Some("0.9.0"));
+        assert_eq!(snap.by_version.get("1.0.0"), Some(&2));
+        assert_eq!(snap.by_kind.get("native-rust"), Some(&1));
+        assert_eq!(snap.by_kind.get("javascript"), Some(&1));
+        assert_eq!(
+            snap.kind_preferences.get("get").map(String::as_str),
+            Some("native-rust")
+        );
+        assert_eq!(snap.workers.len(), 2);
+
+        // JSON-serializable — pin the shape so operator
+        // dashboards can count on it.
+        let json = serde_json::to_value(&snap).unwrap();
+        assert!(json.get("total").is_some());
+        assert!(json.get("by_version").is_some());
+        assert!(json.get("by_kind").is_some());
+        assert!(json.get("kind_preferences").is_some());
+        assert!(json.get("min_registry_version").is_some());
+        let workers_array = json.get("workers").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(workers_array.len(), 2);
+        let worker0 = &workers_array[0];
+        for field in &[
+            "worker_id",
+            "registry_version",
+            "kind",
+            "functions",
+            "in_flight",
+            "label",
+        ] {
+            assert!(
+                worker0.get(field).is_some(),
+                "worker snapshot carries `{field}`",
+            );
+        }
+    }
+
+    #[test]
+    fn by_version_groups_workers_for_observability() {
+        // Substep 3.3 + Phase-7 dashboard shape: pool exposes
+        // a count-by-registry-version snapshot so operators can
+        // tell at-a-glance how the rolling update is going.
+        let pool = WorkerPool::new();
+        pool.admit(entry("a", "1.0.0", &["get"]));
+        pool.admit(entry("b", "1.0.0", &["get"]));
+        pool.admit(entry("c", "1.1.0", &["get"]));
+        let groups = pool.by_version();
+        assert_eq!(groups.get("1.0.0"), Some(&2));
+        assert_eq!(groups.get("1.1.0"), Some(&1));
+    }
+
+    // Silence "unused import" on an internal helper used only
+    // by the in-file StubClient.
+    const _: fn() = || {
+        let _ = AtomicU64::new(0);
+    };
+}

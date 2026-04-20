@@ -1,0 +1,427 @@
+//! Standalone-topology HTTP action coverage.
+//!
+//! `#[convex::http_action(method, path)]` registers a handler
+//! under the synthetic name `__http::METHOD:path` (see the
+//! `convex_macro::http_action` expansion). The
+//! `NativeFunctionRunner::run_http_action` entry point dispatches
+//! by that name and threads the `HttpRequest` → `HttpResponse`
+//! shapes through.
+
+use std::sync::Arc;
+
+use bytes::Bytes;
+use convex_native_core::{
+    __private::ConvexValue,
+    http::HttpRequest,
+    logging::LogBuffer,
+    testing::TestCallbacks,
+    NativeActionCallbacks,
+    NativeFunctionRunner,
+};
+use http::{
+    HeaderMap,
+    Method,
+};
+
+// Force fixture app inventory entries to link.
+#[allow(dead_code)]
+type _ForceLink = convex_native_integration_tests::fixture_app::Todo;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_action_dispatches_and_round_trips_body() -> anyhow::Result<()> {
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::POST,
+        url: "http://example.invalid/api/ping".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::from_static(b"hello"),
+        routed_path: "/api/ping".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::POST:/api/ping", request)
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"pong:hello"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_action_lookup_miss_surfaces_error() -> anyhow::Result<()> {
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::POST,
+        url: "http://example.invalid/api/missing".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/missing".to_string(),
+    };
+    let err = runner
+        .run_http_action("__http::POST:/api/missing", request)
+        .await
+        .expect_err("unknown HTTP action should error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("does not exist") || msg.contains("not found") || msg.contains("__http::"),
+        "expected lookup-miss error; got: {msg}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn json_body_and_header_round_trip() -> anyhow::Result<()> {
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Via", "tests".parse()?);
+    let request = HttpRequest {
+        method: Method::POST,
+        url: "http://example.invalid/api/echo".to_string(),
+        headers,
+        body: Bytes::from_static(b"{\"name\":\"alice\"}"),
+        routed_path: "/api/echo".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::POST:/api/echo", request)
+        .await?;
+    assert_eq!(resp.status, 200);
+    let parsed: serde_json::Value = serde_json::from_slice(&resp.body)?;
+    assert_eq!(
+        parsed,
+        serde_json::json!({"hello": "alice", "via": "tests"})
+    );
+    assert_eq!(
+        resp.headers.get("Content-Type").unwrap().to_str().unwrap(),
+        "application/json",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_action_sub_calls_native_query_via_callbacks() -> anyhow::Result<()> {
+    // `HttpActionCtx::run_query(...)` routes through the attached
+    // `NativeActionCallbacks`. Stub the `count_pending` query with
+    // a canned value and confirm the handler picks it up and
+    // echoes it back in the response body — proves the HTTP ctx
+    // exposes the full sub-call surface (not just req/resp types).
+    let (callbacks, _history) = TestCallbacks::new()
+        .on_query("count_pending", |_args| Ok(ConvexValue::Int64(9)))
+        .build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Owner", "alice".parse()?);
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/pending".to_string(),
+        headers,
+        body: Bytes::new(),
+        routed_path: "/api/pending".to_string(),
+    };
+    let resp = runner
+        .run_http_action_with_callbacks(
+            "__http::GET:/api/pending",
+            request,
+            callbacks,
+            Some(LogBuffer::new()),
+        )
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"9"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_action_sub_mutation_reaches_callbacks() -> anyhow::Result<()> {
+    // Sub-query path is covered; the sub-mutation path is a
+    // distinct code path on `HttpActionCtx` (routes through
+    // `NativeActionCallbacks::run_mutation_by_name` rather
+    // than `run_query_by_name`). Stub `create_todo` to return a
+    // canned id and assert the handler returns it back in the
+    // response body.
+    let (callbacks, _history) = TestCallbacks::new()
+        .on_mutation("create_todo", |_args| {
+            Ok(ConvexValue::try_from("stub-id".to_string()).unwrap())
+        })
+        .build();
+    let callbacks: Arc<dyn NativeActionCallbacks> = callbacks;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Owner", "alice".parse()?);
+    let request = HttpRequest {
+        method: Method::POST,
+        url: "http://example.invalid/api/create".to_string(),
+        headers,
+        body: Bytes::from_static(b"hi"),
+        routed_path: "/api/create".to_string(),
+    };
+    let resp = runner
+        .run_http_action_with_callbacks(
+            "__http::POST:/api/create",
+            request,
+            callbacks,
+            Some(LogBuffer::new()),
+        )
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"stub-id"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_ctx_execution_context_propagates_request_id() -> anyhow::Result<()> {
+    // HttpActionCtx::execution_context() exposes the request's
+    // ExecutionContext (request_id, execution_id, parent job) to
+    // HTTP handlers. Parallel accessor to query/mutation/action
+    // ctx variants; a regression leaving it unwired would break
+    // structured logging + trace correlation across worker
+    // boundaries. Drive through
+    // run_http_action_with_callbacks_identity_and_context with a
+    // known context and assert the handler echoes the request id.
+    use common::execution_context::{
+        ExecutionContext,
+        ExecutionId,
+        RequestId,
+    };
+    use convex_native_core::callbacks::NoopCallbacks;
+    use keybroker::Identity;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let context =
+        ExecutionContext::new_from_parts(RequestId::new(), ExecutionId::new(), None, false);
+    let expected = context.request_id.to_string();
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/request-id".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/request-id".to_string(),
+    };
+    let resp = runner
+        .run_http_action_with_callbacks_identity_and_context(
+            "__http::GET:/api/request-id",
+            request,
+            callbacks,
+            Some(LogBuffer::new()),
+            Identity::system(),
+            Some(context),
+        )
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(
+        std::str::from_utf8(&resp.body)?,
+        expected,
+        "HTTP ctx.execution_context().request_id must echo back the caller's id",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_handler_log_lines_drain_into_the_shared_buffer() -> anyhow::Result<()> {
+    // HttpActionCtx::log() is the HTTP counterpart to the
+    // query / mutation / action ctx loggers. A regression that
+    // left the HTTP logger without a bound buffer would
+    // silently drop every log line a handler emitted. Drive
+    // http_log through the runner and confirm the "http-logged"
+    // line lands in the buffer.
+    use convex_native_core::{
+        callbacks::NoopCallbacks,
+        logging::LogLevel,
+    };
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let buffer = LogBuffer::new();
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/log".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/log".to_string(),
+    };
+    let resp = runner
+        .run_http_action_with_callbacks(
+            "__http::GET:/api/log",
+            request,
+            callbacks,
+            Some(buffer.clone()),
+        )
+        .await?;
+    assert_eq!(resp.status, 204);
+    let lines = buffer.snapshot();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.level == LogLevel::Info && l.message.contains("http-logged")),
+        "HTTP ctx.log().info(...) line must land in the drain buffer; got {lines:?}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn raw_body_bytes_accessor_returns_byte_length() -> anyhow::Result<()> {
+    // HttpRequest::body_bytes() returns the raw Bytes reference —
+    // distinct from body_text (UTF-8 decode) and body_json
+    // (serde_json decode), and the only accessor deployers use
+    // when the body is binary (webhook signatures, uploads).
+    // Send a 5-byte payload (including one invalid UTF-8 byte)
+    // to prove body_bytes doesn't validate UTF-8; text/json
+    // accessors would reject this body.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::POST,
+        url: "http://example.invalid/api/rawlen".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::from_static(&[0xff, b'a', b'b', b'c', 0xfe]),
+        routed_path: "/api/rawlen".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::POST:/api/rawlen", request)
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"5"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_ctx_auth_reports_system_when_system_identity_forwarded() -> anyhow::Result<()> {
+    // Complement to http_ctx_auth_defaults_to_anonymous_without_identity:
+    // run_http_action_with_callbacks_and_identity(Identity::system())
+    // threads the identity through HttpActionCtx::with_identity —
+    // the handler's ctx.auth() should see System. A regression in
+    // the identity-forward wiring would leave the handler seeing
+    // Unknown even when the caller supplied a principal.
+    use convex_native_core::callbacks::NoopCallbacks;
+    use keybroker::Identity;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/whoami-http".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/whoami-http".to_string(),
+    };
+    let resp = runner
+        .run_http_action_with_callbacks_and_identity(
+            "__http::GET:/api/whoami-http",
+            request,
+            callbacks,
+            Some(LogBuffer::new()),
+            Identity::system(),
+        )
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"system"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_ctx_auth_defaults_to_anonymous_without_identity() -> anyhow::Result<()> {
+    // The HTTP-action ctx holds identity through its own builder
+    // (HttpActionCtx::with_identity) parallel to query/mutation
+    // ctxs. run_http_action with no identity hooks must expose
+    // an Unknown(None) identity — which whoami_http reports as
+    // "anonymous". Pins the accessor wiring; a regression that
+    // accidentally routed through system identity would report
+    // "system".
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/whoami-http".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/whoami-http".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::GET:/api/whoami-http", request)
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"anonymous"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_method_registers_and_dispatches() -> anyhow::Result<()> {
+    // The fixture otherwise only uses GET / POST, so this test
+    // exercises the macro's method-string expansion for the
+    // DELETE verb. The synthesised name embeds the method
+    // verbatim, so a regression in the method-string handling
+    // would break registration / lookup for any verb beyond the
+    // two common ones.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::DELETE,
+        url: "http://example.invalid/api/item".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/item".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::DELETE:/api/item", request)
+        .await?;
+    assert_eq!(resp.status, 204);
+    assert!(resp.body.is_empty());
+    // Router-side lookup must also find it.
+    let router = convex_native_core::http::HttpRouter::collect()?;
+    assert!(router.lookup("DELETE", "/api/item").is_some());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn redirect_handler_returns_location_header() -> anyhow::Result<()> {
+    // HttpResponse::redirect is pinned at the builder layer by
+    // http_response_builders.rs. Driving it through the runner
+    // surfaces any regression in the response serialisation path
+    // that might strip headers or mis-encode the status. Assert
+    // the handler's 302 + Location survive end-to-end.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/goto".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/goto".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::GET:/api/goto", request)
+        .await?;
+    assert_eq!(resp.status, 302);
+    assert_eq!(
+        resp.headers.get("Location").unwrap().to_str().unwrap(),
+        "/home",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn path_remainder_returns_routed_path() -> anyhow::Result<()> {
+    // `HttpRequest::path_remainder()` aliases to `routed_path` —
+    // what the router hands the handler after matching. Asserting
+    // the accessor round-trips the supplied value keeps the
+    // handler-visible contract stable even if the internal storage
+    // shape shifts.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let request = HttpRequest {
+        method: Method::GET,
+        url: "http://example.invalid/api/remainder".to_string(),
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        routed_path: "/api/remainder".to_string(),
+    };
+    let resp = runner
+        .run_http_action("__http::GET:/api/remainder", request)
+        .await?;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, Bytes::from_static(b"remainder=/api/remainder"));
+    Ok(())
+}
+
+#[test]
+fn http_router_collects_registered_routes() {
+    // `HttpRouter::collect()` enumerates inventory-submitted
+    // `#[convex::http_action]`s. The fixture registers
+    // `POST /api/ping`; pin that so a future fixture edit can't
+    // silently drop it.
+    let router = convex_native_core::http::HttpRouter::collect().expect("collect");
+    let got = router.lookup("POST", "/api/ping");
+    assert!(got.is_some(), "expected POST /api/ping in router");
+    assert_eq!(got.unwrap().name, "__http::POST:/api/ping");
+}

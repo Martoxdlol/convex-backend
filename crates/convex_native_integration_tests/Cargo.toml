@@ -1,0 +1,47 @@
+[package]
+name = "convex_native_integration_tests"
+description = "End-to-end integration tests exercising every convex_native feature in standalone and distributed topologies."
+version = "0.1.0"
+authors = ["Convex, Inc. <no-reply@convex.dev>"]
+edition = "2024"
+license = "LicenseRef-FSL-1.1-Apache-2.0"
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+common = { workspace = true }
+convex_native = { workspace = true }
+convex_native_core = { workspace = true }
+convex_native_distributed = { workspace = true }
+database = { workspace = true }
+errors = { workspace = true }
+governor = { workspace = true }
+http = { workspace = true }
+indexing = { workspace = true }
+keybroker = { workspace = true }
+model = { workspace = true }
+pb = { workspace = true }
+runtime = { workspace = true }
+search = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlite = { workspace = true }
+sync_types = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "test-util", "time"] }
+tokio-stream = { workspace = true, features = ["net"] }
+tonic = { workspace = true }
+udf = { workspace = true }
+usage_tracking = { workspace = true }
+value = { workspace = true }
+vector = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "test-util", "time"] }
+
+[lints]
+workspace = true

@@ -12,6 +12,111 @@ use syn::{
     Type,
 };
 
+mod convex_document;
+mod convex_enum;
+mod convex_nested;
+mod convex_union;
+mod cron;
+mod http_action;
+mod native_function;
+
+/// `#[derive(ConvexDocument)]`
+///
+/// Generates `ConvexDocument` impl, `XxxField` enum, `XxxIndex` enum,
+/// `XxxPatch` struct, `XxxWithId` struct, and registers the table with
+/// `inventory` for schema collection. See `convex-native/USAGE.md` for
+/// the developer-facing surface.
+#[proc_macro_derive(ConvexDocument, attributes(convex))]
+pub fn derive_convex_document(input: TokenStream) -> TokenStream {
+    convex_document::derive_convex_document(input)
+}
+
+/// `#[derive(ConvexEnum)]` — string-valued Rust enums.
+///
+/// Variants must be unit-like; each maps to its snake_case string form
+/// (`Admin` ↔ `"admin"`), optionally overridden with
+/// `#[convex(rename = "...")]` on a variant.
+#[proc_macro_derive(ConvexEnum, attributes(convex))]
+pub fn derive_convex_enum(input: TokenStream) -> TokenStream {
+    convex_enum::derive_convex_enum(input)
+}
+
+/// `#[derive(ConvexNested)]` — embedded object types.
+///
+/// Generates `ToConvex` / `FromConvex` impls without the
+/// `ConvexDocument` trait or the inventory table registration. Use for
+/// types that appear as fields inside a `ConvexDocument` but aren't
+/// tables of their own.
+#[proc_macro_derive(ConvexNested, attributes(convex))]
+pub fn derive_convex_nested(input: TokenStream) -> TokenStream {
+    convex_nested::derive_convex_nested(input)
+}
+
+/// `#[derive(ConvexUnion)]` — tagged unions.
+///
+/// Generates `ToConvex` / `FromConvex` impls that serialize enum
+/// variants as objects with a discriminant field. The enum attribute
+/// `#[convex(tag = "...")]` picks the discriminant field name (default
+/// `"type"`). Variants may override their wire name with
+/// `#[convex(rename = "...")]`.
+#[proc_macro_derive(ConvexUnion, attributes(convex))]
+pub fn derive_convex_union(input: TokenStream) -> TokenStream {
+    convex_union::derive_convex_union(input)
+}
+
+/// `#[convex::query]` — declare a native Convex query.
+///
+/// Requires an async fn whose first parameter is `ctx: &mut QueryCtx`.
+/// Subsequent parameters must be `ToConvex + FromConvex` types.
+#[proc_macro_attribute]
+pub fn query(attr: TokenStream, item: TokenStream) -> TokenStream {
+    native_function::attr(native_function::FnKind::Query, attr, item)
+}
+
+/// `#[convex::mutation]` — declare a native Convex mutation.
+///
+/// Requires an async fn whose first parameter is `ctx: &mut MutationCtx`.
+/// Subsequent parameters must be `ToConvex + FromConvex` types.
+#[proc_macro_attribute]
+pub fn mutation(attr: TokenStream, item: TokenStream) -> TokenStream {
+    native_function::attr(native_function::FnKind::Mutation, attr, item)
+}
+
+/// `#[convex::action]` — declare a native Convex action.
+///
+/// Requires an async fn whose first parameter is `ctx: &mut ActionCtx`.
+/// Actions run outside the database transaction and can perform
+/// external I/O. Subsequent parameters must be `ToConvex + FromConvex`
+/// types.
+#[proc_macro_attribute]
+pub fn action(attr: TokenStream, item: TokenStream) -> TokenStream {
+    native_function::attr(native_function::FnKind::Action, attr, item)
+}
+
+/// `#[convex::http_action(method = "GET", path = "/api/...")]` —
+/// declare an HTTP action handler.
+///
+/// Expects an async fn with signature
+/// `(ctx: &mut HttpActionCtx<'_, Rt>, req: HttpRequest) ->
+/// Result<HttpResponse>`. Registers the route in the inventory; lookup happens
+/// at runtime via `convex_native_core::HttpRouter`.
+#[proc_macro_attribute]
+pub fn http_action(attr: TokenStream, item: TokenStream) -> TokenStream {
+    http_action::attr(attr, item)
+}
+
+/// `#[convex::cron(name = "...", schedule = "...", target = "...")]` —
+/// register a recurring scheduled job.
+///
+/// Attaches to an arbitrary placeholder item at module scope and
+/// emits an `inventory::submit!(CronRegistration)`. The backend
+/// adapter walks `CronRegistry::collect()` at startup to install
+/// schedulers for each entry.
+#[proc_macro_attribute]
+pub fn cron(attr: TokenStream, item: TokenStream) -> TokenStream {
+    cron::attr(attr, item)
+}
+
 #[proc_macro_attribute]
 pub fn instrument_future(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let ItemFn {

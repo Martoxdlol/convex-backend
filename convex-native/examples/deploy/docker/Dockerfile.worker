@@ -1,0 +1,67 @@
+# Worker image template — runs the deployer's native functions,
+# dispatches get delivered from the backend over gRPC.
+#
+# Env-var contract (production / Phase-3+):
+#   CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567
+#       Port the worker serves `FunctionExecutionService` on.
+#   CONVEX_BACKEND_ENDPOINT=http://convex-backend:5678
+#       Backend admission port. Worker dials here on startup,
+#       sends a `RegistrationEnvelope`, stays connected for
+#       its lifetime. Closing the stream retires the worker
+#       from the pool.
+#
+# Action sub-calls (`ctx.run_mutation`, `ctx.scheduler().run_after`,
+# storage ops) route back to the backend via
+# `BackendCallbackService` when
+# `CONVEX_BACKEND_ENDPOINT` is set — the worker's
+# `FunctionExecutionServer::with_backend_callback_endpoint(...)`
+# is wired to it by the worker binary boot glue.
+#
+# Copy this file into your deployer-project root and adjust the
+# `cargo build` target to match your binary name.
+#
+# Build:
+#   docker build -f Dockerfile.worker -t myco/convex-worker:$(git rev-parse --short HEAD) .
+#
+# See also: convex-native/DEPLOYMENT.md + USAGE.md §19.
+
+# ── builder ────────────────────────────────────────────────────────
+FROM rust:1.82-slim AS builder
+
+WORKDIR /app
+
+# Compile deps in a separate layer for caching.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+# `--release` matters a lot here: debug builds of the runtime are
+# ~10x slower under load. Swap for `--profile dist` if you have a
+# custom release profile with LTO + strip.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin my_worker && \
+    cp target/release/my_worker /usr/local/bin/my_worker
+
+# ── runtime ────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Non-root user for defence-in-depth.
+RUN useradd --system --create-home --uid 10001 convex
+USER convex
+
+COPY --from=builder /usr/local/bin/my_worker /usr/local/bin/my_worker
+
+# The worker exposes only the gRPC port — health checks go through
+# `grpc_health_probe` or the tonic Health RPC directly.
+EXPOSE 4567
+
+ENV CONVEX_MODE=worker
+ENV CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567
+
+# NOTE: don't add a generic HEALTHCHECK here — the worker speaks
+# gRPC, so use grpc_health_probe in the orchestrator instead
+# (Kubernetes has native gRPC probing as of 1.24; `docker-compose`
+# users wire it via a sidecar).
+ENTRYPOINT ["/usr/local/bin/my_worker"]

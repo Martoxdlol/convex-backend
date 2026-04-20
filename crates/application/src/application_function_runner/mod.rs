@@ -1292,16 +1292,36 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
         let udf_server_version = path_and_args.npm_version().clone();
         // We should not be missing the module given we validated the path above
         // which requires the module to exist.
+        //
+        // Pure-native deployments are the exception: a
+        // `#[convex::action]` is registered via `inventory` at link
+        // time and never writes a `_modules` row, so the metadata
+        // fetch would fail with "Missing a valid module". When the
+        // native resolver knows the function name we synthesize the
+        // `Isolate`-environment shape the downstream dispatch path
+        // expects — `CompositeFunctionRunner` intercepts the native
+        // name on the isolate branch and runs the handler inline via
+        // `NativeFunctionRunner::run_action_with_callbacks`.
         let path = path_and_args.path().clone();
-        let module = ModuleModel::new(&mut tx)
+        let native_descriptor = udf::validation::lookup_native_function(
+            path.udf_path.function_name(),
+        )
+        .filter(|d| d.udf_type == UdfType::Action);
+        let module_environment = if let Some(m) = ModuleModel::new(&mut tx)
             .get_metadata_for_function_by_id(&path)
             .await?
-            .context("Missing a valid module")?;
+        {
+            m.environment
+        } else if native_descriptor.is_some() {
+            ModuleEnvironment::Isolate
+        } else {
+            anyhow::bail!("Missing a valid module")
+        };
         let (log_line_sender, log_line_receiver) = mpsc::unbounded_channel();
 
         let inert_identity = tx.inert_identity();
-        let timer = function_total_timer(module.environment, UdfType::Action);
-        let completion_result = match module.environment {
+        let timer = function_total_timer(module_environment, UdfType::Action);
+        let completion_result = match module_environment {
             ModuleEnvironment::Isolate => {
                 // TODO: This is the only use case of clone. We should get rid of clone,
                 // when we deprecate that codepath.
@@ -1318,7 +1338,7 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                             unix_timestamp,
                             context.clone(),
                             vec![log_line].into(),
-                            module.environment,
+                            module_environment,
                         )
                     },
                 )
@@ -1359,8 +1379,9 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                     Some(r) => r,
                     None => anyhow::bail!("Missing a valid module_version"),
                 };
+                let source_package_id = module_metadata.source_package_id;
                 let source_package = SourcePackageModel::new(&mut tx, component.into())
-                    .get(module_metadata.source_package_id)
+                    .get(source_package_id)
                     .await?;
                 let source_maps_callback = async {
                     let module_version = self
@@ -1378,7 +1399,6 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                     .acquire_permit_with_timeout(&self.runtime)
                     .await?;
 
-                let source_package_id = module.source_package_id;
                 let source_package = SourcePackageModel::new(&mut tx, component.into())
                     .get(source_package_id)
                     .await?
@@ -1451,7 +1471,7 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                             unix_timestamp,
                             context.clone(),
                             vec![log_line].into(),
-                            module.environment,
+                            module_environment,
                         )
                     },
                 )
@@ -1519,8 +1539,8 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                 Ok(ActionCompletion {
                     outcome,
                     execution_time: start.elapsed(),
-                    environment: module.environment,
-                    memory_in_mb: match module.environment {
+                    environment: module_environment,
+                    memory_in_mb: match module_environment {
                         ModuleEnvironment::Isolate => (*ISOLATE_MAX_USER_HEAP_SIZE / (1 << 20))
                             .try_into()
                             .unwrap(),

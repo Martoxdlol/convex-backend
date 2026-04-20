@@ -1,0 +1,830 @@
+//! Binary-level mode switching.
+//!
+//! A process embedding `convex_native_core` reads `CONVEX_MODE` on
+//! startup and uses these helpers to parse + validate the
+//! deployment topology before wiring up a runner or starting a
+//! gRPC server. The actual binary glue (spawn a
+//! `tonic::transport::Server` in worker mode) lives in
+//! `examples/worker.rs`; this module just decodes the env vars and
+//! assembles the pieces. `convex-local-backend` also consumes
+//! [`read_mode_from_env`] to decide whether to expose its own
+//! gRPC face.
+//!
+//! ## Env vars (current, pre-Phase-3)
+//!
+//! - `CONVEX_MODE`: `standalone` (default) | `conductor` | `worker`.
+//!   Case-insensitive; whitespace stripped; unknown → `Standalone`.
+//! - `CONVEX_WORKER_ENDPOINTS` (conductor mode): comma-separated
+//!   list of gRPC URLs, e.g. `"http://host-a:4567,http://host-b:4567"`.
+//!   Empty list fails validation.
+//! - `CONVEX_WORKER_BIND_ADDR` (worker mode): the `host:port` the worker should
+//!   bind its gRPC server to. Defaults to `0.0.0.0:4567` when unset.
+//!
+//! ## Phase-3 env-var shift (see `convex-native/DISTRIBUTED_PLAN.md`)
+//!
+//! - `CONVEX_MODE=conductor` + `CONVEX_WORKER_ENDPOINTS` go away. The backend
+//!   image replaces the standalone-conductor concept; workers discover the
+//!   backend via `CONVEX_BACKEND_ENDPOINT` and register themselves over
+//!   `WorkerAdmissionService`. The helpers here stay for now so pre-Phase-3
+//!   tests keep passing.
+
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+};
+
+use convex_native_core::{
+    distributed::ConvexMode,
+    NativeFunctionRunner,
+    Rt,
+};
+use database::Database;
+use pb::function_execution::function_execution_service_server::FunctionExecutionServiceServer;
+use tonic::transport::Server;
+
+use crate::{
+    server::FunctionExecutionServer,
+    DistributedFunctionRunner,
+    TonicWorkerClient,
+    WorkerClient,
+};
+
+/// Default bind address when `CONVEX_WORKER_BIND_ADDR` is unset.
+pub const DEFAULT_WORKER_BIND_ADDR: &str = "0.0.0.0:4567";
+
+/// Read `CONVEX_MODE` from the environment. Absent or unknown values
+/// default to `Standalone`.
+pub fn read_mode_from_env() -> ConvexMode {
+    ConvexMode::from_env_str(&std::env::var("CONVEX_MODE").unwrap_or_default())
+}
+
+/// Parse a comma-separated list of worker endpoints. Empty strings
+/// after trimming are skipped; the final list is required to be
+/// non-empty (the dispatcher must know of at least one worker).
+pub fn parse_worker_endpoints(raw: &str) -> anyhow::Result<Vec<String>> {
+    let endpoints: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if endpoints.is_empty() {
+        anyhow::bail!(
+            "CONVEX_WORKER_ENDPOINTS is empty — the dispatcher needs at least one worker URL, \
+             comma-separated"
+        );
+    }
+    Ok(endpoints)
+}
+
+/// Read the dispatcher's worker list from `CONVEX_WORKER_ENDPOINTS`.
+pub fn read_worker_endpoints_from_env() -> anyhow::Result<Vec<String>> {
+    let raw = std::env::var("CONVEX_WORKER_ENDPOINTS").map_err(|_| {
+        anyhow::anyhow!(
+            "CONVEX_WORKER_ENDPOINTS must be set on the backend/dispatcher side (comma-separated \
+             gRPC URLs)"
+        )
+    })?;
+    parse_worker_endpoints(&raw)
+}
+
+/// Substep 2.7 env-var: `CONVEX_NATIVE_WORKERS`. When set,
+/// `local_backend` builds a `DistributedFunctionRunner` from the
+/// comma-separated gRPC endpoints and passes it to the composite
+/// runner's `with_remote_native_pool(...)` so native Query /
+/// Mutation dispatch routes through the remote pool instead of
+/// the in-process `NativeFunctionRunner`.
+///
+/// Returns `Ok(None)` when the variable is unset (the Phase-2
+/// default — keep in-process behaviour).
+/// Returns `Ok(Some(Vec))` with a validated, non-empty endpoint
+/// list when set.
+/// Returns `Err` when the variable is set but empty or malformed.
+///
+/// Distinct from `CONVEX_WORKER_ENDPOINTS` — that pre-Phase-3 var
+/// points at a standalone-conductor binary's workers; this one is
+/// the local-backend-side hook for the Phase-2 replan where the
+/// backend itself speaks directly to the worker pool.
+pub fn read_native_workers_from_env() -> anyhow::Result<Option<Vec<String>>> {
+    match std::env::var("CONVEX_NATIVE_WORKERS") {
+        Ok(raw) => parse_worker_endpoints(&raw)
+            .map(Some)
+            .map_err(|e| anyhow::anyhow!("CONVEX_NATIVE_WORKERS set but unusable: {e}")),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Substep 7.4 env-var: `CONVEX_ADMIN_BIND_ADDR`. When set and
+/// the backend is running in admission-service mode
+/// (`CONVEX_ADMISSION_BIND_ADDR` set), `local_backend` mounts
+/// the Phase-7.2 admin router on this address. Typical value:
+/// `127.0.0.1:9090` — loopback only so external traffic can't
+/// hit the floor/drain routes without cluster-internal network
+/// policy.
+///
+/// Returns `Ok(None)` when unset (admin surface not exposed;
+/// operators can still manage the pool via direct Rust API
+/// calls if they embed the crate). `Err` on garbage values.
+pub fn read_admin_bind_addr_from_env() -> anyhow::Result<Option<SocketAddr>> {
+    match std::env::var("CONVEX_ADMIN_BIND_ADDR") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_ADMIN_BIND_ADDR set but empty — unset or set a valid host:port",
+                )
+            }
+            let addr: SocketAddr = trimmed
+                .parse()
+                .map_err(|e| anyhow::anyhow!("CONVEX_ADMIN_BIND_ADDR={trimmed:?}: {e}"))?;
+            Ok(Some(addr))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
+/// Substep 3.7 env-var: `CONVEX_ADMISSION_BIND_ADDR`. When set,
+/// `local_backend` binds a tonic `WorkerAdmissionService` on
+/// this address and uses a dynamic `WorkerPool` for native
+/// dispatch instead of the fixed `CONVEX_NATIVE_WORKERS` list.
+///
+/// Typical value: `0.0.0.0:5678`. Workers dial this address
+/// from their `CONVEX_BACKEND_ENDPOINT` — see
+/// [`read_backend_endpoint_from_env`].
+///
+/// Returns `Ok(None)` when the variable is unset (fall back to
+/// the Phase-2 fixed-pool shape). Returns `Ok(Some(addr))`
+/// when set to a parseable socket address. Returns `Err` on a
+/// garbage value.
+pub fn read_admission_bind_addr_from_env() -> anyhow::Result<Option<SocketAddr>> {
+    match std::env::var("CONVEX_ADMISSION_BIND_ADDR") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_ADMISSION_BIND_ADDR set but empty — unset it or set a valid host:port",
+                )
+            }
+            let addr: SocketAddr = trimmed.parse().map_err(|e| {
+                anyhow::anyhow!(
+                    "CONVEX_ADMISSION_BIND_ADDR={trimmed:?}: invalid socket address: {e}",
+                )
+            })?;
+            Ok(Some(addr))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
+/// Backend-side env-var: `CONVEX_BACKEND_CALLBACK_BIND_ADDR`.
+/// When set, the backend binds a tonic
+/// `BackendCallbackService` on this address so workers can route
+/// action sub-calls (`ctx.run_mutation`, `ctx.scheduler()`, file
+/// storage ops) back through the backend's Committer. Workers
+/// learn the endpoint via [`read_backend_callback_endpoint_from_env`].
+///
+/// Typical value: `0.0.0.0:5679`. Loopback-only is the wrong
+/// choice for k8s deployments — workers usually live on
+/// different pods. Lock down with NetworkPolicy on the
+/// `convex-backend-callbacks` Service selector.
+///
+/// Returns `Ok(None)` when unset (no callback service exposed —
+/// remote-worker actions will see a "no backend callback
+/// endpoint configured" failure on every sub-call).
+/// `Err` on garbage values.
+pub fn read_callback_bind_addr_from_env() -> anyhow::Result<Option<SocketAddr>> {
+    match std::env::var("CONVEX_BACKEND_CALLBACK_BIND_ADDR") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_BACKEND_CALLBACK_BIND_ADDR set but empty — unset it or set a valid \
+                     host:port",
+                )
+            }
+            let addr: SocketAddr = trimmed.parse().map_err(|e| {
+                anyhow::anyhow!(
+                    "CONVEX_BACKEND_CALLBACK_BIND_ADDR={trimmed:?}: invalid socket address: {e}",
+                )
+            })?;
+            Ok(Some(addr))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
+/// Worker-side env-var: `CONVEX_BACKEND_CALLBACK_ENDPOINT`. The
+/// worker dials this URL from inside a running action whenever
+/// the action makes a sub-call (`ctx.run_mutation`, scheduler,
+/// storage). Pairs with [`read_callback_bind_addr_from_env`] on
+/// the backend.
+///
+/// Returns `Ok(None)` when unset — actions still run but every
+/// sub-call bails via `NoopCallbacks`. Returns `Ok(Some(url))`
+/// when set; returns `Err` when set but empty.
+pub fn read_backend_callback_endpoint_from_env() -> anyhow::Result<Option<String>> {
+    match std::env::var("CONVEX_BACKEND_CALLBACK_ENDPOINT") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_BACKEND_CALLBACK_ENDPOINT set but empty — unset it or set a valid \
+                     gRPC URL",
+                )
+            }
+            Ok(Some(trimmed.to_string()))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
+/// Substep 5.2 env-var: `CONVEX_REFUSE_NATIVE_HANDLERS`. Opt-in
+/// safety net for the Phase-5 prebuilt backend image. When set
+/// to any non-empty value, `local_backend` errors at boot if
+/// the binary has any `#[convex::*]` handlers baked in — which
+/// would indicate a deployer accidentally pulled worker code
+/// into the backend image.
+///
+/// The backend image is supposed to carry no deployer-specific
+/// inventory (workers ship that separately and register at
+/// admission time). This env var pins that invariant in CI.
+///
+/// Returns `true` when the variable is set to a non-empty value,
+/// `false` otherwise. Unset / empty / whitespace-only is treated
+/// as "not enforcing" so the default backend boot stays tolerant.
+pub fn read_refuse_native_handlers_from_env() -> bool {
+    std::env::var("CONVEX_REFUSE_NATIVE_HANDLERS")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// `CONVEX_MIN_REGISTRY_VERSION`. Initial value for the
+/// admission pool's `min_registry_version` floor. Workers whose
+/// `registry_version` doesn't meet this floor are skipped on
+/// dispatch (see `WorkerPool::set_min_registry_version`).
+///
+/// `Ok(None)` when unset (no floor enforced); `Ok(Some(s))`
+/// when set to a non-empty value (operators can still raise /
+/// lower it at runtime through the admin HTTP `POST
+/// /admin/pool/floor` route — the env var only seeds the boot
+/// value). Empty / whitespace-only ⇒ `Err` so a misconfig
+/// fails loud.
+pub fn read_min_registry_version_from_env() -> anyhow::Result<Option<String>> {
+    match std::env::var("CONVEX_MIN_REGISTRY_VERSION") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_MIN_REGISTRY_VERSION set but empty — unset it or set a valid version \
+                     string",
+                )
+            }
+            Ok(Some(trimmed.to_string()))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
+/// Substep 3.5 env-var: `CONVEX_BACKEND_ENDPOINT`. When the
+/// worker binary starts it dials this URL, opens the
+/// `WorkerAdmissionService::Register` stream, and stays
+/// connected for its lifetime. Example: `grpc://backend:5678`.
+///
+/// Returns `Ok(None)` when the variable is unset — the worker
+/// can still run in the pre-Phase-3 "fixed pool" shape where the
+/// backend dials it directly via `CONVEX_NATIVE_WORKERS`.
+/// Returns `Ok(Some(url))` when set.
+/// Returns `Err` when set but empty.
+pub fn read_backend_endpoint_from_env() -> anyhow::Result<Option<String>> {
+    match std::env::var("CONVEX_BACKEND_ENDPOINT") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "CONVEX_BACKEND_ENDPOINT set but empty — unset it or set a valid gRPC URL",
+                )
+            }
+            Ok(Some(trimmed.to_string()))
+        },
+        Err(_) => Ok(None),
+    }
+}
+
+/// Read the worker's bind address from `CONVEX_WORKER_BIND_ADDR`,
+/// falling back to [`DEFAULT_WORKER_BIND_ADDR`].
+pub fn read_worker_bind_addr_from_env() -> anyhow::Result<SocketAddr> {
+    let raw = std::env::var("CONVEX_WORKER_BIND_ADDR")
+        .unwrap_or_else(|_| DEFAULT_WORKER_BIND_ADDR.into());
+    raw.parse().map_err(|e| {
+        anyhow::anyhow!("CONVEX_WORKER_BIND_ADDR={raw:?}: invalid socket address: {e}")
+    })
+}
+
+/// Build (but do not start) a tonic `Server` configured to serve the
+/// `FunctionExecutionService` against the given native runner. The
+/// caller picks the transport — `serve(addr)`, `serve_with_incoming`,
+/// `serve_with_shutdown`, etc. — so the same configuration can drive
+/// both production and test servers.
+pub fn build_worker_server(
+    native: Arc<NativeFunctionRunner>,
+) -> (
+    Server,
+    FunctionExecutionServiceServer<FunctionExecutionServer>,
+) {
+    let server = FunctionExecutionServer::new(native);
+    (
+        Server::builder(),
+        FunctionExecutionServiceServer::new(server),
+    )
+}
+
+/// Serve `FunctionExecutionService` on `addr`, wired to the given
+/// native runner and a worker-local `Database<Rt>`. Blocks until the
+/// tonic server exits (error or process shutdown).
+///
+/// This is the "consumer" variant of [`build_worker_server`] —
+/// callers that just want "bind, attach the database, run forever"
+/// don't need to pull `tonic` or `pb` as direct dependencies.
+///
+/// Used by `convex-local-backend` under `CONVEX_MODE=worker` to
+/// expose native functions over gRPC without duplicating the tonic
+/// wiring. Callers that need coordinated shutdown (e.g. to drain on
+/// the same signal the HTTP server uses) should prefer
+/// [`serve_worker_with_shutdown`].
+pub async fn serve_worker_with_database(
+    addr: SocketAddr,
+    native: Arc<NativeFunctionRunner>,
+    database: Database<Rt>,
+) -> anyhow::Result<()> {
+    serve_worker_with_shutdown(addr, native, database, std::future::pending::<()>()).await
+}
+
+/// Serve `FunctionExecutionService` on `addr` with a
+/// caller-provided shutdown future. When the future resolves, tonic
+/// stops accepting new connections, drains in-flight RPCs, and
+/// returns `Ok(())` (mapped into `anyhow::Result`). A transport error
+/// from `serve_with_shutdown` still surfaces as `Err`.
+///
+/// Use this variant when the worker server is embedded in a larger
+/// process (e.g. `convex-local-backend` under `CONVEX_MODE=worker`)
+/// and must drain in lockstep with the rest of the process. The
+/// shutdown future is typically an `async_broadcast::Receiver<()>`
+/// wrapped in `async move { let _ = rx.recv().await; }`.
+pub async fn serve_worker_with_shutdown<F>(
+    addr: SocketAddr,
+    native: Arc<NativeFunctionRunner>,
+    database: Database<Rt>,
+    shutdown: F,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    serve_worker_with_options(
+        addr,
+        native,
+        Some(database),
+        read_backend_callback_endpoint_from_env()?,
+        shutdown,
+    )
+    .await
+}
+
+/// Full-options variant of [`serve_worker_with_shutdown`] used
+/// when the worker binary needs explicit control over the
+/// `Database` handle and the backend-callback endpoint
+/// (typically because both come from a runtime configuration
+/// rather than env vars). `database == None` keeps the worker
+/// query/mutation branch in `Unimplemented`-mode for tests that
+/// only exercise actions.
+pub async fn serve_worker_with_options<F>(
+    addr: SocketAddr,
+    native: Arc<NativeFunctionRunner>,
+    database: Option<Database<Rt>>,
+    backend_callback_endpoint: Option<String>,
+    shutdown: F,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let mut server = FunctionExecutionServer::new(native);
+    if let Some(database) = database {
+        server = server.with_database(database);
+    }
+    if let Some(endpoint) = backend_callback_endpoint {
+        server = server.with_backend_callback_endpoint(endpoint);
+    }
+    // Bind synchronously so the caller sees port-in-use /
+    // permission errors up front. `serve_with_incoming_shutdown`
+    // consumes the pre-bound listener so late transport
+    // failures still flow through the returned `Result`.
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("FunctionExecutionService: bind {addr} failed: {e}"))?;
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    Server::builder()
+        .add_service(FunctionExecutionServiceServer::new(server))
+        .serve_with_incoming_shutdown(incoming, shutdown)
+        .await
+        .map_err(|e| anyhow::anyhow!("FunctionExecutionService serve({addr}): {e}"))
+}
+
+/// Connect a `TonicWorkerClient` per endpoint and wrap the set in a
+/// `DistributedFunctionRunner`. Failures from any individual
+/// `connect` bubble up — the dispatcher refuses to start with an
+/// unreachable worker rather than quietly serving a reduced pool.
+///
+/// NOTE: name retained for source compatibility; the "conductor"
+/// role is replaced by the backend in `DISTRIBUTED_PLAN.md`. A
+/// rename will land with the Phase 2 `FunctionRunner` impl.
+pub async fn build_conductor_runner(
+    endpoints: &[String],
+) -> anyhow::Result<DistributedFunctionRunner> {
+    let mut workers: Vec<Arc<dyn WorkerClient>> = Vec::with_capacity(endpoints.len());
+    for ep in endpoints {
+        let client = TonicWorkerClient::connect(ep.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("dispatcher: connect to worker {ep:?} failed: {e}"))?;
+        workers.push(client);
+    }
+    DistributedFunctionRunner::new(workers)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Mutex,
+        OnceLock,
+    };
+
+    use super::*;
+
+    /// Serialize every test that mutates `CONVEX_WORKER_BIND_ADDR`
+    /// so the default-behaviour assertion doesn't race with the
+    /// explicit-value ones under the default parallel test runner.
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[test]
+    fn parse_worker_endpoints_trims_and_skips_blanks() {
+        let ep = parse_worker_endpoints("http://a:1 , http://b:2 ,  ,http://c:3").unwrap();
+        assert_eq!(
+            ep,
+            vec![
+                "http://a:1".to_string(),
+                "http://b:2".to_string(),
+                "http://c:3".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn parse_worker_endpoints_rejects_empty() {
+        assert!(parse_worker_endpoints("").is_err());
+        assert!(parse_worker_endpoints("   ,  , ").is_err());
+    }
+
+    #[test]
+    fn read_native_workers_from_env_returns_none_when_unset() {
+        let _guard = env_guard();
+        // Make sure nothing leaked from a sibling test first.
+        // `remove_var` is called in an unsafe block on newer Rust
+        // editions; the safety argument is the same as the other
+        // env-mutating tests below — we serialize with env_guard.
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_NATIVE_WORKERS");
+        }
+        assert!(read_native_workers_from_env().unwrap().is_none());
+    }
+
+    #[test]
+    fn read_native_workers_from_env_parses_comma_separated() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_NATIVE_WORKERS", "http://a:4567,http://b:4567");
+        }
+        let endpoints = read_native_workers_from_env().unwrap().expect("set");
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0], "http://a:4567");
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_NATIVE_WORKERS");
+        }
+    }
+
+    #[test]
+    fn read_admin_bind_addr_unset_returns_none() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMIN_BIND_ADDR");
+        }
+        assert!(read_admin_bind_addr_from_env().unwrap().is_none());
+    }
+
+    #[test]
+    fn read_admin_bind_addr_parses_valid_socket() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_ADMIN_BIND_ADDR", " 127.0.0.1:9090 ");
+        }
+        let addr = read_admin_bind_addr_from_env().unwrap().expect("set");
+        assert_eq!(addr.to_string(), "127.0.0.1:9090");
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMIN_BIND_ADDR");
+        }
+    }
+
+    #[test]
+    fn read_admin_bind_addr_rejects_garbage() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_ADMIN_BIND_ADDR", "not-a-socket");
+        }
+        assert!(read_admin_bind_addr_from_env().is_err());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMIN_BIND_ADDR");
+        }
+    }
+
+    #[test]
+    fn read_admission_bind_addr_unset_returns_none() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMISSION_BIND_ADDR");
+        }
+        assert!(read_admission_bind_addr_from_env().unwrap().is_none());
+    }
+
+    #[test]
+    fn read_admission_bind_addr_parses_valid_socket() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_ADMISSION_BIND_ADDR", " 127.0.0.1:5678 ");
+        }
+        let addr = read_admission_bind_addr_from_env().unwrap().expect("set");
+        assert_eq!(addr.to_string(), "127.0.0.1:5678");
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMISSION_BIND_ADDR");
+        }
+    }
+
+    #[test]
+    fn read_admission_bind_addr_rejects_garbage() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_ADMISSION_BIND_ADDR", "not-an-addr");
+        }
+        assert!(read_admission_bind_addr_from_env().is_err());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_ADMISSION_BIND_ADDR");
+        }
+    }
+
+    #[test]
+    fn read_refuse_native_handlers_unset_returns_false() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_REFUSE_NATIVE_HANDLERS");
+        }
+        assert!(!read_refuse_native_handlers_from_env());
+    }
+
+    #[test]
+    fn read_refuse_native_handlers_set_returns_true() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_REFUSE_NATIVE_HANDLERS", "1");
+        }
+        assert!(read_refuse_native_handlers_from_env());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_REFUSE_NATIVE_HANDLERS");
+        }
+    }
+
+    #[test]
+    fn read_refuse_native_handlers_empty_string_returns_false() {
+        // Empty / whitespace-only values don't trip the guard —
+        // matches the "unset" treatment so a misconfigured
+        // empty-env-var doesn't silently flip the safety net.
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_REFUSE_NATIVE_HANDLERS", "   ");
+        }
+        assert!(!read_refuse_native_handlers_from_env());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_REFUSE_NATIVE_HANDLERS");
+        }
+    }
+
+    #[test]
+    fn read_min_registry_version_unset_returns_none() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_MIN_REGISTRY_VERSION");
+        }
+        assert_eq!(read_min_registry_version_from_env().unwrap(), None);
+    }
+
+    #[test]
+    fn read_min_registry_version_returns_value() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_MIN_REGISTRY_VERSION", "v2.1.0");
+        }
+        let value = read_min_registry_version_from_env().unwrap();
+        assert_eq!(value.as_deref(), Some("v2.1.0"));
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_MIN_REGISTRY_VERSION");
+        }
+    }
+
+    #[test]
+    fn read_min_registry_version_rejects_empty() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_MIN_REGISTRY_VERSION", "   ");
+        }
+        let err = read_min_registry_version_from_env().unwrap_err();
+        assert!(err.to_string().contains("CONVEX_MIN_REGISTRY_VERSION"));
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_MIN_REGISTRY_VERSION");
+        }
+    }
+
+    #[test]
+    fn read_backend_endpoint_from_env_unset_returns_none() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_BACKEND_ENDPOINT");
+        }
+        assert!(read_backend_endpoint_from_env().unwrap().is_none());
+    }
+
+    #[test]
+    fn read_backend_endpoint_from_env_trims_and_returns_value() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_BACKEND_ENDPOINT", "  http://backend:5678  ");
+        }
+        let v = read_backend_endpoint_from_env().unwrap().expect("set");
+        assert_eq!(v, "http://backend:5678");
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_BACKEND_ENDPOINT");
+        }
+    }
+
+    #[test]
+    fn read_backend_endpoint_from_env_rejects_empty() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_BACKEND_ENDPOINT", "   ");
+        }
+        assert!(read_backend_endpoint_from_env().is_err());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_BACKEND_ENDPOINT");
+        }
+    }
+
+    #[test]
+    fn read_native_workers_from_env_rejects_empty_value() {
+        let _guard = env_guard();
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::set_var("CONVEX_NATIVE_WORKERS", "  ");
+        }
+        assert!(read_native_workers_from_env().is_err());
+        // SAFETY: Serialized via env_guard so no concurrent writer.
+        unsafe {
+            std::env::remove_var("CONVEX_NATIVE_WORKERS");
+        }
+    }
+
+    #[test]
+    fn read_worker_bind_addr_defaults_when_unset() {
+        let _guard = env_guard();
+        // SAFETY: env_guard serializes writes across tests in this module.
+        unsafe {
+            std::env::remove_var("CONVEX_WORKER_BIND_ADDR");
+        }
+        let addr = read_worker_bind_addr_from_env().unwrap();
+        assert_eq!(
+            addr,
+            DEFAULT_WORKER_BIND_ADDR.parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn read_worker_bind_addr_parses_explicit_value() {
+        let _guard = env_guard();
+        // SAFETY: env_guard serializes writes across tests in this module.
+        unsafe {
+            std::env::set_var("CONVEX_WORKER_BIND_ADDR", "127.0.0.1:9999");
+        }
+        let addr = read_worker_bind_addr_from_env().unwrap();
+        assert_eq!(addr, "127.0.0.1:9999".parse::<SocketAddr>().unwrap());
+        // SAFETY: env_guard serializes writes across tests in this module.
+        unsafe {
+            std::env::remove_var("CONVEX_WORKER_BIND_ADDR");
+        }
+    }
+
+    #[test]
+    fn read_worker_bind_addr_rejects_garbage() {
+        let _guard = env_guard();
+        // SAFETY: env_guard serializes writes across tests in this module.
+        unsafe {
+            std::env::set_var("CONVEX_WORKER_BIND_ADDR", "not-a-socket-addr");
+        }
+        assert!(read_worker_bind_addr_from_env().is_err());
+        // SAFETY: env_guard serializes writes across tests in this module.
+        unsafe {
+            std::env::remove_var("CONVEX_WORKER_BIND_ADDR");
+        }
+    }
+
+    #[tokio::test]
+    async fn build_worker_server_returns_usable_builder() {
+        let native = Arc::new(NativeFunctionRunner::from_inventory().unwrap());
+        let (_builder, service) = build_worker_server(native);
+        // If this compiles, the service is addressable via the
+        // generated tonic trait object — which is the entire API
+        // contract this helper provides.
+        drop(service);
+    }
+
+    #[tokio::test]
+    async fn build_conductor_runner_rejects_unreachable_worker() {
+        // Port 1 is reserved; connect should fail fast.
+        let endpoints = vec!["http://127.0.0.1:1".to_string()];
+        assert!(build_conductor_runner(&endpoints).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn build_worker_server_drains_on_shutdown_future() {
+        // Exercise the same `serve_with_shutdown` path
+        // `serve_worker_with_shutdown` drives, but without a
+        // Database<Rt> so the test stays self-contained. The only
+        // thing we care about is that firing the shutdown future
+        // causes tonic to return `Ok(())` rather than hanging.
+        //
+        // Bind on an ephemeral port and fire the signal immediately;
+        // `serve_with_shutdown` must complete within the tokio timeout.
+        use std::time::Duration;
+        let native = Arc::new(NativeFunctionRunner::from_inventory().unwrap());
+        let (mut builder, service) = build_worker_server(native);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // release the port so tonic can rebind.
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let serve = tokio::spawn(async move {
+            builder
+                .add_service(service)
+                .serve_with_shutdown(addr, async move {
+                    let _ = rx.await;
+                })
+                .await
+        });
+        // Give tonic a moment to actually start listening before we
+        // signal shutdown — otherwise the serve future can race and
+        // return before binding.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = tx.send(());
+        let result = tokio::time::timeout(Duration::from_secs(2), serve)
+            .await
+            .expect("serve must exit within timeout")
+            .expect("task must not panic");
+        assert!(
+            result.is_ok(),
+            "serve_with_shutdown should return Ok after drain: {result:?}",
+        );
+    }
+}

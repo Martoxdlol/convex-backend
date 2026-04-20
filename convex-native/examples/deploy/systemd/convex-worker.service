@@ -1,0 +1,63 @@
+# systemd unit for a convex-native worker process on a plain VM.
+# Drop into /etc/systemd/system/ and enable with:
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now convex-worker
+#   sudo journalctl -u convex-worker -f
+#
+# Assumes the compiled binary is at /usr/local/bin/convex-worker
+# and runs under a dedicated `convex` system user.
+
+[Unit]
+Description=Convex Native Worker
+Documentation=https://github.com/get-convex/convex-backend/blob/main/convex-native/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=convex
+Group=convex
+# Binary location + args.
+ExecStart=/usr/local/bin/convex-worker
+
+# Environment — adjust the bind address / log level per host.
+Environment=CONVEX_MODE=worker
+Environment=CONVEX_WORKER_BIND_ADDR=0.0.0.0:4567
+# Phase-3+ admission: dial the backend + auto-register. Point
+# at the backend's CONVEX_ADMISSION_BIND_ADDR.
+Environment=CONVEX_BACKEND_ENDPOINT=http://convex-backend.internal:5678
+Environment=RUST_LOG=info,convex_native=debug
+
+# Graceful shutdown: give the worker's drain loop time to finish
+# in-flight requests before systemd SIGKILLs it. Match this to the
+# longest per-function timeout declared in your registry.
+TimeoutStopSec=60
+KillSignal=SIGTERM
+# Optional: on crash, restart — but rate-limit so a crashloop
+# doesn't mask a real bug.
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=5
+
+# Hardening. Relax any of these if your workload needs them.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# Read-write paths your binary needs. If the worker doesn't touch
+# disk (it usually doesn't — the Database lives on the backend or
+# in a separate storage process), leave this empty and the strict
+# ProtectSystem above will bite any accidental writes.
+# ReadWritePaths=/var/lib/convex
+
+[Install]
+WantedBy=multi-user.target

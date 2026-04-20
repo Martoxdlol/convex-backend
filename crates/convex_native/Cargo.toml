@@ -1,0 +1,35 @@
+[package]
+name = "convex_native"
+description = "Batteries-included entry point: framework re-exports + a one-call backend server bootstrap."
+version = "0.1.0"
+authors = ["Convex, Inc. <no-reply@convex.dev>"]
+edition = "2024"
+license = "LicenseRef-FSL-1.1-Apache-2.0"
+
+[lib]
+doctest = false
+
+# Agnostic backend entrypoint. Links zero `#[convex::*]` code;
+# deployers' worker images provide the handler inventory at boot
+# via gRPC registration. See
+# `convex-native/DISTRIBUTED_PLAN.md` Phase 5.
+[[bin]]
+name = "convex-backend"
+path = "src/bin/convex-backend.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-broadcast = { workspace = true }
+clap = { workspace = true }
+cmd_util = { workspace = true }
+common = { workspace = true }
+convex_native_core = { workspace = true }
+db_connection = { workspace = true }
+futures = { workspace = true }
+local_backend = { path = "../local_backend" }
+runtime = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

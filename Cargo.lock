@@ -2295,9 +2295,163 @@ name = "convex_macro"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "heck",
  "proc-macro2",
  "quote",
+ "saffron",
  "syn 2.0.108",
+]
+
+[[package]]
+name = "convex_native"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-broadcast",
+ "clap",
+ "cmd_util",
+ "common",
+ "convex_native_core",
+ "db_connection",
+ "futures",
+ "local_backend",
+ "runtime",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "convex_native_backend"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "common",
+ "convex_native_core",
+ "convex_sync_types",
+ "database",
+ "file_storage",
+ "function_runner",
+ "futures",
+ "headers",
+ "keybroker",
+ "model",
+ "parking_lot",
+ "rand 0.9.4",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "udf",
+ "usage_tracking",
+ "value",
+]
+
+[[package]]
+name = "convex_native_core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "common",
+ "convex_macro",
+ "convex_sync_types",
+ "database",
+ "errors",
+ "fastrace",
+ "futures",
+ "http 1.3.1",
+ "inventory",
+ "keybroker",
+ "model",
+ "parking_lot",
+ "rand 0.9.4",
+ "rand_chacha 0.9.0",
+ "runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+ "value",
+]
+
+[[package]]
+name = "convex_native_distributed"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bytes",
+ "chrono",
+ "common",
+ "convex_native_core",
+ "convex_sync_types",
+ "database",
+ "errors",
+ "function_runner",
+ "governor",
+ "headers",
+ "http 1.3.1",
+ "indexing",
+ "keybroker",
+ "model",
+ "parking_lot",
+ "pb",
+ "prost",
+ "prost-types",
+ "rand 0.9.4",
+ "runtime",
+ "saffron",
+ "search",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlite",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tower 0.5.2",
+ "tracing",
+ "udf",
+ "usage_tracking",
+ "value",
+ "vector",
+]
+
+[[package]]
+name = "convex_native_integration_tests"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "common",
+ "convex_native",
+ "convex_native_core",
+ "convex_native_distributed",
+ "convex_sync_types",
+ "database",
+ "errors",
+ "governor",
+ "http 1.3.1",
+ "indexing",
+ "keybroker",
+ "model",
+ "pb",
+ "runtime",
+ "search",
+ "serde",
+ "serde_json",
+ "sqlite",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "udf",
+ "usage_tracking",
+ "value",
+ "vector",
 ]
 
 [[package]]
@@ -5587,11 +5741,15 @@ dependencies = [
  "axum",
  "axum-extra",
  "base64 0.13.1",
+ "bytes",
  "clap",
  "clusters",
  "cmd_util",
  "common",
  "convex_macro",
+ "convex_native_backend",
+ "convex_native_core",
+ "convex_native_distributed",
  "convex_sync_types",
  "database",
  "db_connection",
@@ -5607,6 +5765,7 @@ dependencies = [
  "futures",
  "futures-async-stream",
  "governor",
+ "headers",
  "http 1.3.1",
  "http-body-util",
  "http_client",
@@ -9113,6 +9272,15 @@ name = "stable_deref_trait"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
+
+[[package]]
+name = "standalone_todo_app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "convex_native",
+ "convex_native_core",
+]
 
 [[package]]
 name = "static_assertions"

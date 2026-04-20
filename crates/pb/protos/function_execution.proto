@@ -1,0 +1,355 @@
+// Distributed function execution protocol for convex_native.
+//
+// See convex-native/DISTRIBUTED_PLAN.md for the target architecture.
+// Under the target design the backend process coordinates OCC and
+// subscriptions and dispatches function execution over gRPC to a
+// pool of identical worker binaries, each running the same native
+// registry. Phase 1 of DISTRIBUTED_PLAN.md extends this file with
+// begin_timestamp / existing_writes on ExecuteRequest and
+// final_tx (FunctionFinalTransaction) on ExecuteResponse so that
+// mutations commit on the backend's Committer rather than locally
+// on the worker.
+//
+// The client/server bindings generated from this file live in
+// `crates/convex_native_distributed/`.
+
+syntax = "proto3";
+
+package function_execution;
+
+import "common.proto";
+import "google/protobuf/duration.proto";
+
+service FunctionExecutionService {
+  // Execute a single native function by name and return the result.
+  // Queries and mutations both go through this RPC; actions too,
+  // but their Response carries no transactional read/write set.
+  // Phase 1 of DISTRIBUTED_PLAN.md adds the final_tx field to
+  // ExecuteResponse so mutations stop committing on the worker
+  // and the backend's Committer does the commit instead.
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // Lightweight readiness check the backend uses for circuit
+  // breaking and rolling updates. Returns the registry version
+  // the worker was built with so the backend
+  // can route around mismatched versions during a deploy.
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message ExecuteRequest {
+  // Dotted registry name: matches NativeFunctionRegistration.name
+  // exactly (not the JS module:function form).
+  string name = 1;
+
+  // UdfType — sanity-checks that the worker's handler kind matches
+  // the backend's expectation. Mismatch is a hard error.
+  common.UdfType udf_type = 2;
+
+  // TableNamespace as it appears on the backend side. Encoded
+  // as a string for forward-compat with future namespace
+  // representations (today: "global" or a component id).
+  string namespace = 3;
+
+  // Args serialized with the same JSON encoding convex_native uses
+  // internally: a single ConvexObject, serialized as one JSON
+  // value.
+  bytes args_json = 4;
+
+  // Identity the call should run as, serialized through the
+  // existing `convex_identity.Identity` wire format. Optional
+  // because tests and internal paths sometimes omit it.
+  optional bytes identity = 5;
+
+  // Per-call soft timeout the worker should honor. The backend
+  // enforces a hard deadline on its side too.
+  optional google.protobuf.Duration timeout = 6;
+
+  // Execution context for tracing/audit (request_id, execution_id,
+  // parent scheduled job, etc.).
+  optional common.ExecutionContext execution_context = 7;
+
+  // Minimum registry version the worker must be running. The
+  // backend populates this from the function's version tag during
+  // a rolling update; if the worker is older than
+  // `min_registry_version`, it should reject with VERSION_MISMATCH.
+  optional string min_registry_version = 8;
+
+  // Phase 1 of DISTRIBUTED_PLAN.md: the timestamp the backend picked
+  // for this function's read snapshot. The worker opens its read
+  // transaction at this ts rather than inferring one locally, so
+  // the backend's Committer can validate reads / writes against a
+  // known snapshot point at commit time. Encoded as the raw u64
+  // representation of `common::types::Timestamp` (monotonic
+  // transaction timestamp — see sync_types::Timestamp).
+  //
+  // Absent for action calls (actions don't take a read snapshot) and
+  // for pre-Phase-1 callers that haven't been upgraded yet — the
+  // worker falls back to `database.now_ts_for_reads()` in that case.
+  optional uint64 begin_timestamp = 9;
+
+  // Substep 2.4: writes from earlier UDFs in the same backend
+  // request that haven't been committed yet. When the backend
+  // batches multiple UDFs into one ApplicationFunctionRunner
+  // invocation, each UDF after the first needs to see earlier
+  // UDFs' writes as part of its transaction. The backend
+  // populates `ExistingWrites.updates` with the document updates
+  // it staged so far; the worker applies them via
+  // `Transaction::merge_writes` before dispatching the handler.
+  //
+  // Absent when the backend isn't batching (the common case —
+  // single-UDF requests). Present with an empty `updates` list
+  // is also valid and equivalent to absent; tests pin both shapes.
+  optional ExistingWrites existing_writes = 10;
+
+  // HTTP-action payload. Set when `udf_type == HttpAction`; the
+  // worker decodes this into a `convex_native_core::http::HttpRequest`,
+  // dispatches via `NativeFunctionRunner::run_http_action`, and
+  // returns the resulting `HttpResponse` on `ExecuteResponse`.
+  optional HttpActionRequest http_request = 11;
+}
+
+// HTTP request payload carried inside an `ExecuteRequest` for
+// `UdfType::HttpAction`. Mirrors `convex_native_core::http::HttpRequest`
+// so the worker can reconstitute the typed shape without re-
+// implementing the wire decoder.
+message HttpActionRequest {
+  string method = 1;
+  string url = 2;
+  // Repeated `(name, value)` header entries. Names are
+  // lowercased; values are UTF-8 strings. Multi-value headers
+  // appear as repeated entries with the same name.
+  repeated HttpHeader headers = 3;
+  // Raw body bytes. Empty for GET/HEAD/etc.
+  bytes body = 4;
+  // Path the route was matched on. Equivalent to
+  // `convex_native_core::http::HttpRequest::routed_path` —
+  // distinct from `url` so the handler can see a clean path.
+  string routed_path = 5;
+}
+
+message HttpHeader {
+  string name = 1;
+  string value = 2;
+}
+
+// Writes the backend has staged but not yet committed, for
+// multi-UDF batched requests. Uses the same
+// `common.DocumentUpdateWithPrevTs` type as
+// `DistributedFinalTx.writes` (see substep 2.3) so both
+// directions of the wire share one document-update encoding and
+// the backend / worker can ship them through the same
+// `FunctionWrites { updates }` shape on both ends.
+message ExistingWrites {
+  repeated common.DocumentUpdateWithPrevTs updates = 1;
+}
+
+message ExecuteResponse {
+  // The handler's Result<ConvexValue, E>. Uses the existing
+  // FunctionResult shape (json_packed_value | js_error) so the
+  // backend can route it into the same UdfOutcome envelope JS
+  // functions use.
+  common.FunctionResult result = 1;
+
+  // Wall-clock duration the handler ran for on the worker. The
+  // backend adds queue + network time on top for end-to-end
+  // metrics.
+  optional google.protobuf.Duration user_execution_time = 2;
+
+  // Registry version on the worker that actually served the call
+  // (not necessarily `min_registry_version` from the request — it
+  // may be ahead). The backend compares this across workers to
+  // detect stragglers during a rolling deploy.
+  optional string served_by_version = 3;
+
+  // Worker logs captured during the handler run, already filtered
+  // by LogBuffer::with_min_level(...) on the worker side. Shaped
+  // like outcome.LogLine so the backend can emit them alongside
+  // JS log lines without translation.
+  repeated string log_lines = 4;
+
+  // Phase 1 of DISTRIBUTED_PLAN.md: reads + writes the worker
+  // observed during this query or mutation. Carries the information
+  // the backend's Committer needs to validate OCC and stage the
+  // writes against its Database — the worker no longer commits
+  // locally.
+  //
+  // Absent for:
+  //   - actions (no enclosing transaction);
+  //   - handler errors where the transaction was dropped without
+  //     closing;
+  //   - pre-Phase-1 responses from workers still on the old shape
+  //     (transitional — the backend's Phase-2 dispatch path will
+  //     refuse `final_tx == None` on mutations).
+  //
+  // Today the message carries scalars only (`begin_timestamp_us`,
+  // `writes_count`); Phase 2 extends it with the full `FunctionReads`
+  // + `FunctionWrites` content the Committer needs.
+  optional DistributedFinalTx final_tx = 5;
+
+  // HTTP-action response. Set on responses to a request whose
+  // `udf_type == HttpAction`. Mirrors
+  // `convex_native_core::http::HttpResponse`.
+  optional HttpActionResponse http_response = 6;
+}
+
+message HttpActionResponse {
+  uint32 status = 1;
+  repeated HttpHeader headers = 2;
+  bytes body = 3;
+}
+
+// Phase-2 on-the-wire shape of `function_runner::FunctionFinalTransaction`.
+// Substep 2.1 has landed: the message now carries
+// `rows_read_by_tablet` alongside the Phase-1 scalars. Substeps
+// 2.2 and 2.3 (see convex-native/STATUS.md) grow this with
+// `FunctionReads` + `FunctionWrites` sub-messages so the
+// backend's Committer has everything it needs to validate OCC
+// and stage writes.
+message DistributedFinalTx {
+  // `Timestamp` the worker opened its read transaction at, encoded
+  // as the raw u64 of `common::types::Timestamp`. For Phase 2 the
+  // backend feeds this through `Committer::validate_reads_and_write`
+  // to decide whether OCC passes.
+  uint64 begin_timestamp = 1;
+
+  // Number of document updates produced by the handler. Round-trip
+  // tests assert this matches what the handler actually wrote;
+  // full writes move to `writes` (substep 2.3) and this scalar
+  // becomes derivable from `writes.updates.len()`.
+  uint64 writes_count = 2;
+
+  // Number of read-set intervals the handler accumulated. Full
+  // reads move to `reads` (substep 2.2) and this scalar becomes
+  // derivable from `reads.num_intervals`.
+  uint64 reads_count = 3;
+
+  // Per-tablet row-counts — one entry per `TabletId` the handler
+  // observed, with the value being the number of rows read from
+  // that tablet. Tablet ids are encoded as their canonical
+  // `Display` form (see `value::InternalId`) so the wire shape
+  // stays readable for non-Rust Phase-6 consumers. The backend
+  // feeds these into `Transaction::apply_function_runner_tx`'s
+  // `rows_read_by_tablet` argument so distributed and in-process
+  // dispatch produce identical usage-tracking numbers.
+  map<string, uint64> rows_read_by_tablet = 4;
+
+  // Substep 2.3: `FunctionWrites` content the backend's Committer
+  // stages against its own transaction. One entry per coalesced
+  // document update the handler produced (insert / replace /
+  // delete). Uses `common.DocumentUpdateWithPrevTs` — the exact
+  // shape the in-process runner already hands the Committer via
+  // `Transaction::apply_function_runner_tx` — so both dispatch
+  // paths feed the commit pipeline identical data.
+  //
+  // Empty for actions (no tx) and for handler errors where the
+  // transaction was dropped before summarisation. Substep 2.5
+  // will also trigger summarisation when a handler succeeds but
+  // produces no writes; a zero-length list of updates is a valid
+  // state distinct from "no final_tx".
+  repeated common.DocumentUpdateWithPrevTs writes = 5;
+
+  // Substep 2.2a: scalar read-size counters split by user-tablet
+  // vs system-tablet origin. Both are aggregates of
+  // `TransactionReadSize { total_document_size, total_document_count }`
+  // the in-process runner hands the Committer via
+  // `Transaction::apply_function_runner_tx`. The backend rolls
+  // these into its usage tracker so distributed and in-process
+  // dispatch produce identical billing numbers.
+  //
+  // Full `FunctionReads` (index intervals + search reads) lands
+  // in substep 2.2b; that enables the Committer's OCC-validation
+  // path to accept distributed results end-to-end.
+  optional DistributedTxReadSize user_tx_size = 6;
+  optional DistributedTxReadSize system_tx_size = 7;
+
+  // Substep 2.2b: indexed read-set content — one entry per
+  // (tablet_id, index_descriptor) the handler read through.
+  // Backend iterates this against its `SubscriptionManager` for
+  // invalidation and against the Committer for OCC validation.
+  //
+  // Search-index reads are intentionally not carried today — the
+  // native worker framework doesn't yet ship typed text-search
+  // surface. Adding them is a follow-up substep tracked in
+  // `convex-native/STATUS.md`.
+  //
+  // Empty list is valid and indicates the handler opened a tx
+  // but read nothing indexable.
+  repeated DistributedIndexReads index_reads = 8;
+
+  // Per-invocation observed-determinism flags, mirrored from
+  // the worker's `Observed` handle. The backend rolls these
+  // into the resulting `UdfOutcome` so subscription reuse +
+  // OCC validation + analytics see the same shape the
+  // in-process composite runner produces.
+  bool observed_identity = 9;
+  bool observed_rng = 10;
+  bool observed_time = 11;
+
+  // RNG seed the worker used to seed the deterministic RNG
+  // stream for this invocation. Encoded as 32 raw bytes; the
+  // backend writes this into `UdfOutcome::rng_seed` so a
+  // re-execution (sync replay, retry path) can reproduce the
+  // same handler-visible randomness. Empty when the proto is
+  // emitted by a worker that hasn't started populating the
+  // field yet (treated as `[0u8; 32]` on the backend side).
+  bytes rng_seed = 12;
+
+  // Wall-clock unix timestamp the worker observed when it
+  // captured `observed_time`. Encoded as nanoseconds since the
+  // unix epoch. Backend writes into `UdfOutcome::unix_timestamp`.
+  // 0 when the worker didn't note a timestamp (the in-process
+  // path defaults to `runtime.unix_timestamp()` instead; tests
+  // compare flags rather than the raw value).
+  uint64 unix_timestamp_nanos = 13;
+}
+
+// Scalar read-size counters. Mirrors `database::TransactionReadSize`.
+message DistributedTxReadSize {
+  uint64 total_document_size = 1;
+  uint64 total_document_count = 2;
+}
+
+// Per-index reads the handler accumulated. Key is the
+// `TabletIndexName` pair; value is the index's indexed-fields
+// list plus the interval-set the reads covered. Substep 2.2b
+// shape — grows in substep 2.6 if the Committer needs
+// anything else (e.g. stack traces for OCC debugging).
+message DistributedIndexReads {
+  // `TabletId::Display` form (UUID-shaped hex string) — same
+  // encoding `DistributedFinalTx.rows_read_by_tablet` uses.
+  string tablet_id = 1;
+  // `IndexDescriptor::as_str()` — e.g. "by_email" or "by_id".
+  string index_descriptor = 2;
+  // `IndexedFields` — ordered list of field paths indexed by
+  // this index.
+  repeated common.FieldPath fields = 3;
+  // `IntervalSet` flattened into `Vec<common.Interval>` via the
+  // existing `IntervalSet -> Vec<IntervalProto>` conversion.
+  repeated common.Interval intervals = 4;
+}
+
+message HealthRequest {
+  // Empty — Health is a ping.
+}
+
+message HealthResponse {
+  // Registry version the worker is running. The backend uses this
+  // to detect stragglers during a rolling deploy.
+  string registry_version = 1;
+
+  // True when the worker is ready to accept traffic. Workers that
+  // are draining or still warming their index cache return false
+  // here.
+  bool accepts_traffic = 2;
+
+  // Number of native functions registered on the worker. The
+  // backend can compare this across workers to notice mismatched
+  // deployments (a registry mismatch is usually a build-skew
+  // problem, not a rolling-update one).
+  uint64 registered_functions = 3;
+
+  // Number of handler invocations currently in flight. Used by
+  // the backend's P2C load balancer to steer new work towards the
+  // less busy worker.
+  uint64 in_flight = 4;
+}

@@ -6,6 +6,9 @@ pub mod error_metadata;
 pub mod field_path;
 pub mod http;
 pub mod user_identity_attributes;
+pub mod backend_callbacks {
+    include!(concat!(env!("OUT_DIR"), "/backend_callbacks.rs"));
+}
 pub mod common {
     include!(concat!(env!("OUT_DIR"), "/common.rs"));
 }
@@ -27,6 +30,9 @@ pub mod convex_query_journal {
 pub mod errors {
     include!(concat!(env!("OUT_DIR"), "/errors.rs"));
 }
+pub mod function_execution {
+    include!(concat!(env!("OUT_DIR"), "/function_execution.rs"));
+}
 pub mod outcome {
     include!(concat!(env!("OUT_DIR"), "/outcome.rs"));
 }
@@ -38,6 +44,9 @@ pub mod storage {
 }
 pub mod usage {
     include!(concat!(env!("OUT_DIR"), "/usage.rs"));
+}
+pub mod worker_admission {
+    include!(concat!(env!("OUT_DIR"), "/worker_admission.rs"));
 }
 
 include!(concat!(env!("OUT_DIR"), "/_extras.rs"));

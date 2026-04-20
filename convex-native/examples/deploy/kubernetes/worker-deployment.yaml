@@ -1,0 +1,121 @@
+# Kubernetes manifest for a pool of stateless convex-native
+# workers. Apply with:
+#
+#   kubectl apply -f worker-deployment.yaml
+#
+# The Service in front of the pool exposes a stable DNS name
+# (`convex-worker`) that the backend resolves to the set of
+# healthy pod IPs. Every deploy of the worker image rolls the
+# pool one pod at a time (`maxUnavailable: 1`). The backend's
+# P2C routing + `min_registry_version` floor handle the
+# version-skew gap that opens during the roll.
+#
+# Post-Phase-3: workers discover the backend via
+# `CONVEX_BACKEND_ENDPOINT` and register themselves through
+# `WorkerAdmissionService`. The headless Service below stays
+# for backend → worker dispatch (the backend dials each
+# worker's `CONVEX_WORKER_BIND_ADDR` after admission), but
+# operators don't need to enumerate worker endpoints on the
+# backend side any more — the pool is dynamic.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: convex
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: convex-worker
+  namespace: convex
+  labels:
+    app: convex-worker
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: convex-worker
+  template:
+    metadata:
+      labels:
+        app: convex-worker
+    spec:
+      # Give the drain loop time to finish in-flight requests
+      # before SIGKILL. Bump this above your longest per-function
+      # timeout (`#[convex::action(timeout_ms = N)]`) so the
+      # worker can drain cleanly.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: worker
+          image: myco/convex-worker:IMAGE_TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: grpc
+              containerPort: 4567
+          env:
+            - name: CONVEX_MODE
+              value: worker
+            - name: CONVEX_WORKER_BIND_ADDR
+              value: 0.0.0.0:4567
+            # Post-Phase-3: dial the backend admission Service.
+            # `convex-backend-admission` is the name from
+            # `backend-deployment.yaml`; cross-namespace
+            # deployments append `.<namespace>.svc.cluster.local`.
+            - name: CONVEX_BACKEND_ENDPOINT
+              value: http://convex-backend-admission:5678
+            - name: RUST_LOG
+              value: info,convex_native=debug
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"
+          # Native gRPC probing (Kubernetes 1.24+). `FunctionExecutionService`
+          # itself exposes a Health RPC, but k8s-native probing hits the
+          # standard `grpc.health.v1.Health` service — if your worker
+          # doesn't wire that up yet, switch to an `exec` probe that
+          # shells to `grpc_health_probe` and checks the custom
+          # service's `accepts_traffic` field instead.
+          readinessProbe:
+            grpc:
+              port: 4567
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            grpc:
+              port: 4567
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          # Drain semantics: on SIGTERM the worker runs its
+          # `begin_drain` → `await_drain(timeout)` path; during
+          # that window `accepts_traffic=false` and readiness flips
+          # so the Service stops routing to this pod.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: convex-worker
+  namespace: convex
+spec:
+  type: ClusterIP
+  clusterIP: None  # headless — backend resolves pod IPs directly.
+  selector:
+    app: convex-worker
+  ports:
+    - name: grpc
+      port: 4567
+      targetPort: grpc
+      appProtocol: grpc

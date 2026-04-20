@@ -215,6 +215,36 @@ async fn stream_http_response(
 ) {
     let (http_response_sender, http_response_receiver) = mpsc::unbounded_channel();
 
+    // Native HTTP dispatch short-circuit. If a
+    // `#[convex::http_action(method, path)]` registration matches,
+    // the dispatcher runs the handler directly and streams its
+    // response through the same channel the JS path would use;
+    // otherwise it returns the request back so we fall through to
+    // the JS `execute_http_action` path.
+    let method_str = http_request_metadata.head.method.as_str().to_string();
+    let path_str = http_request_metadata.head.url.path().to_string();
+    let native_streamer = HttpActionResponseStreamer::new(http_response_sender.clone());
+    let native_result = crate::native_http_dispatch::try_dispatch_native(
+        &method_str,
+        &path_str,
+        http_request_metadata,
+        identity.clone(),
+        request_id.clone(),
+        native_streamer,
+    )
+    .await?;
+    if native_result.is_none() {
+        // Native dispatch ran — drain what it pushed into the
+        // channel and finish; no JS path call needed.
+        drop(http_response_sender);
+        let mut response_stream = UnboundedReceiverStream::new(http_response_receiver).fuse();
+        while let Some(part) = response_stream.next().await {
+            yield part;
+        }
+        return Ok(());
+    }
+    let http_request_metadata = native_result.expect("native_result checked above");
+
     tokio::pin! {
         let run_action_fut = application
             .execute_http_action(

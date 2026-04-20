@@ -1,0 +1,280 @@
+// Backend callback protocol. Phase 4 of
+// convex-native/DISTRIBUTED_PLAN.md §7.4.
+//
+// Native actions running on a remote worker can make sub-calls
+// (`ctx.run_mutation(...)`, `ctx.scheduler().run_after(...)`,
+// `ctx.storage().store(...)`, etc.). Under the Phase-4 topology
+// those calls route back to the backend over this gRPC service
+// instead of committing on the worker's local database —
+// otherwise OCC + subscription invalidation would be lost for
+// any write an action causes indirectly.
+//
+// The backend binds the service on a port workers dial from
+// their `CONVEX_BACKEND_ENDPOINT`. The worker-side client
+// implements `convex_native::NativeActionCallbacks` by
+// translating each callback into the appropriate RPC here;
+// the server-side impl wraps the backend's existing
+// `udf::ActionCallbacks` trait object.
+//
+// Generated Rust types land at `pb::backend_callbacks::*`.
+
+syntax = "proto3";
+
+package backend_callbacks;
+
+import "common.proto";
+
+service BackendCallbackService {
+  // Run a sub-query from inside a running action. The backend
+  // opens its own transaction at the caller's latest snapshot
+  // and dispatches through the normal function-runner path, so
+  // the query observes committed state including anything
+  // earlier sub-mutations in the same action wrote.
+  rpc RunQuery(RunQueryRequest) returns (RunQueryResponse);
+
+  // Run a sub-mutation from inside a running action. Commits
+  // through the backend's Committer so OCC + subscription
+  // invalidation fire correctly.
+  rpc RunMutation(RunMutationRequest) returns (RunMutationResponse);
+
+  // Run a sub-action from inside a running action. Actions are
+  // NOT transactional; this RPC exists so actions can compose
+  // other actions with a single identity context.
+  rpc RunAction(RunActionRequest) returns (RunActionResponse);
+
+  // Schedule a function to run at a later time.
+  rpc Schedule(ScheduleRequest) returns (ScheduleResponse);
+
+  // Cancel a previously-scheduled job.
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+
+  // Store bytes into file storage. Chunked streaming so large
+  // uploads don't have to fit in memory.
+  rpc StorageStore(stream StorageStoreChunk) returns (StorageStoreResponse);
+
+  // Fetch file-storage bytes back to the worker. Also chunked.
+  rpc StorageGet(StorageGetRequest) returns (stream StorageGetChunk);
+
+  // Resolve a storage id to its public URL (if one exists).
+  rpc StorageGetUrl(StorageGetUrlRequest) returns (StorageGetUrlResponse);
+
+  // Delete a storage entry.
+  rpc StorageDelete(StorageDeleteRequest) returns (StorageDeleteResponse);
+
+  // Run a vector-search query (for actions that need nearest-
+  // neighbour lookups mid-flight).
+  rpc VectorSearch(VectorSearchRequest) returns (VectorSearchResponse);
+
+  // Resolve an opaque `FunctionHandle` to the dotted function
+  // path the backend has registered for it.
+  rpc LookupFunctionHandle(LookupFunctionHandleRequest)
+      returns (LookupFunctionHandleResponse);
+
+  // Allocate a fresh `FunctionHandle` for a dotted function path.
+  rpc CreateFunctionHandle(CreateFunctionHandleRequest)
+      returns (CreateFunctionHandleResponse);
+
+  // Read a document at the action's pinned snapshot. Powers
+  // `ActionCtx::db().get(...)` from inside a worker-side
+  // action — opens a short-lived read-only transaction at
+  // the action's snapshot ts, reads the document, returns
+  // null when missing.
+  rpc ReadDocument(ReadDocumentRequest) returns (ReadDocumentResponse);
+}
+
+// Caller context carried on every request. Identifies the
+// acting principal + the execution chain so the backend's
+// audit log + subscription invalidation paths can attribute
+// the work correctly. Every Phase-4 RPC embeds one of these.
+message CallbackContext {
+  // Identity envelope — raw bytes in the same encoding the
+  // worker's `FunctionExecutionService::ExecuteRequest.identity`
+  // field uses. Conversions between this and
+  // `keybroker::Identity` live in
+  // `convex_native_distributed::callbacks_conversions` (Phase-4
+  // Rust-side binding module).
+  bytes identity = 1;
+
+  // Execution-context chain for tracing. Matches the
+  // `common.ExecutionContext` shape the request path already
+  // carries; parents + ids propagate so sub-calls show up in
+  // the same trace as the enclosing action.
+  common.ExecutionContext execution_context = 2;
+
+  // Component path the caller action was running in. Native
+  // top-level handlers are always under the root component
+  // (`""`); component-scoped handlers carry the component path
+  // so the backend can route the sub-call to the right schema.
+  string component_path = 3;
+}
+
+// Sub-query request. Dotted `module:function` form matches the
+// same name shape the worker uses for its own dispatches.
+message RunQueryRequest {
+  CallbackContext ctx = 1;
+  string function_name = 2;
+  // Args — single-object JSON, matching
+  // `convex_native::distributed::ExecuteRequest.args_json`.
+  bytes args_json = 3;
+}
+
+message RunQueryResponse {
+  // Either the handler's returned value (json-packed) or a
+  // JsError surfaced verbatim.
+  common.FunctionResult result = 1;
+}
+
+message RunMutationRequest {
+  CallbackContext ctx = 1;
+  string function_name = 2;
+  bytes args_json = 3;
+}
+
+message RunMutationResponse {
+  common.FunctionResult result = 1;
+}
+
+message RunActionRequest {
+  CallbackContext ctx = 1;
+  string function_name = 2;
+  bytes args_json = 3;
+}
+
+message RunActionResponse {
+  common.FunctionResult result = 1;
+}
+
+message ScheduleRequest {
+  CallbackContext ctx = 1;
+  string function_name = 2;
+  bytes args_json = 3;
+  // Unix nanoseconds at which the job should fire.
+  uint64 fire_at_unix_nanos = 4;
+}
+
+message ScheduleResponse {
+  // Document id of the newly-created scheduled job, encoded as
+  // the DeveloperDocumentId canonical string.
+  string scheduled_job_id = 1;
+}
+
+message CancelJobRequest {
+  CallbackContext ctx = 1;
+  string scheduled_job_id = 2;
+}
+
+message CancelJobResponse {
+  // Empty — cancel is fire-and-forget from the worker's view.
+}
+
+message StorageStoreChunk {
+  oneof content {
+    // First message — carries the metadata.
+    StorageStoreMeta meta = 1;
+    // Subsequent messages — body bytes.
+    bytes body = 2;
+  }
+}
+
+message StorageStoreMeta {
+  CallbackContext ctx = 1;
+  // `application/octet-stream`, `image/png`, etc. Optional.
+  string content_type = 2;
+  // SHA-256 the caller expects the backend to verify the body
+  // against. Optional.
+  bytes expected_sha256 = 3;
+}
+
+message StorageStoreResponse {
+  // Storage id (DeveloperDocumentId string form) the file was
+  // stored under.
+  string storage_id = 1;
+}
+
+message StorageGetRequest {
+  CallbackContext ctx = 1;
+  string storage_id = 2;
+}
+
+message StorageGetChunk {
+  oneof content {
+    // First message — metadata.
+    StorageGetMeta meta = 1;
+    // Subsequent messages — body bytes.
+    bytes body = 2;
+  }
+}
+
+message StorageGetMeta {
+  string content_type = 1;
+  uint64 content_length = 2;
+  bytes sha256 = 3;
+}
+
+message StorageGetUrlRequest {
+  CallbackContext ctx = 1;
+  string storage_id = 2;
+}
+
+message StorageGetUrlResponse {
+  // Public URL, absent when the backend doesn't expose one.
+  optional string url = 1;
+}
+
+message StorageDeleteRequest {
+  CallbackContext ctx = 1;
+  string storage_id = 2;
+}
+
+message StorageDeleteResponse {
+  // Empty.
+}
+
+message VectorSearchRequest {
+  CallbackContext ctx = 1;
+  // JSON-encoded `VectorSearchQuery` — matches the backend's
+  // existing VectorSearch syscall surface.
+  bytes query_json = 2;
+}
+
+message VectorSearchResponse {
+  // JSON-encoded `Vec<PublicVectorSearchQueryResult>` back to
+  // the worker.
+  bytes results_json = 1;
+}
+
+message LookupFunctionHandleRequest {
+  CallbackContext ctx = 1;
+  // Opaque handle (DeveloperDocumentId string form) issued by
+  // `CreateFunctionHandle`.
+  string function_handle_id = 2;
+}
+
+message LookupFunctionHandleResponse {
+  // Dotted function path the handle resolves to.
+  string function_path = 1;
+}
+
+message CreateFunctionHandleRequest {
+  CallbackContext ctx = 1;
+  string function_path = 2;
+}
+
+message CreateFunctionHandleResponse {
+  string function_handle_id = 1;
+}
+
+message ReadDocumentRequest {
+  CallbackContext ctx = 1;
+  // Table name (e.g. "users").
+  string table = 2;
+  // Document id in `DeveloperDocumentId` string form.
+  string id = 3;
+}
+
+message ReadDocumentResponse {
+  // JSON-encoded ConvexValue. Empty when the document doesn't
+  // exist (the client decodes the empty bytes as Null →
+  // `Option::None`).
+  bytes document_json = 1;
+}

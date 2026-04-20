@@ -1,0 +1,153 @@
+# Kubernetes manifest for the prebuilt convex-backend image.
+# Phase 5 of convex-native/DISTRIBUTED_PLAN.md — the backend
+# ships published (e.g. `getconvex/convex-backend:X.Y.Z`) and
+# the deployer pulls + runs it without rebuilding.
+#
+# Apply with:
+#
+#   kubectl apply -f backend-deployment.yaml
+#
+# Pair this with `worker-deployment.yaml` in the same namespace.
+# Workers dial the admission Service at
+# `convex-backend-admission:5678` (set via
+# `CONVEX_BACKEND_ENDPOINT=http://convex-backend-admission:5678`
+# on the worker side).
+#
+# Persistence is a single PVC-backed volume mounted at
+# `/convex/data`. Backend is **stateful** — upgrades require a
+# brief disconnect. Workers are stateless and autoscale
+# independently.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: convex
+---
+# Persistent volume for the backend's SQLite database (or
+# whatever persistence backend `CONVEX_DB_URL` points at — if
+# you're using an external Postgres, drop the PVC + volume
+# mount and set `CONVEX_DB_URL=postgres://...` via a Secret
+# instead).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: convex-backend-data
+  namespace: convex
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: convex-backend
+  namespace: convex
+  labels:
+    app: convex-backend
+spec:
+  # Backend is the coordination centre — one replica. HA
+  # requires an external persistence layer + leader election,
+  # which isn't Phase-5 territory (convex cloud handles it
+  # via a separate multitenancy layer).
+  replicas: 1
+  # Recreate-style rollout: the backend can't run two replicas
+  # with the same persistent volume, so spin the old pod down
+  # before bringing the new one up. Plan maintenance windows
+  # around this.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: convex-backend
+  template:
+    metadata:
+      labels:
+        app: convex-backend
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: backend
+          image: getconvex/convex-backend:IMAGE_TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3210
+            - name: admin
+              containerPort: 3211
+            - name: admission
+              containerPort: 5678
+          env:
+            - name: CONVEX_ADMISSION_BIND_ADDR
+              value: 0.0.0.0:5678
+            - name: RUST_LOG
+              value: info,convex_native_distributed=debug
+          resources:
+            requests:
+              cpu: "1"
+              memory: "1Gi"
+            limits:
+              cpu: "4"
+              memory: "4Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /convex/data
+          # HTTP readiness on the public port — backend is
+          # ready when it can serve WebSocket traffic.
+          readinessProbe:
+            httpGet:
+              path: /version
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /version
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: convex-backend-data
+---
+# Public HTTP + WebSocket — clients hit this.
+apiVersion: v1
+kind: Service
+metadata:
+  name: convex-backend
+  namespace: convex
+spec:
+  type: ClusterIP
+  selector:
+    app: convex-backend
+  ports:
+    - name: http
+      port: 3210
+      targetPort: http
+    - name: admin
+      port: 3211
+      targetPort: admin
+---
+# Internal admission — workers dial this from
+# `CONVEX_BACKEND_ENDPOINT`. Kept on a separate Service so
+# NetworkPolicy can lock it down to the worker pod selector
+# (the public Service above stays open to ingress).
+apiVersion: v1
+kind: Service
+metadata:
+  name: convex-backend-admission
+  namespace: convex
+spec:
+  type: ClusterIP
+  selector:
+    app: convex-backend
+  ports:
+    - name: admission
+      port: 5678
+      targetPort: admission
+      appProtocol: grpc
