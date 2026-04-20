@@ -157,6 +157,58 @@ async fn http_action_json_body_and_header_round_trip_over_the_wire() -> anyhow::
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn http_action_identity_anonymous_round_trips_over_the_wire() -> anyhow::Result<()> {
+    // The HTTP branch of FunctionExecutionServer decodes the
+    // proto `identity` bytes into an Identity and threads it
+    // through HttpActionCtx::with_identity. Prior distributed
+    // HTTP tests all sent empty identity (→ system fallback).
+    // This test forges Identity::Unknown(None) via the same
+    // encode_identity_for_wire helper the request-id test
+    // uses, dispatches whoami_http, and asserts the response
+    // body is "anonymous" — pinning the identity-decode wiring
+    // on the HTTP-action branch distinct from the query/mutation
+    // paths.
+    use convex_native_distributed::function_runner_impl::encode_identity_for_wire;
+    use keybroker::Identity;
+
+    let fx = DbFixture::new_in_memory().await?;
+    let addr = spawn_worker(fx.database.clone()).await;
+    let client = TonicWorkerClient::connect(format!("http://{addr}")).await?;
+    let runner = DistributedFunctionRunner::new(vec![client])?;
+    let anon_bytes = encode_identity_for_wire(&Identity::Unknown(None));
+    assert!(!anon_bytes.is_empty());
+    let resp = runner
+        .execute(
+            ExecuteRequest {
+                name: "__http::GET:/api/whoami-http".to_string(),
+                namespace: TableNamespace::Global,
+                args: empty_args(),
+                timeout: None,
+                min_registry_version: None,
+                execution_context: None,
+                begin_timestamp: None,
+                existing_writes: Vec::new(),
+                http_request: Some(HttpActionRequestPayload {
+                    method: "GET".to_string(),
+                    url: "http://example.invalid/api/whoami-http".to_string(),
+                    headers: vec![],
+                    body: bytes::Bytes::new(),
+                    routed_path: "/api/whoami-http".to_string(),
+                }),
+                identity: anon_bytes,
+            },
+            UdfType::HttpAction,
+        )
+        .await?;
+    let http = resp
+        .http_response
+        .expect("HttpAction response must carry payload");
+    assert_eq!(http.status, 200);
+    assert_eq!(http.body, bytes::Bytes::from_static(b"anonymous"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn delete_method_dispatches_over_the_wire() -> anyhow::Result<()> {
     // Standalone test covers the DELETE verb registration +
     // dispatch. Mirroring it over the wire confirms the proto
