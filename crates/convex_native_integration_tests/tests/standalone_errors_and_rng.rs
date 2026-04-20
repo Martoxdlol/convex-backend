@@ -118,6 +118,48 @@ async fn rng_is_deterministic_for_a_given_seed() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mutation_ctx_rng_u64_is_deterministic() -> anyhow::Result<()> {
+    // QueryCtx::rng_u64 is pinned by rng_is_deterministic_for_a_given_seed.
+    // MutationCtx has a separate impl block forwarding to the
+    // same Observed PRNG — exercise it through
+    // pull_rng_mutation to make sure the mutation-ctx delegation
+    // isn't dropped.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+
+    async fn call(
+        db: &Database<ProdRuntime>,
+        runner: &NativeFunctionRunner,
+    ) -> anyhow::Result<i64> {
+        let usage = FunctionUsageTracker::new();
+        let mut tx = db
+            .begin_with_ts(Identity::system(), *db.now_ts_for_reads(), usage)
+            .await?;
+        let v = runner
+            .run_mutation(
+                "pull_rng_mutation",
+                &mut tx,
+                TableNamespace::Global,
+                ConvexObject::empty(),
+            )
+            .await?;
+        db.commit_with_write_source(tx, "rng_mutation_test").await?;
+        match v {
+            ConvexValue::Int64(n) => Ok(n),
+            other => anyhow::bail!("expected int, got {other:?}"),
+        }
+    }
+
+    let a = call(&fx.database, &runner).await?;
+    let b = call(&fx.database, &runner).await?;
+    assert_eq!(
+        a, b,
+        "mutation-ctx rng_u64 must be deterministic across calls"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rng_fill_is_deterministic_and_non_empty() -> anyhow::Result<()> {
     // Companion to `rng_is_deterministic_for_a_given_seed` but for
     // the byte-buffer surface `ctx.rng_fill(&mut buf)`. Two

@@ -539,6 +539,17 @@ pub async fn pull_rng(ctx: &mut QueryCtx<'_, Rt>) -> anyhow::Result<i64> {
     Ok(ctx.rng_u64() as i64)
 }
 
+/// Mutation-ctx rng counterpart. QueryCtx + MutationCtx both
+/// expose rng_u64 / rng_fill, but through separate impl blocks
+/// that delegate to the shared Observed PRNG. A regression that
+/// dropped the mutation-ctx delegation (e.g. returned 0) would
+/// slip past the query-only test while quietly breaking every
+/// deployer's id-generation scheme inside mutations.
+#[convex::mutation]
+pub async fn pull_rng_mutation(ctx: &mut MutationCtx<'_, Rt>) -> anyhow::Result<i64> {
+    Ok(ctx.rng_u64() as i64)
+}
+
 /// Fill a 16-byte buffer with `ctx.rng_fill(...)` and return it
 /// as a hex string. Lets tests assert the byte stream is
 /// deterministic *and* that `rng_fill` flows from the same
