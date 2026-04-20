@@ -118,6 +118,26 @@ fn built_backend_summary_names_all_pieces() -> anyhow::Result<()> {
 }
 
 #[test]
+fn built_backend_with_no_opts_produces_empty_piece_counts() -> anyhow::Result<()> {
+    // ConvexBackend::new().build() — no with_* called — must
+    // succeed and produce a BuiltBackend with zero counts
+    // across every collected piece. Deployers that only want
+    // ctx.db() + a logger (e.g. a CLI that reads schema from
+    // elsewhere) rely on this shape. A regression that made any
+    // with_* mandatory at build time would surface here.
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let built = ConvexBackend::new().with_callbacks(callbacks).build()?;
+    assert_eq!(built.function_count(), 0);
+    assert_eq!(built.table_count(), 0);
+    assert_eq!(built.route_count(), 0);
+    assert_eq!(built.cron_count(), 0);
+    // validate() is a no-op when nothing is opted in — proves the
+    // cross-check body doesn't trip on missing pieces.
+    built.validate()?;
+    Ok(())
+}
+
+#[test]
 fn built_backend_without_callbacks_still_builds_and_validates() -> anyhow::Result<()> {
     // ConvexBackend::build should succeed without an explicit
     // with_callbacks call — BuiltBackend defaults to
