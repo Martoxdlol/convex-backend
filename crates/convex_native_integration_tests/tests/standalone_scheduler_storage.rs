@@ -54,6 +54,37 @@ async fn scheduler_run_after_reaches_callbacks() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn storage_under_noop_callbacks_bails_with_guided_error() -> anyhow::Result<()> {
+    // Companion to action_scheduler_under_noop_callbacks_bails_with_guided_error:
+    // NoopCallbacks::storage_store bails with
+    // "no callbacks attached — cannot store in file storage".
+    // full_storage_flow exercises it as the very first call, so
+    // the handler dies on the first storage hop. A regression
+    // that returned a stub Ok from the no-op branch would let
+    // callers silently lose their file uploads.
+    use convex_native_core::callbacks::NoopCallbacks;
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let err = runner
+        .run_action_with_callbacks(
+            "full_storage_flow",
+            TableNamespace::Global,
+            convex_native_core::testing::args! {
+                "content_type" => "image/png".to_string(),
+            },
+            callbacks,
+        )
+        .await
+        .expect_err("storage under NoopCallbacks must fail loudly");
+    let msg = format!("{err:#}").to_lowercase();
+    assert!(
+        msg.contains("no callbacks attached") || msg.contains("cannot store"),
+        "expected guided NoopCallbacks storage error; got: {msg}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn action_scheduler_under_noop_callbacks_bails_with_guided_error() -> anyhow::Result<()> {
     // NoopCallbacks' default schedule impl bails with
     // "no callbacks attached — cannot schedule {name:?}". A
