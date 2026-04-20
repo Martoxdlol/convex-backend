@@ -66,6 +66,21 @@ use value::{
 /// a missing-index application error is a caller concern.
 pub async fn publish_native_schema<RT: Runtime>(database: &Database<RT>) -> anyhow::Result<bool> {
     let schema = NativeSchema::collect()?;
+    publish_schema(database, schema).await
+}
+
+/// Publish an explicitly-provided `DatabaseSchema`. Used by the
+/// admission server under the distributed topology to mirror a
+/// worker's schema into the backend's `Database<RT>` (which owns
+/// the committer + in-memory tablet registry). Without this the
+/// backend can't commit writes the worker reports in its
+/// `FinalTxSummary` — the tablet ids referenced by the summary
+/// are unknown to the backend's `IndexRegistry` and the commit
+/// bails with "Missing `by_id` index for table …".
+pub async fn publish_schema<RT: Runtime>(
+    database: &Database<RT>,
+    schema: DatabaseSchema,
+) -> anyhow::Result<bool> {
     if schema.tables.is_empty() {
         return Ok(false);
     }

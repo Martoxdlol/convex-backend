@@ -43,4 +43,7 @@ pub use native_resolver::{
     install_native_resolver,
     NativeRegistryResolver,
 };
-pub use native_schema::publish_native_schema;
+pub use native_schema::{
+    publish_native_schema,
+    publish_schema,
+};

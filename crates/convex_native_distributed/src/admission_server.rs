@@ -121,6 +121,25 @@ pub async fn spawn_admission_server_with_handle(
     Ok((pool_for_return, service))
 }
 
+/// Hook invoked on worker registration to install the worker's
+/// advertised schema (the JSON blob off
+/// `envelope.inventory.schema.schema_json`) into the backend's
+/// own `Database<RT>`. Without this the backend can't commit
+/// writes the worker reports in its `FinalTxSummary` — the
+/// tablet ids referenced by the summary are unknown to the
+/// backend's `IndexRegistry` and the commit bails with
+/// "Missing `by_id` index for table …".
+///
+/// Implementations typically delegate to
+/// `convex_native_backend::publish_schema`. The hook is fallible
+/// and async; a failure is logged and the worker is still
+/// admitted so operator workflows can still see/drain it, but
+/// dispatch will fail until the schema mismatch is resolved.
+#[async_trait::async_trait]
+pub trait SchemaApplier: Send + Sync + 'static {
+    async fn apply(&self, schema: common::schemas::DatabaseSchema) -> anyhow::Result<()>;
+}
+
 #[derive(Clone)]
 pub struct WorkerAdmissionServer {
     pool: Arc<WorkerPool>,
@@ -136,6 +155,11 @@ pub struct WorkerAdmissionServer {
     /// pool. Missing driver ⇒ crons from workers are ignored
     /// (the legacy shape).
     cron_driver: Arc<Mutex<Option<Arc<crate::cron_driver::NativeCronDriver>>>>,
+    /// Optional schema applier. When attached, each worker's
+    /// advertised schema is mirrored into the backend's own
+    /// Database<RT> so the tablet registry knows about the
+    /// tables the worker writes to.
+    schema_applier: Arc<Mutex<Option<Arc<dyn SchemaApplier>>>>,
 }
 
 impl WorkerAdmissionServer {
@@ -144,7 +168,14 @@ impl WorkerAdmissionServer {
             pool,
             outbound: Arc::new(Mutex::new(HashMap::new())),
             cron_driver: Arc::new(Mutex::new(None)),
+            schema_applier: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Attach a schema applier. See [`SchemaApplier`] for why this
+    /// matters under the distributed topology.
+    pub fn set_schema_applier(&self, applier: Arc<dyn SchemaApplier>) {
+        *self.schema_applier.lock() = Some(applier);
     }
 
     /// Attach a `NativeCronDriver`. Called from
@@ -394,6 +425,54 @@ impl proto::worker_admission_service_server::WorkerAdmissionService for WorkerAd
             status: parking_lot::Mutex::new(Default::default()),
         };
         let worker_id = self.pool.admit(entry);
+
+        // Apply the worker's advertised schema into the backend's
+        // own Database<RT>. Without this the backend can't commit
+        // writes the worker reports (tablet ids referenced by the
+        // FinalTxSummary are unknown to the backend's
+        // IndexRegistry). Best-effort: a decode/apply failure is
+        // logged; the worker stays admitted so operators can
+        // still see/drain it through the admin surface.
+        let schema_applier = self.schema_applier.lock().as_ref().cloned();
+        if let Some(applier) = schema_applier {
+            let maybe_schema = envelope
+                .inventory
+                .as_ref()
+                .and_then(|inv| inv.schema.as_ref())
+                .filter(|s| !s.schema_json.is_empty());
+            if let Some(schema_proto) = maybe_schema {
+                let decode = serde_json::from_slice::<common::schemas::json::DatabaseSchemaJson>(
+                    &schema_proto.schema_json,
+                )
+                .map_err(anyhow::Error::from)
+                .and_then(|json| common::schemas::DatabaseSchema::try_from(json));
+                match decode {
+                    Ok(schema) => {
+                        if let Err(e) = applier.apply(schema).await {
+                            tracing::warn!(
+                                target: "convex_admission",
+                                worker = ?worker_id,
+                                "schema applier failed for worker; dispatch may fail with \
+                                 'Missing `by_id` index': {e:#}",
+                            );
+                        } else {
+                            tracing::info!(
+                                target: "convex_admission",
+                                worker = ?worker_id,
+                                "applied worker-advertised schema to backend database",
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "convex_admission",
+                            worker = ?worker_id,
+                            "failed to decode worker's schema_json: {e:#}",
+                        );
+                    },
+                }
+            }
+        }
 
         // Drain worker-advertised cron registrations into the
         // attached `NativeCronDriver`. Each admission is

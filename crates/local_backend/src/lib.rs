@@ -385,6 +385,28 @@ pub async fn make_app(
             pool.set_min_registry_version(Some(floor));
         }
         admission_pool = Some(pool.clone());
+        // Wire the admission server's schema applier so each
+        // worker that advertises a schema has its tables mirrored
+        // into the backend's own Database<RT>. Without this the
+        // committer rejects writes the worker reports (tablet ids
+        // are unknown to the backend's IndexRegistry) and every
+        // mutation fails with "Missing `by_id` index for table …".
+        struct BackendSchemaApplier {
+            database: database::Database<runtime::prod::ProdRuntime>,
+        }
+        #[async_trait::async_trait]
+        impl convex_native_distributed::admission_server::SchemaApplier for BackendSchemaApplier {
+            async fn apply(
+                &self,
+                schema: common::schemas::DatabaseSchema,
+            ) -> anyhow::Result<()> {
+                convex_native_backend::publish_schema(&self.database, schema).await?;
+                Ok(())
+            }
+        }
+        admission_handle.set_schema_applier(Arc::new(BackendSchemaApplier {
+            database: database.clone(),
+        }));
         admission_server_handle = Some(admission_handle);
         Some(Arc::new(
             convex_native_distributed::pool_runner::PoolFunctionRunner::new(pool),
