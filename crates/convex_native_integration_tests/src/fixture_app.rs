@@ -46,6 +46,20 @@ pub enum Priority {
     High,
 }
 
+/// Enum exercising per-variant `#[convex(rename = "...")]`.
+/// Pairs with Priority (default rename: lowercase variant
+/// name). A regression in the macro's rename attribute parse
+/// would default these back to the unmodified variant name —
+/// breaking every deployer whose wire form relies on the
+/// renamed value.
+#[derive(ConvexEnum, Debug, Clone, PartialEq)]
+pub enum AccountStatus {
+    #[convex(rename = "active-account")]
+    Active,
+    #[convex(rename = "paused-account")]
+    Paused,
+}
+
 /// Nested struct — exercises `#[derive(ConvexNested)]` composing
 /// into a top-level `ConvexDocument`.
 #[derive(ConvexNested, Debug, Clone, PartialEq)]

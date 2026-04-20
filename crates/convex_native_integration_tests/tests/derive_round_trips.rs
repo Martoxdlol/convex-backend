@@ -14,6 +14,7 @@ use convex_native_core::{
     ToConvex,
 };
 use convex_native_integration_tests::fixture_app::{
+    AccountStatus,
     Attachment,
     Metadata,
     Notification,
@@ -32,6 +33,31 @@ fn priority_enum_round_trips_through_convex_value() -> anyhow::Result<()> {
         let back: Priority = Priority::from_convex(v)?;
         assert_eq!(variant, back);
     }
+    Ok(())
+}
+
+#[test]
+fn account_status_variant_rename_attribute_survives_round_trip() -> anyhow::Result<()> {
+    // #[convex(rename = "...")] on an enum variant overrides the
+    // default lowercase rule. Priority pins the default; this
+    // pins the renamed form against both sides of the
+    // ToConvex/FromConvex round-trip. A regression that ignored
+    // the attribute would fall through to the default rule and
+    // produce "active" / "paused" instead of the dashed tags.
+    let active: ConvexValue = AccountStatus::Active.to_convex()?;
+    match &active {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "active-account"),
+        other => panic!("expected renamed tag, got {other:?}"),
+    }
+    let back = AccountStatus::from_convex(active)?;
+    assert_eq!(back, AccountStatus::Active);
+    // Symmetric for the second variant.
+    let paused: ConvexValue = AccountStatus::Paused.to_convex()?;
+    match &paused {
+        ConvexValue::String(s) => assert_eq!(s.to_string(), "paused-account"),
+        other => panic!("expected renamed tag, got {other:?}"),
+    }
+    assert_eq!(AccountStatus::from_convex(paused)?, AccountStatus::Paused);
     Ok(())
 }
 
