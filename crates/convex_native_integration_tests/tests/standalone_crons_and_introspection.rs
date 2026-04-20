@@ -15,12 +15,46 @@ use convex_native_core::{
     CronRegistry,
     HttpRouter,
     NativeActionCallbacks,
+    NativeFunctionRegistry,
     NativeSchema,
 };
 
 // Force fixture app inventory entries to link.
 #[allow(dead_code)]
 type _ForceLink = convex_native_integration_tests::fixture_app::Todo;
+
+#[test]
+fn function_registry_iter_len_get_cover_fixture_handlers() -> anyhow::Result<()> {
+    // NativeFunctionRegistry::iter / .len() / .get() form the
+    // dev-tooling surface parallel to HttpRouter's. A regression
+    // that lost a handler from by_name (for example a double-
+    // insert overwriting an earlier registration) would still
+    // pass NativeFunctionRunner::has_function via the runner's
+    // own map — the registry-level iterator is the independent
+    // observer. Pin a representative handler per kind.
+    let reg = NativeFunctionRegistry::collect()?;
+    assert!(!reg.is_empty());
+    assert!(
+        reg.len() >= 15,
+        "fixture registers well over a dozen handlers; got {}",
+        reg.len(),
+    );
+    assert!(
+        reg.get("create_todo").is_some(),
+        "by-name lookup finds create_todo"
+    );
+    assert!(reg.get("summarise").is_some(), "action handler in registry");
+    assert!(
+        reg.get("does_not_exist").is_none(),
+        "unknown name resolves to None"
+    );
+    let iter_names: Vec<&'static str> = reg.iter().map(|f| f.name).collect();
+    assert!(
+        iter_names.iter().any(|n| *n == "create_todo"),
+        "iter surfaces create_todo; got {iter_names:?}",
+    );
+    Ok(())
+}
 
 #[test]
 fn cron_registry_iter_surfaces_every_fixture_entry() {
