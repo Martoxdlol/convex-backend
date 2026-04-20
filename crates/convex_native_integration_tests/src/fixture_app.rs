@@ -76,6 +76,22 @@ pub enum Notification {
     Push { token: String },
 }
 
+/// ConvexUnion with per-variant `#[convex(rename = "...")]`. The
+/// rename attribute on union variants is a separate code path
+/// from the enum rename already covered by AccountStatus. A
+/// regression that ignored the attribute on unions would still
+/// allow Email/Push renaming to work while silently dropping
+/// the renamed tag here — producing the default lowercase form
+/// and breaking the deployer's wire contract.
+#[derive(ConvexUnion, Debug, Clone, PartialEq)]
+#[convex(tag = "kind")]
+pub enum Event {
+    #[convex(rename = "order_placed")]
+    OrderPlaced { sku: String },
+    #[convex(rename = "order_refunded")]
+    OrderRefunded { reason: String },
+}
+
 /// Primary table — every feature that touches an `Id<Todo>` goes
 /// through this.
 #[derive(ConvexDocument, Debug, Clone)]

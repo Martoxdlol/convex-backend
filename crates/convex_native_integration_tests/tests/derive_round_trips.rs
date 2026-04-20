@@ -16,6 +16,7 @@ use convex_native_core::{
 use convex_native_integration_tests::fixture_app::{
     AccountStatus,
     Attachment,
+    Event,
     Metadata,
     Notification,
     Priority,
@@ -109,6 +110,49 @@ fn notification_tagged_union_uses_kind_discriminator() -> anyhow::Result<()> {
     }
     let back = Notification::from_convex(v)?;
     assert_eq!(email, back);
+    Ok(())
+}
+
+#[test]
+fn convex_union_variant_rename_attribute_survives_round_trip() -> anyhow::Result<()> {
+    // AccountStatus covers ConvexEnum variant renames.
+    // Event covers ConvexUnion variant renames — a separate
+    // macro expansion (union tag is on an object field, not the
+    // whole value). A regression that wired rename support only
+    // on the enum branch would leave Event's "order_placed" tag
+    // defaulting to "orderplaced" / "order_placed" by some
+    // other rule.
+    let placed = Event::OrderPlaced {
+        sku: "sku-1".to_string(),
+    };
+    let v = placed.clone().to_convex()?;
+    match &v {
+        ConvexValue::Object(o) => {
+            let kind_field: FieldName = "kind".parse()?;
+            let kind = o.get(&kind_field).expect("tag field present");
+            match kind {
+                ConvexValue::String(s) => assert_eq!(s.to_string(), "order_placed"),
+                other => panic!("expected renamed tag, got {other:?}"),
+            }
+        },
+        other => panic!("expected object, got {other:?}"),
+    }
+    assert_eq!(Event::from_convex(v)?, placed);
+    let refunded = Event::OrderRefunded {
+        reason: "dup".to_string(),
+    };
+    let v = refunded.clone().to_convex()?;
+    match &v {
+        ConvexValue::Object(o) => {
+            let kind_field: FieldName = "kind".parse()?;
+            match o.get(&kind_field).unwrap() {
+                ConvexValue::String(s) => assert_eq!(s.to_string(), "order_refunded"),
+                other => panic!("expected renamed tag, got {other:?}"),
+            }
+        },
+        other => panic!("expected object, got {other:?}"),
+    }
+    assert_eq!(Event::from_convex(v)?, refunded);
     Ok(())
 }
 
