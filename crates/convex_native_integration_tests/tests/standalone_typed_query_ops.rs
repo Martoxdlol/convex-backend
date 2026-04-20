@@ -210,6 +210,40 @@ async fn unique_returns_none_empty_some_one_errors_many() -> anyhow::Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn with_index_against_unpublished_schema_errors_loudly() -> anyhow::Result<()> {
+    // list_todos_with_index calls .with_index(TodoIndex::ByOwner).
+    // DbFixture::new_in_memory intentionally skips schema
+    // activation, so the index isn't registered at the DB layer
+    // and the query must fail with a clear index-missing error
+    // (rather than silently scanning and returning wrong rows).
+    // Pins the "loud failure" contract — a regression that
+    // silently downgraded to a full scan would break OCC + index
+    // coverage without surfacing anywhere.
+    let fx = DbFixture::new_in_memory().await?;
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let usage = FunctionUsageTracker::new();
+    let mut tx = fx
+        .database
+        .begin_with_ts(Identity::system(), *fx.database.now_ts_for_reads(), usage)
+        .await?;
+    let err = runner
+        .run_query(
+            "list_todos_with_index",
+            &mut tx,
+            TableNamespace::Global,
+            args(&[("owner", ConvexValue::try_from("alice".to_string())?)]),
+        )
+        .await
+        .expect_err("with_index against an unpublished schema must error");
+    let msg = format!("{err:#}").to_lowercase();
+    assert!(
+        msg.contains("index") || msg.contains("not found") || msg.contains("missing"),
+        "expected an index-missing error; got: {msg}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn order_asc_explicitly_returns_all_rows() -> anyhow::Result<()> {
     // Order::Desc is covered via todos_by_created_desc; the
     // explicit Order::Asc branch goes through the same

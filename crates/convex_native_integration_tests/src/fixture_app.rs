@@ -814,6 +814,29 @@ pub async fn todos_in_time_range(
         .await
 }
 
+/// List todos for an owner using an explicit
+/// `.with_index(TodoIndex::ByOwner)`. Exercises the index-
+/// selection branch of `TypedQueryBuilder` — a distinct code
+/// path from the implicit-scan form used by `list_todos`.
+/// DbFixture::new_in_memory intentionally doesn't publish the
+/// schema, so the backfilled index isn't available for real
+/// traversal; handlers that reach here receive an error from
+/// the db layer. The test pins that error surface so a
+/// regression that silently accepted missing indexes (and
+/// returned wrong results) would flag.
+#[convex::query]
+pub async fn list_todos_with_index(
+    ctx: &mut QueryCtx<'_, Rt>,
+    owner: String,
+) -> anyhow::Result<Vec<Todo>> {
+    ctx.db()
+        .query::<Todo>()
+        .with_index(TodoIndex::ByOwner)
+        .eq(TodoField::Owner, owner)?
+        .collect()
+        .await
+}
+
 /// Filter with the strict `.gt` / `.lte` pair — the closed-upper
 /// open-lower counterpart to `todos_in_time_range`. Lets tests
 /// prove both operator directions survive the dispatch + field
