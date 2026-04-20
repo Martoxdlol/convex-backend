@@ -89,6 +89,43 @@ async fn action_log_lines_land_in_the_shared_buffer() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn log_buffer_with_min_level_filters_below_threshold() -> anyhow::Result<()> {
+    // LogBuffer::with_min_level(Warn) drops Debug + Info lines
+    // before they land in the buffer. emit_every_log_level emits
+    // one line at each level — the Warn + Error lines should
+    // survive, but Debug + Info should not. A regression that
+    // ignored the min_level filter would land all four.
+    let runner = Arc::new(NativeFunctionRunner::from_inventory()?);
+    let callbacks: Arc<dyn NativeActionCallbacks> = Arc::new(NoopCallbacks);
+    let log_buffer = LogBuffer::with_min_level(LogLevel::Warn);
+    runner
+        .run_action_with_callbacks_and_log_buffer(
+            "emit_every_log_level",
+            TableNamespace::Global,
+            ConvexObject::empty(),
+            callbacks,
+            log_buffer.clone(),
+        )
+        .await?;
+    let lines = log_buffer.snapshot();
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.level == LogLevel::Debug || l.level == LogLevel::Info),
+        "below-threshold lines must be filtered out; got {lines:?}",
+    );
+    assert!(
+        lines.iter().any(|l| l.level == LogLevel::Warn),
+        "warn line should survive min-level filter",
+    );
+    assert!(
+        lines.iter().any(|l| l.level == LogLevel::Error),
+        "error line should survive min-level filter",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn every_log_level_lands_in_the_buffer() -> anyhow::Result<()> {
     // `emit_every_log_level` calls `ctx.log().debug/info/warn/error(...)`
     // once each; the runner drains the buffer after the handler
